@@ -61,6 +61,28 @@ test("a manual retry runs from main but remains bound to the immutable tag", asy
   }
 });
 
+test("a manual retry accepts reviewed same-version fixes after the manifest transition", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    git(fixture.root, ["tag", "-f", "v0.0.1", fixture.workflowSha]);
+    const taggedRecoverySha = fixture.workflowSha;
+    await writeFile(join(fixture.root, "trusted-retry-revision"), "retry derivation support\n");
+    git(fixture.root, ["add", "trusted-retry-revision"]);
+    git(fixture.root, ["commit", "-qm", "fix: derive retry from manifest history"]);
+    fixture.workflowSha = git(fixture.root, ["rev-parse", "HEAD"]).trim();
+
+    const result = runDerivation(fixture, "workflow_dispatch");
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.should_release, true);
+    assert.equal(output.previous_version, "");
+    assert.equal(output.source_sha, taggedRecoverySha);
+    assert.equal(output.tag, "v0.0.1");
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
 test("a manual retry fails closed when the immutable tag is missing", async () => {
   const fixture = await releaseFixture("0.0.1");
   try {
