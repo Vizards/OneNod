@@ -1,0 +1,32 @@
+{
+  "input": {
+    "audience": "onenod.example-account.workers.dev",
+    "body": {
+      "z": [3, { "é": "雪", "a": true }],
+      "action": "secret.read",
+      "client": {
+        "application": "Codex",
+        "source": "process-ancestry"
+      },
+      "expected_version": 42,
+      "field_id": "password",
+      "idempotency_key": "0190f2d8-b0a4-7000-8000-000000000002",
+      "item_id": "item_dummy_01"
+    },
+    "device_id": "0190f2d8-b0a4-7000-8000-000000000001",
+    "method": "POST",
+    "nonce": "nonce_dummy_01",
+    "path": "/v1/requests",
+    "unix_seconds": 1784246400
+  },
+  "expected": {
+    "body_canonical_json": "{\"action\":\"secret.read\",\"client\":{\"application\":\"Codex\",\"source\":\"process-ancestry\"},\"expected_version\":42,\"field_id\":\"password\",\"idempotency_key\":\"0190f2d8-b0a4-7000-8000-000000000002\",\"item_id\":\"item_dummy_01\",\"z\":[3,{\"a\":true,\"é\":\"雪\"}]}",
+    "body_sha256": "NCYFqdZZPzjK6ZuGG-DL2-bHErzPGAp4gfzxnxOIy94",
+    "canonical_string": "onenod-request-v1\nonenod.example-account.workers.dev\nPOST\n/v1/requests\nNCYFqdZZPzjK6ZuGG-DL2-bHErzPGAp4gfzxnxOIy94\n0190f2d8-b0a4-7000-8000-000000000001\n1784246400\nnonce_dummy_01",
+    "canonical_string_sha256": "GvQ8ea-SbmXWFuFxUa5sirRGr66mQdjxBSodGgitAUs",
+    "ed25519_public_key": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "ed25519_public_key_sha256": "If4x36FUomFia_hUBG_SJxt77UtqvkWqWId-9H-XIbk",
+    "ed25519_signature": "TJVavsyX0UkHGD0hqvGW7J0XJFIUJLK0zZ7hbSP7rNi78jhUJBADp3hKTroW2sDBYFGZ_NOjNl_k_njesA29Cw"
+  },
+  "test_only_ed25519_seed": "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"
+}

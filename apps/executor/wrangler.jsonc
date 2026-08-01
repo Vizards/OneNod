@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onenod-executor",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "cpu-features": "./src/cpu-features-disabled.cjs",
+    "safer-buffer": "./src/safer-buffer-worker.cjs"
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "minify": true,
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/core.wasm"],
+      "fallthrough": false
+    }
+  ],
+  "vars": {
+    "OP_ACCOUNT": "CONFIGURE_IN_TARGET",
+    "OP_VAULT_ID": "CONFIGURE_IN_TARGET"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ONEPASSWORD_EXECUTOR",
+        "class_name": "OnePasswordExecutor"
+      }
+    ]
+  },
+  "exports": {
+    "OnePasswordExecutor": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "observability": {
+    "enabled": false
+  }
+}

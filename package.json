@@ -1,0 +1,28 @@
+{
+  "name": "onenod",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
+  "scripts": {
+    "build": "pnpm build:protocol && pnpm --filter @onenod/gateway build && pnpm --filter @onenod/executor build",
+    "build:protocol": "pnpm --filter @onenod/protocol build",
+    "check": "pnpm lint && pnpm docs:check && pnpm typecheck && pnpm test && pnpm build",
+    "dev:executor": "pnpm --filter @onenod/executor exec wrangler dev",
+    "dev:configure-vapid": "go -C cmd/may run . dev vapid",
+    "dev:web": "pnpm build:protocol && pnpm --filter @onenod/gateway dev:web",
+    "dev:worker": "pnpm build:protocol && pnpm --filter @onenod/gateway build:web && pnpm --filter @onenod/gateway dev:worker",
+    "docs:check": "node scripts/check-doc-links.mjs && node scripts/validate-skill.mjs",
+    "lint": "oxlint apps packages scripts --deny-warnings",
+    "test": "pnpm build:protocol && pnpm --filter @onenod/protocol test && pnpm --filter @onenod/gateway test && pnpm --filter @onenod/executor test",
+    "typecheck": "pnpm build:protocol && pnpm --filter @onenod/gateway typecheck && pnpm --filter @onenod/executor typecheck"
+  },
+  "devDependencies": {
+    "oxlint": "catalog:",
+    "tar-stream": "3.2.0",
+    "typescript": "catalog:"
+  }
+}

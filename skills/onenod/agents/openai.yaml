@@ -1,0 +1,4 @@
+interface:
+  display_name: "OneNod"
+  short_description: "Approve remote Agent access to 1Password"
+  default_prompt: "Use $onenod to install, diagnose, operate, or migrate credentials for OneNod safely."

@@ -1,0 +1,580 @@
+name: Publish immutable release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .release-please-manifest.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact manifest version to retry from its release commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Bind release commit and tag
+    if: github.repository == 'Vizards/OneNod'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      helper_changed: ${{ steps.release.outputs.helper_changed }}
+      helper_source_digest: ${{ steps.release.outputs.helper_source_digest }}
+      helper_version: ${{ steps.release.outputs.helper_version }}
+      previous_version: ${{ steps.release.outputs.previous_version }}
+      should_release: ${{ steps.release.outputs.should_release }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out the candidate release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+      - name: Verify the release source contract
+        run: node scripts/release/verify-source-contract.mjs
+      - name: Derive the release from the manifest transition
+        id: release
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: >-
+          node scripts/release/derive-release.mjs
+          --event "$GITHUB_EVENT_NAME"
+          --ref "$GITHUB_REF"
+          --sha "$GITHUB_SHA"
+          --version-input "$VERSION_INPUT"
+          --output "$GITHUB_OUTPUT"
+      - name: Require a public repository eligible for attestations
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          if [ "$visibility" != "public" ]; then
+            echo "Release blocked: GitHub Artifact Attestations require this repository to be public or otherwise eligible; the public-preview workflow requires public." >&2
+            exit 1
+          fi
+      - name: Require immutable Releases to be enabled
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          RELEASE_SETTINGS_TOKEN: ${{ secrets.ONENOD_RELEASE_SETTINGS_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_SETTINGS_TOKEN" ]; then
+            echo "Release blocked: repository secret ONENOD_RELEASE_SETTINGS_TOKEN is missing." >&2
+            echo "Configure a fine-grained token limited to Vizards/OneNod with Administration (read) permission." >&2
+            exit 1
+          fi
+          if ! enabled="$(GH_TOKEN="$RELEASE_SETTINGS_TOKEN" gh api -H "X-GitHub-Api-Version: 2026-03-10" "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)"; then
+            echo "Release blocked: the settings token could not read the repository Release immutability setting." >&2
+            exit 1
+          fi
+          if [ "$enabled" != "true" ]; then
+            echo "Release blocked: repository Release immutability is not enabled." >&2
+            exit 1
+          fi
+      - name: Require a published immutable predecessor
+        if: >-
+          steps.release.outputs.should_release == 'true' &&
+          steps.release.outputs.previous_version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS_VERSION: ${{ steps.release.outputs.previous_version }}
+        run: |
+          lineage_dir="$(mktemp -d)"
+          trap 'rm -rf "$lineage_dir"' EXIT
+          previous_tag="v$PREVIOUS_VERSION"
+          gh api -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$previous_tag" \
+            > "$lineage_dir/release.json"
+          previous_commit="$(gh api -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" \
+            --jq 'if .object.type == "commit" then .object.sha else "" end')"
+          gh release download "$previous_tag" \
+            --pattern release-manifest.json \
+            --dir "$lineage_dir"
+          node scripts/release/verify-previous-lineage.mjs \
+            --release "$lineage_dir/release.json" \
+            --manifest "$lineage_dir/release-manifest.json" \
+            --version "$PREVIOUS_VERSION" \
+            --commit "$previous_commit"
+      - name: Create or verify the exact lightweight tag
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+        run: |
+          if existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + ":" + .object.sha' 2>/dev/null)"; then
+            if [ "$existing" != "commit:$SOURCE_SHA" ]; then
+              echo "Release blocked: $RELEASE_TAG already exists at a different Git object." >&2
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$SOURCE_SHA" >/dev/null
+          fi
+
+  local-artifacts:
+    name: Native macOS ${{ matrix.arch }} artifacts
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            uname_arch: arm64
+          - arch: amd64
+            runner: macos-15-intel
+            uname_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cmd/may/go.mod
+          cache-dependency-path: cmd/may/go.sum
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+      - name: Verify native architecture and source
+        env:
+          EXPECTED_ARCH: ${{ matrix.uname_arch }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Test and build the native requester binaries
+        working-directory: cmd/may
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: ${{ matrix.arch }}
+          GOOS: darwin
+          EXPECTED_ARCH: ${{ matrix.uname_arch }}
+          HELPER_CHANGED: ${{ needs.prepare.outputs.helper_changed }}
+          HELPER_SOURCE_DIGEST: ${{ needs.prepare.outputs.helper_source_digest }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          go test ./...
+          mkdir -p ../../dist/build ../../dist/release
+          go build -trimpath -buildvcs=true \
+            -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
+            -o ../../dist/build/may .
+          test "$(lipo -archs ../../dist/build/may)" = "$EXPECTED_ARCH"
+          if [ "$HELPER_CHANGED" = "true" ]; then
+            go build -trimpath -buildvcs=true \
+              -ldflags="-s -w -X main.helperVersion=$HELPER_VERSION -X main.sourceCommit=$SOURCE_SHA" \
+              -o ../../dist/build/onenod-keychain-helper ./keychainhelper
+            test "$(lipo -archs ../../dist/build/onenod-keychain-helper)" = "$EXPECTED_ARCH"
+          fi
+      - name: Reuse the exact prior immutable Keychain helper
+        if: needs.prepare.outputs.helper_changed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+          EXPECTED_ARCH: ${{ matrix.uname_arch }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          PREVIOUS_VERSION: ${{ needs.prepare.outputs.previous_version }}
+        run: |
+          test -n "$PREVIOUS_VERSION"
+          helper_name="onenod-keychain-helper-$HELPER_VERSION-darwin-$ARCH.tar.gz"
+          mkdir -p dist/helper-reuse dist/helper-extract
+          gh release download "v$PREVIOUS_VERSION" \
+            --pattern release-manifest.json \
+            --pattern onenod-provenance.intoto.jsonl \
+            --pattern "$helper_name" \
+            --dir dist/helper-reuse
+          dist/build/may dev verify-release \
+            --directory dist/helper-reuse \
+            --artifact "$helper_name"
+          tar -xzf "dist/helper-reuse/$helper_name" \
+            -C dist/helper-extract \
+            onenod-keychain-helper/bin/onenod-keychain-helper
+          cp dist/helper-extract/onenod-keychain-helper/bin/onenod-keychain-helper \
+            dist/build/onenod-keychain-helper
+          chmod 700 dist/build/onenod-keychain-helper
+          test "$(lipo -archs dist/build/onenod-keychain-helper)" = "$EXPECTED_ARCH"
+      - name: Verify embedded binary versions
+        env:
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/verify-binary-version.mjs
+          --may dist/build/may
+          --helper dist/build/onenod-keychain-helper
+          --version "$RELEASE_VERSION"
+          --helper-version "$HELPER_VERSION"
+          --tag "$RELEASE_TAG"
+          --commit "$SOURCE_SHA"
+      - name: Generate component-bound native license material
+        env:
+          HELPER_CHANGED: ${{ needs.prepare.outputs.helper_changed }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          mkdir -p dist/notices
+          node scripts/release/generate-notices.mjs \
+            --scope binary \
+            --binary dist/build/may \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" \
+            --output dist/notices/may.txt \
+            --inventory-output dist/notices/may-components.json
+          if [ "$HELPER_CHANGED" = "true" ]; then
+            node scripts/release/generate-notices.mjs \
+              --scope binary \
+              --binary dist/build/onenod-keychain-helper \
+              --version "$HELPER_VERSION" \
+              --commit "$SOURCE_SHA" \
+              --output dist/notices/helper.txt \
+              --inventory-output dist/notices/helper-components.json
+          fi
+      - name: Package deterministic release archives
+        env:
+          ARCH: ${{ matrix.arch }}
+          HELPER_CHANGED: ${{ needs.prepare.outputs.helper_changed }}
+          HELPER_SOURCE_DIGEST: ${{ needs.prepare.outputs.helper_source_digest }}
+          HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          node scripts/release/package-artifact.mjs local \
+            --binary dist/build/may \
+            --arch "$ARCH" \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" \
+            --notices dist/notices/may.txt \
+            --components dist/notices/may-components.json \
+            --output "dist/release/onenod-darwin-$ARCH.tar.gz"
+          helper_name="onenod-keychain-helper-$HELPER_VERSION-darwin-$ARCH.tar.gz"
+          if [ "$HELPER_CHANGED" = "true" ]; then
+            node scripts/release/package-artifact.mjs helper \
+              --binary dist/build/onenod-keychain-helper \
+              --arch "$ARCH" \
+              --helper-version "$HELPER_VERSION" \
+              --helper-source-digest "$HELPER_SOURCE_DIGEST" \
+              --commit "$SOURCE_SHA" \
+              --notices dist/notices/helper.txt \
+              --components dist/notices/helper-components.json \
+              --output "dist/release/$helper_name"
+          else
+            cp "dist/helper-reuse/$helper_name" "dist/release/$helper_name"
+          fi
+      - name: Upload native artifacts for release assembly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: dist/release/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  deployment-artifacts:
+    name: Deployment and Skill artifacts
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.23.0
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+      - name: Set up Go for the dependency inventory
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cmd/may/go.mod
+          cache-dependency-path: cmd/may/go.sum
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run the complete source release gate
+        run: pnpm check
+      - name: Generate deployment-scoped license material
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          mkdir -p dist/build dist/notices dist/release
+          node scripts/release/generate-notices.mjs \
+            --scope deployment \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" \
+            --output dist/notices/deployment.txt \
+            --inventory-output dist/notices/deployment-components.json
+      - name: Build the release-injected deployment bundle
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/build-deployment.mjs
+          --version "$RELEASE_VERSION"
+          --commit "$SOURCE_SHA"
+          --notices dist/notices/deployment.txt
+          --components dist/notices/deployment-components.json
+          --output "dist/release/onenod-deployment-$RELEASE_VERSION.tar.gz"
+      - name: Package the lifecycle Skill
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/package-artifact.mjs skill
+          --version "$RELEASE_VERSION"
+          --commit "$SOURCE_SHA"
+          --output "dist/release/onenod-skill-$RELEASE_VERSION.tar.gz"
+      - name: Upload deployment artifacts for release assembly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-deployment
+          path: dist/release/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  sbom:
+    name: Generate final-archive SBOMs without release authority
+    needs:
+      - prepare
+      - local-artifacts
+      - deployment-artifacts
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - name: Prepare the SBOM output directory
+        run: mkdir -p dist/artifacts dist/raw-sbom dist/release
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+      - name: Download the final installable archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist/artifacts
+          merge-multiple: true
+      - name: Generate one byte-bound SPDX SBOM per final archive
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          SYFT_ARCHIVE_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788
+          SYFT_VERSION: 1.50.0
+        run: |
+          syft_root="$RUNNER_TEMP/onenod-syft"
+          syft_archive="$RUNNER_TEMP/syft_$SYFT_VERSION.tar.gz"
+          mkdir -p "$syft_root"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            "https://github.com/anchore/syft/releases/download/v$SYFT_VERSION/syft_$SYFT_VERSION_linux_amd64.tar.gz" \
+            --output "$syft_archive"
+          printf '%s  %s\n' "$SYFT_ARCHIVE_SHA256" "$syft_archive" \
+            | sha256sum --check --strict
+          tar -xzf "$syft_archive" -C "$syft_root" syft
+          test -x "$syft_root/syft"
+          archives=(dist/artifacts/*.tar.gz)
+          test "${#archives[@]}" -eq 6
+          for archive in "${archives[@]}"; do
+            archive_name="$(basename "$archive")"
+            sbom_name="${archive_name%.tar.gz}.spdx.json"
+            raw_sbom="dist/raw-sbom/$sbom_name"
+            "$syft_root/syft" scan "file:$archive" \
+              --source-name "$archive_name" \
+              --source-version "$RELEASE_VERSION" \
+              --output "spdx-json=$raw_sbom"
+            node scripts/release/finalize-artifact-sbom.mjs \
+              --archive "$archive" \
+              --sbom "$raw_sbom" \
+              --output "dist/release/$sbom_name" \
+              --version "$RELEASE_VERSION" \
+              --commit "$SOURCE_SHA"
+          done
+          node scripts/release/merge-artifact-notices.mjs \
+            --directory dist/artifacts \
+            --output dist/release/THIRD_PARTY_NOTICES.txt \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA"
+      - name: Upload inert compliance artifacts for release assembly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-sbom
+          path: |
+            dist/release/*.spdx.json
+            dist/release/THIRD_PARTY_NOTICES.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Attest, verify, and atomically publish
+    needs:
+      - prepare
+      - local-artifacts
+      - deployment-artifacts
+      - sbom
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cmd/may/go.mod
+          cache-dependency-path: cmd/may/go.sum
+      - name: Download the complete installable artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Generate the signed release contract and checksums
+        env:
+          PREVIOUS_VERSION: ${{ needs.prepare.outputs.previous_version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/generate-manifest.mjs
+          --directory dist/release
+          --version "$RELEASE_VERSION"
+          --previous-version "$PREVIOUS_VERSION"
+          --commit "$SOURCE_SHA"
+      - name: Verify the assembled primary release set
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/verify-release-set.mjs
+          --directory dist/release
+          --phase assembled
+          --version "$RELEASE_VERSION"
+          --commit "$SOURCE_SHA"
+      - name: Generate GitHub build-provenance attestations
+        id: provenance
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        with:
+          subject-path: dist/release/release-manifest.json
+          show-summary: false
+      - name: Add portable attestation bundles to the Release
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          cp "$PROVENANCE_BUNDLE" dist/release/onenod-provenance.intoto.jsonl
+      - name: Cryptographically verify the release contract before upload
+        run: >-
+          go -C cmd/may run . dev verify-release
+          --directory "$GITHUB_WORKSPACE/dist/release"
+      - name: Verify the complete publishable set
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/verify-release-set.mjs
+          --directory dist/release
+          --phase complete
+          --version "$RELEASE_VERSION"
+          --commit "$SOURCE_SHA"
+      - name: Create a draft and upload the complete set
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release blocked: a Release already exists for $RELEASE_TAG; inspect it instead of overwriting assets." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --verify-tag \
+            --title "OneNod $RELEASE_TAG — Public Preview" \
+            --generate-notes
+          gh release upload "$RELEASE_TAG" dist/release/*
+      - name: Verify the remote draft byte-for-byte
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/verify-github-release.mjs
+          --directory dist/release
+          --repository "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG"
+          --commit "$SOURCE_SHA"
+          --state draft
+      - name: Publish the verified normal Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Verify publication made the Release immutable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: >-
+          node scripts/release/verify-github-release.mjs
+          --directory dist/release
+          --repository "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG"
+          --commit "$SOURCE_SHA"
+          --state published

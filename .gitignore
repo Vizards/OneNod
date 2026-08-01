@@ -1,0 +1,28 @@
+.DS_Store
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+*.tsbuildinfo
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Machine-local private project records. These are intentionally excluded from
+# the public source history.
+.private/
+
+/cmd/may/may
+
+# Machine-local rendered Worker configurations.
+/apps/gateway/wrangler.production.generated.jsonc
+/apps/gateway/wrangler.production-scaffold.generated.jsonc
+/apps/executor/wrangler.production.generated.jsonc
+/apps/executor/wrangler.production-scaffold.generated.jsonc

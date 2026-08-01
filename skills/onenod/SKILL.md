@@ -1,0 +1,45 @@
+---
+name: onenod
+description: Route the OneNod lifecycle for deploying, installing, updating, operating, troubleshooting, and migrating 1Password credentials for remote coding Agents. Use for the human-controlled Cloudflare ceremony, requester or PWA enrollment, optional SSH integration, full-stack updates, approved secret or SSH operations, and reversible batch copies into the Agent Vault.
+---
+
+# OneNod
+
+Use this Skill for OneNod-specific workflow, authority, and safety decisions.
+Use the installed `may` binary's help for flags, argument shapes, detected
+state, and version-specific recovery instructions. Stable command-family names
+are included here so an Agent can choose the correct entry point.
+
+## Route the task
+
+Load one primary reference:
+
+| Route | Load when |
+| --- | --- |
+| [Common](references/common.md) | Explain trust boundaries, `may` versus `op`, Passkeys, Lock mode, or SSH semantics |
+| [Setup](references/setup.md) | Deploy a Gateway, install or enroll a Mac, add a PWA, or opt into SSH/Git integration |
+| [Update](references/update.md) | Reconcile the CLI, helper, Skill, Gateway, Executor, and PWA |
+| [Migration](references/migration.md) | A human asks to copy a selected credential batch into `Agent` and cut consumers over |
+| [Daily use](references/daily-use.md) | Use credentials, mutate items, sign over SSH, or troubleshoot a normal request |
+
+For migration, load the router plus only the applicable leaf:
+[readiness](references/migration-readiness.md),
+[standard credentials](references/migration-standard-items.md),
+[SSH keys](references/migration-ssh-keys.md),
+[special items](references/migration-special-items.md), or
+[completion](references/migration-completion.md).
+
+## Non-negotiable boundaries
+
+- Use the installed `may` requester for Agent work. `op` is reserved for a
+  human-explicit 1Password administration or migration task.
+- Hand the terminal to the human from Cloudflare OAuth or 1Password unlock
+  through the CLI's current-Mac Cloudflare revocation check.
+- Treat Passkeys, macOS security prompts, account selection, production
+  deployment confirmation, revocation, and optional integration changes as
+  human decisions.
+- Do not expose a Service Account token, recovered field, private key,
+  bootstrap capability, or secret-bearing payload through Agent-visible
+  output or storage.
+- Reconcile an unknown mutation result before retrying. A denial, revocation,
+  timeout, or Lock-mode response is not a reason to switch tools or Origins.

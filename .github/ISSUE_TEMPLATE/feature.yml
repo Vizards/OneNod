@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a focused product improvement without including credentials or private deployment data.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem and trust-boundary impact. Never include credentials, bootstrap URLs, private endpoints, Vault contents, or unredacted logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is blocked, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the smallest useful product behavior, including any new human approval step.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and privacy impact
+      description: Note any effect on Agent authority, stored metadata, Cloudflare access, 1Password scope, or recovery.
+    validations:
+      required: true

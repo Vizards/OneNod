@@ -1,0 +1,7 @@
+dist/
+src/core.wasm
+vendor/
+evidence/generated/
+.dev.vars*
+.env*
+.wrangler/

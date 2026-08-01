@@ -1,0 +1,54 @@
+diff --git a/lib/protocol/keyParser.js b/lib/protocol/keyParser.js
+index a276c1aed3dca46469b0c566ad12f989c65e92e5..9d24f80b5e90a484ad1461f2122737088af9397b 100644
+--- a/lib/protocol/keyParser.js
++++ b/lib/protocol/keyParser.js
+@@ -18,10 +18,17 @@ const {
+ const supportedOpenSSLCiphers = getCiphers();
+-
++
+ const { Ber } = require('asn1');
+-const bcrypt_pbkdf = require('bcrypt-pbkdf').pbkdf;
+-
++
+-const { CIPHER_INFO } = require('./crypto.js');
+-const { eddsaSupported, SUPPORTED_CIPHER } = require('./constants.js');
++// onenod accepts only unencrypted OpenSSH private keys. Keep the
++// mature public/private key parser and signer, but do not bundle ssh2's
++// encrypted-key KDF, transport ciphers, optional native addon, or transport
++// constants into the Cloudflare Worker.
++const bcrypt_pbkdf = () => {
++  throw new Error('Encrypted private keys are not supported');
++};
++const CIPHER_INFO = Object.freeze({});
++const eddsaSupported = true;
++const SUPPORTED_CIPHER = Object.freeze([]);
+ const {
+   bufferSlice,
+   makeBufferParser,
+diff --git a/lib/protocol/utils.js b/lib/protocol/utils.js
+index 26f4cab6de85953ccc7f9e7af35c4fa0905e8ca0..376c4048e5f42c6bbf231dd309bdc74873925608 100644
+--- a/lib/protocol/utils.js
++++ b/lib/protocol/utils.js
+@@ -2,7 +2,9 @@
+-
++
+ const Ber = require('asn1').Ber;
+-
++
+-let DISCONNECT_REASON;
++// Avoid pulling the complete SSH transport constants/cipher graph into the
++// Worker for the key-parser-only build. RFC 4253 assigns protocol error 2.
++const DISCONNECT_REASON = Object.freeze({ PROTOCOL_ERROR: 2 });
+-
++
+ const FastBuffer = Buffer[Symbol.species];
+ const TypedArrayFill = Object.getPrototypeOf(Uint8Array.prototype).fill;
+@@ -170,8 +172,6 @@ module.exports = {
+   makeError,
+   doFatalError: (protocol, msg, level, reason) => {
+     let err;
+-    if (DISCONNECT_REASON === undefined)
+-      ({ DISCONNECT_REASON } = require('./constants.js'));
+     if (msg instanceof Error) {
+       // doFatalError(protocol, err[, reason])
+       err = msg;

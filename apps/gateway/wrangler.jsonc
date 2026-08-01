@@ -1,0 +1,50 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onenod",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "define": {
+    "EXECUTOR_FETCH_TIMEOUT_MS": "90000",
+    "RECONCILIATION_IMMEDIATE_ENABLED": "true",
+    "RECONCILIATION_RETRY_DELAY_MS": "15000"
+  },
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist/web",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/v1/*"],
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "APP_ENV": "dev",
+    "ORIGIN": "http://localhost:8787",
+    "RP_ID": "localhost",
+    "VAPID_PUBLIC_KEY": "CONFIGURE_WITH_MAY_DEV_VAPID",
+    "VAPID_SUBJECT": "mailto:admin@example.com"
+  },
+  "services": [
+    {
+      "binding": "EXECUTOR_SERVICE",
+      "service": "onenod-executor"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "APPROVALS",
+        "class_name": "ApprovalCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ApprovalCoordinator"]
+    }
+  ],
+  "observability": {
+    "enabled": false
+  }
+}

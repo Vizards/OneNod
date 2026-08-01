@@ -1,0 +1,52 @@
+{
+  "name": "__GATEWAY_NAME__",
+  "main": "./worker.mjs",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "__ACCOUNT_ID__",
+  "define": {
+    "EXECUTOR_FETCH_TIMEOUT_MS": "90000",
+    "RECONCILIATION_IMMEDIATE_ENABLED": "true",
+    "RECONCILIATION_RETRY_DELAY_MS": "15000",
+    "ONENOD_RELEASE_VERSION": "\"__RELEASE_VERSION__\"",
+    "ONENOD_SOURCE_COMMIT": "\"__SOURCE_COMMIT__\""
+  },
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/v1/*"],
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "APP_ENV": "prod",
+    "ORIGIN": "__ORIGIN__",
+    "RP_ID": "__RP_ID__",
+    "VAPID_PUBLIC_KEY": "__VAPID_PUBLIC_KEY__",
+    "VAPID_SUBJECT": "__ORIGIN__"
+  },
+  "services": [
+    {
+      "binding": "EXECUTOR_SERVICE",
+      "service": "__EXECUTOR_NAME__"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "APPROVALS",
+        "class_name": "ApprovalCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ApprovalCoordinator"]
+    }
+  ],
+  "observability": {
+    "enabled": false
+  }
+}

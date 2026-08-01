@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/1Password/onepassword-sdk-go",
+  "source": "https://raw.githubusercontent.com/1Password/onepassword-sdk-go/v0.4.1/internal/wasm/core.wasm",
+  "sourceTag": "v0.4.1",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2024 1Password",
+  "licenseFile": "../third_party/licenses/onepassword-sdk-go-0.4.1.txt",
+  "licenseSha256": "73640cd487337718201bbec4ae0b9bcdac152192ddf263d927e27a98a30da6b1",
+  "originalBytes": 9509477,
+  "originalGitBlobSha1": "f502ba45cdcebbf1f278baac884d09b8e2d18999",
+  "originalSha256": "23d115f4ac7519b48172df3e8615945572dbda7033d51b44c9490fd533ae0f23",
+  "processedBytes": 8180775,
+  "processedSha256": "803c7752dd41abc3911a75ac2df9b83197d000265d42d6412760458ba07858f6",
+  "removedCustomSection": "__wasm_bindgen_unstable",
+  "removedExportPrefix": "__wbindgen_describe_",
+  "removedExportCount": 1741,
+  "stripTool": "binaryen@131.0.0 wasm-opt --strip-debug, deterministic removal of __wasm_bindgen_unstable, then pruning of __wbindgen_describe_* exports"
+}

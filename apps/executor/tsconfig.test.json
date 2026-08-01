@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "allowImportingTsExtensions": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/auth.ts",
+    "src/host-functions.ts",
+    "src/mutex.ts",
+    "src/onepassword-core.ts",
+    "src/onepassword-wire.ts",
+    "src/runtime.ts",
+    "src/ssh2-key-parser.d.ts",
+    "test/**/*.ts"
+  ]
+}

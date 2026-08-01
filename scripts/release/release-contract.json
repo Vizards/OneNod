@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "repository": "Vizards/OneNod",
+  "workflow": ".github/workflows/release.yml",
+  "channel": "stable",
+  "product_label": "Public Preview",
+  "components": {
+    "may": {
+      "client_protocol": 1
+    },
+    "keychain_helper": {
+      "version": "1.0.0",
+      "source_digest": "sha256:ef37d53c5294d41e3723b30a24b6e7e4a4eb4b2651867e57067cfa2dfc9c03af",
+      "helper_protocol": {
+        "min": 1,
+        "max": 1
+      }
+    },
+    "gateway": {
+      "accepted_client_protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "state_schema": 1
+    },
+    "executor": {
+      "accepted_gateway_protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "state_schema": 1
+    }
+  },
+  "upgrade": {
+    "minimum_updater_version": "0.0.1",
+    "minimum_safe_version": "0.0.1",
+    "revoked_artifact_digests": [],
+    "order": [
+      "executor",
+      "gateway",
+      "local",
+      "skill"
+    ],
+    "remote_rollback_safe": true
+  },
+  "requirements": {
+    "macos": {
+      "minimum": "15.0",
+      "architectures": [
+        "arm64",
+        "amd64"
+      ]
+    },
+    "node": {
+      "minimum": "22.12.0",
+      "maximum_exclusive": "23.0.0"
+    },
+    "wrangler": {
+      "minimum": "4.111.0",
+      "maximum_exclusive": "5.0.0"
+    },
+    "onepassword_cli": {
+      "minimum": "2.34.0",
+      "maximum_exclusive": "3.0.0"
+    },
+    "onepassword_regions": [
+      "com",
+      "ca",
+      "eu"
+    ]
+  }
+}

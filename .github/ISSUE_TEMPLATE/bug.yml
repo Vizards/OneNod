@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible OneNod problem without sharing credentials or private diagnostics.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste secret values, Service Account tokens, Worker secrets, private keys, requester signatures, bootstrap URLs, OAuth state, private endpoints, or unredacted logs. Use GitHub private vulnerability reporting for security issues.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private endpoints, personal data, and raw diagnostic output.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: OneNod version
+      description: Use the release version from `may version`; do not attach its complete JSON output.
+      placeholder: 0.0.1
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - may CLI or installer
+        - SSH Agent or Git signing adapter
+        - Gateway or approval PWA
+        - Executor
+        - Operator deployment or update
+        - Skill or documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe the safe observable behavior and stable error code, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use disposable data and redact item titles, IDs, Origins, account names, and hostnames.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Supported environment
+      description: macOS architecture/version, browser class, and relevant tool versions only.
+    validations:
+      required: true

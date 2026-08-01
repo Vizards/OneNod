@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/worker/executor-transport.ts",
+    "src/worker/executor-service-transport.ts",
+    "src/worker/executor-envelope.ts",
+    "src/worker/executor-run-lease.ts",
+    "src/worker/web-push.ts",
+    "test/**/*.ts"
+  ]
+}

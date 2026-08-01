@@ -1,0 +1,42 @@
+{
+  "name": "__EXECUTOR_NAME__",
+  "main": "./worker.mjs",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "__ACCOUNT_ID__",
+  "define": {
+    "ONENOD_RELEASE_VERSION": "\"__RELEASE_VERSION__\"",
+    "ONENOD_SOURCE_COMMIT": "\"__SOURCE_COMMIT__\""
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "minify": true,
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": false
+    }
+  ],
+  "vars": {
+    "OP_ACCOUNT": "__OP_ACCOUNT__",
+    "OP_VAULT_ID": "__OP_VAULT_ID__"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ONEPASSWORD_EXECUTOR",
+        "class_name": "OnePasswordExecutor"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OnePasswordExecutor"]
+    }
+  ],
+  "observability": {
+    "enabled": false
+  }
+}
