@@ -86,7 +86,7 @@ func validManifestFixture(version string, artifacts []releaseArtifact) releaseMa
 	manifest.Components.KeychainHelper.SourceDigest = "sha256:" + strings.Repeat("b", 64)
 	manifest.Components.KeychainHelper.HelperProtocol = protocolRange{Minimum: 1, Maximum: 1}
 	manifest.Requirements.Wrangler = versionRange{Minimum: "4.116.0", MaximumExclusive: "5.0.0"}
-	manifest.Requirements.OnePasswordCLI = versionRange{Minimum: "2.30.0", MaximumExclusive: "3.0.0"}
+	manifest.Requirements.OnePasswordCLI = versionRange{Minimum: "2.34.0", MaximumExclusive: "3.0.0"}
 	manifest.Requirements.Node = versionRange{Minimum: "22.12.0", MaximumExclusive: "23.0.0"}
 	manifest.Requirements.MacOS.Minimum = "15.0"
 	manifest.Requirements.MacOS.Architectures = []string{"arm64", "amd64"}
