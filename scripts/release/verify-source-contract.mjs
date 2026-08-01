@@ -67,6 +67,22 @@ for (const jobName of [
     fail(`release job ${jobName} does not install the frozen Node dependency set`);
   }
 }
+const publishJob = workflowJob(releaseWorkflow, "publish");
+if (
+  !publishJob.includes("name: Check out the exact release tag") ||
+  !publishJob.includes("ref: refs/tags/${{ needs.prepare.outputs.tag }}") ||
+  !publishJob.includes("name: Check out the reviewed release controller") ||
+  !publishJob.includes("ref: ${{ github.sha }}") ||
+  !publishJob.includes("path: .release-controller") ||
+  !publishJob.includes('run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"') ||
+  (publishJob.match(
+    /node \.release-controller\/scripts\/release\/verify-github-release\.mjs/gu,
+  )?.length ?? 0) !== 2
+) {
+  fail(
+    "publish job must keep release assets on the immutable tag and use the reviewed main controller for remote verification",
+  );
+}
 const helperSourceDigest = await digestHelperSources();
 if (contract.components?.keychain_helper?.source_digest !== helperSourceDigest) {
   fail(
