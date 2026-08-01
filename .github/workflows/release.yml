@@ -399,10 +399,18 @@ jobs:
           persist-credentials: false
       - name: Prepare the SBOM output directory
         run: mkdir -p dist/artifacts dist/raw-sbom dist/release
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.23.0
+          run_install: false
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.12.0
+          cache: pnpm
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
       - name: Download the final installable archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -485,15 +493,23 @@ jobs:
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
           persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.23.0
+          run_install: false
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.12.0
+          cache: pnpm
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cmd/may/go.mod
           cache-dependency-path: cmd/may/go.sum
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
       - name: Download the complete installable artifact set
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

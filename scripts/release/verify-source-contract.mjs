@@ -48,6 +48,25 @@ if (
 ) {
   fail("canonical release identity is inconsistent");
 }
+const releaseWorkflow = await readFile(
+  resolve(repositoryRoot, contract.workflow),
+  "utf8",
+);
+for (const jobName of [
+  "local-artifacts",
+  "deployment-artifacts",
+  "sbom",
+  "publish",
+]) {
+  const job = workflowJob(releaseWorkflow, jobName);
+  if (
+    !job.includes("uses: pnpm/action-setup@") ||
+    !job.includes("cache: pnpm") ||
+    !job.includes("run: pnpm install --frozen-lockfile")
+  ) {
+    fail(`release job ${jobName} does not install the frozen Node dependency set`);
+  }
+}
 const helperSourceDigest = await digestHelperSources();
 if (contract.components?.keychain_helper?.source_digest !== helperSourceDigest) {
   fail(
@@ -145,6 +164,15 @@ async function digestHelperSources() {
     hash.update(content);
   }
   return `sha256:${hash.digest("hex")}`;
+}
+
+function workflowJob(workflow, name) {
+  const marker = `  ${name}:\n`;
+  const start = workflow.indexOf(marker);
+  if (start === -1) fail(`release workflow job ${name} is missing`);
+  const remainder = workflow.slice(start + marker.length);
+  const nextJob = remainder.search(/^  [a-z][a-z0-9-]*:\n/mu);
+  return nextJob === -1 ? remainder : remainder.slice(0, nextJob);
 }
 
 function strictVersion(value, label) {
