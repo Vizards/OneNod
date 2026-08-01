@@ -243,7 +243,7 @@ function validateManifest(value, values) {
       JSON.stringify(["arm64", "amd64"]) ||
     value.requirements?.node?.minimum !== "22.12.0" ||
     value.requirements?.node?.maximum_exclusive !== "23.0.0" ||
-    value.requirements?.wrangler?.minimum !== "4.111.0" ||
+    value.requirements?.wrangler?.minimum !== "4.116.0" ||
     value.requirements?.wrangler?.maximum_exclusive !== "5.0.0" ||
     value.requirements?.onepassword_cli?.minimum !== "2.34.0" ||
     value.requirements?.onepassword_cli?.maximum_exclusive !== "3.0.0"
