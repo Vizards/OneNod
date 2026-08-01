@@ -7,10 +7,49 @@ const options = parseOptions(process.argv.slice(2));
 const manifestPath = resolve(repositoryRoot, ".release-please-manifest.json");
 const contractPath = resolve(import.meta.dirname, "release-contract.json");
 
-const manifest = parseRecord(await readFile(manifestPath, "utf8"), "release manifest");
-const contract = parseRecord(await readFile(contractPath, "utf8"), "release contract");
+const workflowSha = strictCommit(options.sha);
+let sourceSha = workflowSha;
+let manifest;
+let contract;
+let requestedVersion = "";
+if (options.event === "workflow_dispatch") {
+  if (options.ref !== "refs/heads/main") {
+    fail("manual release retries must run from refs/heads/main");
+  }
+  requestedVersion = strictVersion(
+    options.versionInput,
+    "requested release version",
+  );
+  ensurePublicVersion(requestedVersion);
+  sourceSha = exactLightweightTagCommit(`v${requestedVersion}`);
+  requireAncestor(sourceSha, workflowSha);
+  manifest = readRecordAt(
+    sourceSha,
+    ".release-please-manifest.json",
+    "tagged release manifest",
+  );
+  contract = readRecordAt(
+    sourceSha,
+    "scripts/release/release-contract.json",
+    "tagged release contract",
+  );
+} else if (options.event === "push") {
+  if (options.ref !== "refs/heads/main") {
+    fail("automatic releases must run from refs/heads/main");
+  }
+  manifest = parseRecord(
+    await readFile(manifestPath, "utf8"),
+    "release manifest",
+  );
+  contract = parseRecord(
+    await readFile(contractPath, "utf8"),
+    "release contract",
+  );
+} else {
+  fail(`unsupported workflow event ${JSON.stringify(options.event)}`);
+}
+
 const version = strictVersion(manifest["."], "release manifest version");
-const sourceSha = strictCommit(options.sha);
 const helperVersion = strictVersion(
   contract.components?.keychain_helper?.version,
   "Keychain helper version",
@@ -24,21 +63,16 @@ let shouldRelease = false;
 let reason;
 let previousVersion = "";
 if (options.event === "workflow_dispatch") {
-  const requested = strictVersion(options.versionInput, "requested release version");
-  if (requested !== version) {
-    fail(`requested version ${requested} does not match manifest version ${version}`);
+  if (requestedVersion !== version) {
+    fail(
+      `requested version ${requestedVersion} does not match tagged manifest version ${version}`,
+    );
   }
   ensurePublicVersion(version);
-  if (options.ref !== `refs/tags/v${version}`) {
-    fail("manual release retries must run from the exact immutable release tag");
-  }
   previousVersion = previousReleaseVersion(sourceSha, version);
   shouldRelease = true;
   reason = "manual_retry";
 } else if (options.event === "push") {
-  if (options.ref !== "refs/heads/main") {
-    fail("automatic releases must run from refs/heads/main");
-  }
   const previousManifest = readPreviousManifest(sourceSha);
   if (previousManifest === null) {
     reason = "initial_manifest_baseline";
@@ -58,8 +92,6 @@ if (options.event === "workflow_dispatch") {
     shouldRelease = true;
     reason = "manifest_version_advanced";
   }
-} else {
-  fail(`unsupported workflow event ${JSON.stringify(options.event)}`);
 }
 
 const result = {
@@ -141,6 +173,57 @@ function readPreviousManifest(sourceShaValue) {
     return null;
   }
   return parseRecord(result.stdout, "previous release manifest");
+}
+
+function readRecordAt(commit, path, label) {
+  const result = spawnSync("git", ["show", `${commit}:${path}`], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    fail(`cannot read ${label} from release commit`);
+  }
+  return parseRecord(result.stdout, label);
+}
+
+function exactLightweightTagCommit(tag) {
+  const reference = `refs/tags/${tag}`;
+  const type = spawnSync("git", ["cat-file", "-t", reference], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (type.status !== 0) {
+    fail(`manual release retry requires existing immutable tag ${tag}`);
+  }
+  if (type.stdout.trim() !== "commit") {
+    fail(`manual release retry requires ${tag} to be a lightweight commit tag`);
+  }
+  const commit = spawnSync("git", ["rev-parse", "--verify", reference], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (commit.status !== 0) {
+    fail(`cannot resolve immutable release tag ${tag}`);
+  }
+  return strictCommit(commit.stdout.trim());
+}
+
+function requireAncestor(releaseCommit, workflowCommit) {
+  const result = spawnSync(
+    "git",
+    ["merge-base", "--is-ancestor", releaseCommit, workflowCommit],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (result.status !== 0) {
+    fail("immutable release tag must be an ancestor of the trusted main workflow");
+  }
 }
 
 function previousReleaseVersion(sourceShaValue, currentVersion) {
