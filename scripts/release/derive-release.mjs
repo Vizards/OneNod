@@ -227,19 +227,49 @@ function requireAncestor(releaseCommit, workflowCommit) {
 }
 
 function previousReleaseVersion(sourceShaValue, currentVersion) {
-  const previousManifest = readPreviousManifest(sourceShaValue);
-  if (previousManifest === null) {
-    fail("manual release retries must run against the release commit");
-  }
-  const previous = strictVersion(
-    previousManifest["."],
-    "previous release manifest version",
+  const history = spawnSync(
+    "git",
+    [
+      "rev-list",
+      "--first-parent",
+      sourceShaValue,
+      "--",
+      ".release-please-manifest.json",
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
-  requireExactFirstPublicVersion(previous, currentVersion);
-  if (compareVersions(currentVersion, previous) <= 0) {
-    fail("manual release retries must select a commit that advances the manifest");
+  if (history.status !== 0) {
+    fail("cannot inspect the tagged release manifest history");
   }
-  return currentVersion === "0.0.1" ? "" : previous;
+  for (const candidateSha of history.stdout.trim().split("\n").filter(Boolean)) {
+    const candidateManifest = readRecordAt(
+      strictCommit(candidateSha),
+      ".release-please-manifest.json",
+      "release transition manifest",
+    );
+    const candidateVersion = strictVersion(
+      candidateManifest["."],
+      "release transition version",
+    );
+    if (candidateVersion !== currentVersion) break;
+    const previousManifest = readPreviousManifest(candidateSha);
+    if (previousManifest === null) continue;
+    const previous = strictVersion(
+      previousManifest["."],
+      "previous release manifest version",
+    );
+    if (previous === currentVersion) continue;
+    requireExactFirstPublicVersion(previous, currentVersion);
+    if (compareVersions(currentVersion, previous) <= 0) {
+      fail("manual release retries must select a tag containing a monotonic manifest transition");
+    }
+    return currentVersion === "0.0.1" ? "" : previous;
+  }
+  fail("manual release retries must select a tag containing the release manifest transition");
 }
 
 function requireExactFirstPublicVersion(previousVersion, currentVersion) {
