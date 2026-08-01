@@ -56,7 +56,7 @@
       "maximum_exclusive": "23.0.0"
     },
     "wrangler": {
-      "minimum": "4.111.0",
+      "minimum": "4.116.0",
       "maximum_exclusive": "5.0.0"
     },
     "onepassword_cli": {

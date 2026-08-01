@@ -85,7 +85,7 @@ func validManifestFixture(version string, artifacts []releaseArtifact) releaseMa
 	manifest.Components.KeychainHelper.Version = "1.0.0"
 	manifest.Components.KeychainHelper.SourceDigest = "sha256:" + strings.Repeat("b", 64)
 	manifest.Components.KeychainHelper.HelperProtocol = protocolRange{Minimum: 1, Maximum: 1}
-	manifest.Requirements.Wrangler = versionRange{Minimum: "4.111.0", MaximumExclusive: "5.0.0"}
+	manifest.Requirements.Wrangler = versionRange{Minimum: "4.116.0", MaximumExclusive: "5.0.0"}
 	manifest.Requirements.OnePasswordCLI = versionRange{Minimum: "2.30.0", MaximumExclusive: "3.0.0"}
 	manifest.Requirements.Node = versionRange{Minimum: "22.12.0", MaximumExclusive: "23.0.0"}
 	manifest.Requirements.MacOS.Minimum = "15.0"
@@ -420,7 +420,7 @@ func TestUpdateCheckJSONIsReadOnlyAndReportsUninstalledState(t *testing.T) {
 }
 
 func TestVersionParsingAndComparison(t *testing.T) {
-	if got := firstStableVersion("wrangler 4.111.0 (update available)"); got != "4.111.0" {
+	if got := firstStableVersion("wrangler 4.116.0 (update available)"); got != "4.116.0" {
 		t.Fatalf("parsed %q", got)
 	}
 	if compareVersions("0.10.0", "0.9.9") <= 0 || compareVersions("1.0.0", "1.0.0") != 0 {
