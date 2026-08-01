@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
+class RetryableGitHubError extends Error {
+  constructor(status) {
+    super(`GitHub API transient HTTP ${status}`);
+    this.name = "RetryableGitHubError";
+  }
+}
+
 const options = parseOptions(process.argv.slice(2));
 const token = process.env.GITHUB_TOKEN;
 if (typeof token !== "string" || token === "") fail("GITHUB_TOKEN is required");
@@ -10,10 +17,7 @@ let release;
 const propagationAttempts = 12;
 for (let attempt = 1; attempt <= propagationAttempts; attempt += 1) {
   try {
-    release = await githubJSON(
-      `https://api.github.com/repos/${options.repository}/releases/tags/${options.tag}`,
-      true,
-    );
+    release = await releaseForState();
   } catch (error) {
     if (!(error instanceof RetryableGitHubError) || attempt === propagationAttempts) {
       throw error;
@@ -114,11 +118,29 @@ async function githubJSON(url, retryTransient = false) {
   return response.json();
 }
 
-class RetryableGitHubError extends Error {
-  constructor(status) {
-    super(`GitHub API transient HTTP ${status}`);
-    this.name = "RetryableGitHubError";
+async function releaseForState() {
+  if (options.state === "published") {
+    return githubJSON(
+      `https://api.github.com/repos/${options.repository}/releases/tags/${options.tag}`,
+      true,
+    );
   }
+  const releases = await githubJSON(
+    `https://api.github.com/repos/${options.repository}/releases?per_page=100`,
+    true,
+  );
+  if (!Array.isArray(releases)) fail("GitHub Release list is invalid");
+  const matches = releases.filter(
+    (candidate) =>
+      candidate !== null &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      candidate.tag_name === options.tag &&
+      candidate.draft === true,
+  );
+  if (matches.length === 0) throw new RetryableGitHubError(404);
+  if (matches.length !== 1) fail("GitHub draft Release identity is ambiguous");
+  return matches[0];
 }
 
 async function sha256(path) {
