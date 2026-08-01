@@ -46,6 +46,36 @@ test("the exact 0.0.1 transition is releasable", async () => {
   }
 });
 
+test("a manual retry runs from main but remains bound to the immutable tag", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    const result = runDerivation(fixture, "workflow_dispatch");
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.should_release, true);
+    assert.equal(output.reason, "manual_retry");
+    assert.equal(output.source_sha, fixture.releaseSha);
+    assert.equal(output.tag, "v0.0.1");
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("a manual retry fails closed when the immutable tag is missing", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    git(fixture.root, ["tag", "-d", "v0.0.1"]);
+    const result = runDerivation(fixture, "workflow_dispatch");
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /manual release retry requires existing immutable tag v0\.0\.1/u,
+    );
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
 async function releaseFixture(candidateVersion) {
   const root = await mkdtemp(join(tmpdir(), "onenod-derive-release-"));
   const script = join(root, "scripts/release/derive-release.mjs");
@@ -75,8 +105,19 @@ async function releaseFixture(candidateVersion) {
   );
   git(root, ["add", ".release-please-manifest.json"]);
   git(root, ["commit", "-qm", `chore: release ${candidateVersion}`]);
-  const sha = git(root, ["rev-parse", "HEAD"]).trim();
-  return { candidateVersion, root, script, sha };
+  const releaseSha = git(root, ["rev-parse", "HEAD"]).trim();
+  git(root, ["tag", `v${candidateVersion}`]);
+  await writeFile(join(root, "trusted-workflow-revision"), "retry support\n");
+  git(root, ["add", "trusted-workflow-revision"]);
+  git(root, ["commit", "-qm", "fix: support release retries"]);
+  const workflowSha = git(root, ["rev-parse", "HEAD"]).trim();
+  return {
+    candidateVersion,
+    releaseSha,
+    root,
+    script,
+    workflowSha,
+  };
 }
 
 function runDerivation(fixture, event) {
@@ -87,9 +128,9 @@ function runDerivation(fixture, event) {
       "--event",
       event,
       "--ref",
-      event === "push" ? "refs/heads/main" : `refs/tags/v${fixture.candidateVersion}`,
+      "refs/heads/main",
       "--sha",
-      fixture.sha,
+      event === "push" ? fixture.releaseSha : fixture.workflowSha,
       "--version-input",
       event === "push" ? "" : fixture.candidateVersion,
       "--output",
