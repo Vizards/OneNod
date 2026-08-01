@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	in_toto "github.com/in-toto/attestation/go/v1"
+	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 )
 
 type memoryReleaseSource struct {
@@ -263,12 +264,46 @@ func TestReleaseProvenancePredicateMatchesSupportedGitHubEvents(t *testing.T) {
 		ref   string
 	}{
 		{event: "push", ref: "refs/heads/main"},
+		{event: "workflow_dispatch", ref: "refs/heads/main"},
 		{event: "workflow_dispatch", ref: "refs/tags/v0.0.1"},
 	} {
 		predicate := releaseProvenanceFixture(repositoryID, commit, fixture.ref, fixture.event)
 		if !releaseProvenancePredicateMatches(predicate, repositoryID, commit, fixture.ref) {
 			t.Fatalf("valid %s provenance predicate was rejected", fixture.event)
 		}
+	}
+}
+
+func TestOfficialWorkflowCommitIsIndependentFromAttestedReleaseCommit(t *testing.T) {
+	repositoryID := "123456789"
+	workflowCommit := strings.Repeat("b", 40)
+	releaseCommit := strings.Repeat("a", 40)
+	sourceRef := "refs/heads/main"
+	expectedSAN := "https://github.com/" + officialRepository + "/" +
+		officialReleaseWorkflow + "@" + sourceRef
+	summary := &certificate.Summary{Extensions: certificate.Extensions{
+		BuildConfigDigest:                   workflowCommit,
+		BuildConfigURI:                      expectedSAN,
+		BuildSignerDigest:                   workflowCommit,
+		BuildSignerURI:                      expectedSAN,
+		BuildTrigger:                        "workflow_dispatch",
+		RunnerEnvironment:                   "github-hosted",
+		SourceRepositoryDigest:              workflowCommit,
+		SourceRepositoryIdentifier:          repositoryID,
+		SourceRepositoryOwnerIdentifier:     "13443193",
+		SourceRepositoryOwnerURI:            "https://github.com/Vizards",
+		SourceRepositoryRef:                 sourceRef,
+		SourceRepositoryURI:                 "https://github.com/" + officialRepository,
+		SourceRepositoryVisibilityAtSigning: "public",
+	}}
+
+	actual, ok := officialWorkflowCommit(summary, repositoryID, sourceRef, expectedSAN)
+	if !ok || actual != workflowCommit || actual == releaseCommit {
+		t.Fatalf("trusted retry workflow identity was rejected: commit=%q ok=%v", actual, ok)
+	}
+	summary.BuildConfigDigest = releaseCommit
+	if _, ok := officialWorkflowCommit(summary, repositoryID, sourceRef, expectedSAN); ok {
+		t.Fatal("certificate fields bound to different commits were accepted")
 	}
 }
 
