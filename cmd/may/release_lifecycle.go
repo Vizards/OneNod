@@ -28,6 +28,7 @@ import (
 
 	in_toto "github.com/in-toto/attestation/go/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
+	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -559,7 +560,7 @@ func (source *githubReleaseSource) verifyArtifactAttestation(
 	release *verifiedRelease,
 	artifactName string,
 	digest []byte,
-	commit string,
+	releaseCommit string,
 ) error {
 	if len(digest) != sha256.Size || release == nil || len(release.ProvenanceBundles) != 1 {
 		return errors.New("verified provenance material is unavailable")
@@ -568,9 +569,13 @@ func (source *githubReleaseSource) verifyArtifactAttestation(
 	if err != nil {
 		return err
 	}
-	if release.RepositoryID == "" || !commitPattern.MatchString(commit) {
+	if release.RepositoryID == "" || !commitPattern.MatchString(releaseCommit) {
 		return errors.New("official repository identity is unavailable for provenance verification")
 	}
+	// The signed subject is the manifest itself, so its release source commit is
+	// already covered by the artifact digest and is separately bound to the
+	// immutable tag. A trusted manual retry intentionally has a newer workflow
+	// commit, which the Fulcio certificate and SLSA predicate must agree on.
 	digestHex := hex.EncodeToString(digest)
 	for _, sourceRef := range []string{"refs/heads/main", "refs/tags/" + release.Tag} {
 		expectedSAN := "https://github.com/" + officialRepository + "/" +
@@ -593,20 +598,10 @@ func (source *githubReleaseSource) verifyArtifactAttestation(
 				result.Signature.Certificate == nil {
 				continue
 			}
-			certificate := result.Signature.Certificate
-			if certificate.SourceRepositoryURI != "https://github.com/"+officialRepository ||
-				certificate.SourceRepositoryDigest != commit ||
-				certificate.SourceRepositoryRef != sourceRef ||
-				certificate.SourceRepositoryIdentifier != release.RepositoryID ||
-				certificate.SourceRepositoryOwnerURI != "https://github.com/Vizards" ||
-				certificate.SourceRepositoryOwnerIdentifier != strconv.FormatInt(officialRepositoryOwnerID, 10) ||
-				certificate.SourceRepositoryVisibilityAtSigning != "public" ||
-				certificate.BuildConfigURI != expectedSAN ||
-				certificate.BuildConfigDigest != commit ||
-				certificate.BuildSignerURI != expectedSAN ||
-				certificate.BuildSignerDigest != commit ||
-				certificate.RunnerEnvironment != "github-hosted" ||
-				!validReleaseAttestationTrigger(certificate.BuildTrigger, sourceRef) {
+			workflowCommit, ok := officialWorkflowCommit(
+				result.Signature.Certificate, release.RepositoryID, sourceRef, expectedSAN,
+			)
+			if !ok {
 				continue
 			}
 			if result.Statement.GetPredicate() == nil ||
@@ -614,7 +609,7 @@ func (source *githubReleaseSource) verifyArtifactAttestation(
 				result.Statement.GetPredicateType() != "https://slsa.dev/provenance/v1" ||
 				!statementHasExactSubject(result.Statement.GetSubject(), artifactName, digestHex) ||
 				!releaseProvenancePredicateMatches(
-					result.Statement.GetPredicate().AsMap(), release.RepositoryID, commit, sourceRef,
+					result.Statement.GetPredicate().AsMap(), release.RepositoryID, workflowCommit, sourceRef,
 				) {
 				continue
 			}
@@ -622,6 +617,34 @@ func (source *githubReleaseSource) verifyArtifactAttestation(
 		}
 	}
 	return errors.New("no cryptographically valid official provenance attestation matched the artifact")
+}
+
+func officialWorkflowCommit(
+	summary *certificate.Summary,
+	repositoryID string,
+	sourceRef string,
+	expectedSAN string,
+) (string, bool) {
+	if summary == nil {
+		return "", false
+	}
+	workflowCommit := summary.SourceRepositoryDigest
+	if !commitPattern.MatchString(workflowCommit) ||
+		summary.SourceRepositoryURI != "https://github.com/"+officialRepository ||
+		summary.SourceRepositoryRef != sourceRef ||
+		summary.SourceRepositoryIdentifier != repositoryID ||
+		summary.SourceRepositoryOwnerURI != "https://github.com/Vizards" ||
+		summary.SourceRepositoryOwnerIdentifier != strconv.FormatInt(officialRepositoryOwnerID, 10) ||
+		summary.SourceRepositoryVisibilityAtSigning != "public" ||
+		summary.BuildConfigURI != expectedSAN ||
+		summary.BuildConfigDigest != workflowCommit ||
+		summary.BuildSignerURI != expectedSAN ||
+		summary.BuildSignerDigest != workflowCommit ||
+		summary.RunnerEnvironment != "github-hosted" ||
+		!validReleaseAttestationTrigger(summary.BuildTrigger, sourceRef) {
+		return "", false
+	}
+	return workflowCommit, true
 }
 
 func validReleaseAttestationTrigger(trigger, sourceRef string) bool {
