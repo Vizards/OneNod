@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -22,14 +23,34 @@ import (
 )
 
 type memoryReleaseSource struct {
-	release   *verifiedRelease
-	downloads map[string][]byte
+	release          *verifiedRelease
+	downloads        map[string][]byte
+	requested        releaseChannel
+	requestedVersion string
 }
 
-func (source *memoryReleaseSource) Latest(context.Context) (*verifiedRelease, error) {
+func (source *memoryReleaseSource) Latest(_ context.Context, channel releaseChannel) (*verifiedRelease, error) {
 	if source.release == nil {
 		return nil, errors.New("no release")
 	}
+	source.requested = channel
+	source.requestedVersion = ""
+	source.release.SelectedChannel = channel
+	source.release.RequestedVersion = ""
+	return source.release, nil
+}
+
+func (source *memoryReleaseSource) Exact(_ context.Context, version string) (*verifiedRelease, error) {
+	if source.release == nil {
+		return nil, errors.New("no release")
+	}
+	if source.release.Manifest.ReleaseVersion != version {
+		return nil, errors.New("unexpected exact release")
+	}
+	source.requested = releaseChannelForVersion(version)
+	source.requestedVersion = version
+	source.release.SelectedChannel = source.requested
+	source.release.RequestedVersion = version
 	return source.release, nil
 }
 
@@ -62,7 +83,7 @@ func validManifestFixture(version string, artifacts []releaseArtifact) releaseMa
 		}
 	}
 	manifest := releaseManifest{
-		Artifacts: artifacts, Channel: officialReleaseChannel,
+		Artifacts: artifacts, Channel: string(releaseChannelForVersion(version)),
 		ProductLabel: "Public Preview", PublishedAt: "2026-08-01T00:00:00Z", ReleaseVersion: version,
 		SchemaVersion: manifestSchema, Tag: "v" + version,
 	}
@@ -184,6 +205,36 @@ func TestReleaseManifestRequiresOfficialAtomicStableNMinusOneContract(t *testing
 	})
 }
 
+func TestReleaseManifestAcceptsSafePresentationProductLabels(t *testing.T) {
+	for _, fixture := range []struct {
+		version string
+		label   string
+	}{
+		{version: "0.0.2-alpha.1", label: "Alpha"},
+		{version: "0.0.2-beta.1", label: "Beta"},
+		{version: "0.0.2", label: "Future Stable Label"},
+	} {
+		t.Run(fixture.version, func(t *testing.T) {
+			manifest, assets := canonicalManifestFixture(fixture.version)
+			manifest.ProductLabel = fixture.label
+			if err := validateReleaseManifest(manifest, "v"+fixture.version, assets); err != nil {
+				t.Fatalf("valid %s manifest rejected: %v", fixture.version, err)
+			}
+		})
+	}
+
+	manifest, assets := canonicalManifestFixture("0.0.2")
+	for _, label := range []string{
+		"", " leading", "trailing ", "line\nbreak", "nul\x00byte",
+		strings.Repeat("a", 65), string([]byte{0xff}),
+	} {
+		manifest.ProductLabel = label
+		if err := validateReleaseManifest(manifest, "v0.0.2", assets); err == nil {
+			t.Errorf("unsafe product label %q was accepted", label)
+		}
+	}
+}
+
 func TestRunningReleaseConsumerGate(t *testing.T) {
 	manifest := validManifestFixture("0.0.2", nil)
 	commit := manifest.Source.Commit
@@ -249,8 +300,540 @@ func TestGitHubResolverRequiresTrueImmutableReleaseField(t *testing.T) {
 			}))
 			defer server.Close()
 			source := &githubReleaseSource{client: server.Client(), latestURL: server.URL}
-			if _, err := source.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "immutable") {
+			if _, err := source.Latest(context.Background(), releaseChannelStable); err == nil || !strings.Contains(err.Error(), "immutable") {
 				t.Fatalf("mutable or ambiguous release returned %v", err)
+			}
+		})
+	}
+}
+
+func TestProductSemverAndReleaseChannelContract(t *testing.T) {
+	for _, version := range []string{
+		"0.0.1",
+		"0.0.2-alpha.1",
+		"0.0.2-beta.12",
+		"9007199254740991.9007199254740991.9007199254740991",
+		"1.2.3-alpha.9007199254740991",
+	} {
+		if !validProductVersion(version) {
+			t.Errorf("valid product version rejected: %s", version)
+		}
+	}
+	for _, version := range []string{
+		"0.0.2-alpha.0",
+		"0.0.2-alpha",
+		"0.0.2-rc.1",
+		"0.0.2+build",
+		"01.0.2",
+		"0.0.2-Alpha.1",
+		"9007199254740992.0.0",
+		"0.0.2-alpha.9007199254740992",
+	} {
+		if validProductVersion(version) {
+			t.Errorf("invalid product version accepted: %s", version)
+		}
+	}
+
+	ordered := []string{
+		"0.0.2-alpha.1",
+		"0.0.2-alpha.2",
+		"0.0.2-beta.1",
+		"0.0.2",
+		"0.0.3-alpha.1",
+	}
+	for index := 1; index < len(ordered); index++ {
+		if compareProductVersions(ordered[index-1], ordered[index]) >= 0 {
+			t.Errorf("SemVer precedence is not increasing: %s, %s", ordered[index-1], ordered[index])
+		}
+	}
+
+	for _, fixture := range []struct {
+		selected  releaseChannel
+		candidate releaseChannel
+		accepted  bool
+	}{
+		{releaseChannelStable, releaseChannelStable, true},
+		{releaseChannelStable, releaseChannelBeta, false},
+		{releaseChannelStable, releaseChannelAlpha, false},
+		{releaseChannelBeta, releaseChannelStable, true},
+		{releaseChannelBeta, releaseChannelBeta, true},
+		{releaseChannelBeta, releaseChannelAlpha, false},
+		{releaseChannelAlpha, releaseChannelStable, true},
+		{releaseChannelAlpha, releaseChannelBeta, true},
+		{releaseChannelAlpha, releaseChannelAlpha, true},
+	} {
+		if got := releaseChannelAccepts(fixture.selected, fixture.candidate); got != fixture.accepted {
+			t.Errorf("channel %s accepting %s = %v, want %v", fixture.selected, fixture.candidate, got, fixture.accepted)
+		}
+	}
+}
+
+func TestExactReleaseSelectionContract(t *testing.T) {
+	for _, fixture := range []struct {
+		name     string
+		channel  string
+		version  string
+		fallback releaseChannel
+		want     releaseSelection
+	}{
+		{
+			name: "fallback channel", fallback: releaseChannelBeta,
+			want: releaseSelection{Channel: releaseChannelBeta},
+		},
+		{
+			name: "explicit channel", channel: "alpha", fallback: releaseChannelStable,
+			want: releaseSelection{Channel: releaseChannelAlpha},
+		},
+		{
+			name: "exact alpha", version: "0.0.2-alpha.7", fallback: releaseChannelStable,
+			want: releaseSelection{Channel: releaseChannelAlpha, Version: "0.0.2-alpha.7"},
+		},
+		{
+			name: "exact stable", version: "0.0.2", fallback: releaseChannelAlpha,
+			want: releaseSelection{Channel: releaseChannelStable, Version: "0.0.2"},
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			selection, err := releaseSelectionFromFlags(
+				fixture.channel, fixture.version, fixture.fallback,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selection != fixture.want {
+				t.Fatalf("selection = %+v, want %+v", selection, fixture.want)
+			}
+		})
+	}
+
+	for _, fixture := range []struct {
+		name    string
+		channel string
+		version string
+	}{
+		{name: "mutually exclusive", channel: "alpha", version: "0.0.2-alpha.7"},
+		{name: "v prefix", version: "v0.0.2-alpha.7"},
+		{name: "surrounding whitespace", version: " 0.0.2-alpha.7"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			if _, err := releaseSelectionFromFlags(
+				fixture.channel, fixture.version, releaseChannelStable,
+			); err == nil {
+				t.Fatal("invalid release selection was accepted")
+			}
+		})
+	}
+}
+
+func TestInitializerReexecPreservesExactReleaseSelection(t *testing.T) {
+	for _, fixture := range []struct {
+		selection releaseSelection
+		want      []string
+	}{
+		{
+			selection: releaseSelection{Channel: releaseChannelAlpha, Version: "0.0.2-alpha.7"},
+			want:      []string{"--version", "0.0.2-alpha.7"},
+		},
+		{
+			selection: releaseSelection{Channel: releaseChannelBeta},
+			want:      []string{"--channel", "beta"},
+		},
+	} {
+		arguments := releaseSelectionArguments(fixture.selection)
+		if strings.Join(arguments, "\x00") != strings.Join(fixture.want, "\x00") {
+			t.Fatalf("re-exec arguments = %q, want %q", arguments, fixture.want)
+		}
+	}
+}
+
+func TestPrereleaseResolverSelectsHighestAcceptedSemver(t *testing.T) {
+	releases := []githubReleaseMetadata{
+		{Tag: "v0.0.2-beta.2", Immutable: true, Prerelease: true},
+		{Tag: "v0.0.2", Immutable: true},
+		{Tag: "v0.0.3-alpha.1", Immutable: true, Prerelease: true},
+		{Tag: "v0.0.2-beta.12", Immutable: true, Prerelease: true},
+		{Tag: "v9.0.0", Immutable: true, Draft: true},
+	}
+	for _, fixture := range []struct {
+		channel releaseChannel
+		want    string
+	}{
+		{releaseChannelStable, "v0.0.2"},
+		{releaseChannelBeta, "v0.0.2"},
+		{releaseChannelAlpha, "v0.0.3-alpha.1"},
+	} {
+		selected, err := selectLatestReleaseMetadata(releases, fixture.channel)
+		if err != nil {
+			t.Fatalf("select %s: %v", fixture.channel, err)
+		}
+		if selected.Tag != fixture.want {
+			t.Errorf("select %s = %s, want %s", fixture.channel, selected.Tag, fixture.want)
+		}
+	}
+}
+
+func TestPrereleaseResolverSkipsHistoricalGitHubMetadataMismatch(t *testing.T) {
+	selected, err := selectLatestReleaseMetadata([]githubReleaseMetadata{
+		{Tag: "v0.0.2-beta.2", Immutable: true, Prerelease: false},
+		{Tag: "v0.0.2-beta.1", Immutable: true, Prerelease: true},
+	}, releaseChannelBeta)
+	if err != nil || selected.Tag != "v0.0.2-beta.1" {
+		t.Fatalf("valid candidate was not selected after bad historical entry: %+v, %v", selected, err)
+	}
+
+	_, err = selectLatestReleaseMetadata([]githubReleaseMetadata{
+		{Tag: "v0.0.2-beta.2", Immutable: true, Prerelease: false},
+	}, releaseChannelBeta)
+	if err == nil || !strings.Contains(err.Error(), "no published immutable OneNod release") {
+		t.Fatalf("resolver without a compatible candidate returned %v", err)
+	}
+}
+
+func TestExactResolverUsesTagEndpointAndFullManifestValidation(t *testing.T) {
+	const version = "0.0.2-alpha.7"
+	manifest, assets := canonicalManifestFixture(version)
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestedPath := ""
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/releases/tags/v" + version:
+			requestedPath = request.URL.Path
+			metadataAssets := make([]map[string]any, 0, len(assets))
+			for name, asset := range assets {
+				size := asset.Size
+				if name == releaseManifestAssetName {
+					size = int64(len(manifestBytes))
+				}
+				metadataAssets = append(metadataAssets, map[string]any{
+					"name": name,
+					"size": size,
+					"url":  server.URL + "/assets/" + name,
+				})
+			}
+			response.Header().Set("content-type", "application/json")
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"assets": metadataAssets, "draft": false, "immutable": true,
+				"prerelease": true, "tag_name": "v" + version,
+			})
+		case "/assets/" + releaseManifestAssetName:
+			response.Header().Set("content-type", "application/octet-stream")
+			_, _ = response.Write(manifestBytes)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	source := &githubReleaseSource{
+		client: server.Client(), releaseByTagURL: server.URL + "/releases/tags/",
+	}
+	release, err := source.Exact(context.Background(), version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedPath != "/releases/tags/v"+version {
+		t.Fatalf("exact resolver requested %q", requestedPath)
+	}
+	if release.Manifest.ReleaseVersion != version ||
+		release.RequestedVersion != version ||
+		release.SelectedChannel != releaseChannelAlpha {
+		t.Fatalf("unexpected exact release identity: %+v", release)
+	}
+}
+
+func TestExactResolverRejectsDifferentTag(t *testing.T) {
+	const version = "0.0.2-alpha.7"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"assets": []any{}, "draft": false, "immutable": true,
+			"prerelease": true, "tag_name": "v0.0.2-alpha.6",
+		})
+	}))
+	defer server.Close()
+	source := &githubReleaseSource{
+		client: server.Client(), releaseByTagURL: server.URL + "/releases/tags/",
+	}
+	if _, err := source.Exact(context.Background(), version); err == nil {
+		t.Fatal("different exact release tag was accepted")
+	}
+}
+
+func TestOfficialSourceSecurityDoesNotDependOnDiscoveryURL(t *testing.T) {
+	official := &githubReleaseSource{official: true, latestURL: "https://mirror.invalid/latest"}
+	if err := official.validateAddress("http://localhost/release"); err == nil {
+		t.Fatal("official source accepted an untrusted asset address")
+	}
+	custom := &githubReleaseSource{latestURL: officialLatestReleaseAPI}
+	if err := custom.validateAddress("http://localhost/release"); err != nil {
+		t.Fatalf("non-official test source was incorrectly promoted by URL equality: %v", err)
+	}
+}
+
+func TestReceiptChannelBackwardCompatibilityAndRiskBinding(t *testing.T) {
+	channel, err := normalizedReceiptChannel("", "0.0.1")
+	if err != nil || channel != releaseChannelStable {
+		t.Fatalf("legacy receipt channel = %q, err = %v", channel, err)
+	}
+	if _, err := normalizedReceiptChannel("", "0.0.2-beta.1"); err == nil {
+		t.Fatal("legacy stable receipt accepted a prerelease artifact")
+	}
+	channel, err = normalizedReceiptChannel("beta", "0.0.2")
+	if err != nil || channel != releaseChannelBeta {
+		t.Fatalf("beta receipt rejected a stable artifact: %q, %v", channel, err)
+	}
+}
+
+func TestHigherRiskChannelRequiresExplicitApproval(t *testing.T) {
+	var output strings.Builder
+	if err := confirmHigherRiskChannel(
+		strings.NewReader("n\n"), &output,
+		releaseChannelStable, releaseChannelBeta, "Test operation",
+	); err == nil {
+		t.Fatal("higher-risk channel proceeded without approval")
+	}
+	if !strings.Contains(output.String(), "PRERELEASE CHANNEL OPT-IN") {
+		t.Fatal("higher-risk channel warning was not prominent")
+	}
+	if err := confirmHigherRiskChannel(
+		strings.NewReader("y\n"), io.Discard,
+		releaseChannelStable, releaseChannelAlpha, "Test operation",
+	); err != nil {
+		t.Fatalf("explicit higher-risk approval failed: %v", err)
+	}
+	if err := confirmHigherRiskChannel(
+		strings.NewReader(""), io.Discard,
+		releaseChannelAlpha, releaseChannelStable, "Test operation",
+	); err != nil {
+		t.Fatalf("lower-risk selection unnecessarily prompted: %v", err)
+	}
+}
+
+func TestReleaseCommandEntrypointsRejectConflictingSelectors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	deps := dependencies{
+		stdin: strings.NewReader(""), stderr: io.Discard, stdout: io.Discard,
+	}
+	selectorArguments := []string{
+		"--channel", "alpha", "--version", "0.0.2-alpha.7",
+	}
+	for _, fixture := range []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "install",
+			run: func() error {
+				return runBinaryInstall(append([]string{
+					"--origin", "https://gateway.account.workers.dev",
+				}, selectorArguments...), deps)
+			},
+		},
+		{name: "update check", run: func() error {
+			return runUpdateCheck(append(append([]string(nil), selectorArguments...), "--json"), deps)
+		}},
+		{name: "update", run: func() error {
+			return runLocalUpdate(append([]string(nil), selectorArguments...), deps)
+		}},
+		{name: "operator init", run: func() error {
+			return runProductionInitialization(append([]string(nil), selectorArguments...), deps)
+		}},
+		{name: "operator update", run: func() error {
+			return runBinaryOperatorUpdate(append([]string(nil), selectorArguments...), deps)
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			err := fixture.run()
+			if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Fatalf("conflicting selector returned %v", err)
+			}
+		})
+	}
+}
+
+func TestLowerRiskChannelWaitsForNonDowngradingCandidate(t *testing.T) {
+	if !awaitingCompatibleRelease(
+		"0.0.2-beta.1", releaseChannelBeta,
+		"0.0.1", releaseChannelStable,
+	) {
+		t.Fatal("beta to older stable should await a compatible stable release")
+	}
+	for _, fixture := range []struct {
+		currentVersion  string
+		currentChannel  releaseChannel
+		candidate       string
+		selectedChannel releaseChannel
+	}{
+		{"0.0.2-beta.1", releaseChannelBeta, "0.0.2", releaseChannelStable},
+		{"0.0.2-beta.1", releaseChannelBeta, "0.0.1", releaseChannelBeta},
+		{"0.0.2", releaseChannelStable, "0.0.1", releaseChannelBeta},
+	} {
+		if awaitingCompatibleRelease(
+			fixture.currentVersion, fixture.currentChannel,
+			fixture.candidate, fixture.selectedChannel,
+		) {
+			t.Fatalf("true anti-rollback case was classified as awaiting: %+v", fixture)
+		}
+	}
+	var output strings.Builder
+	writeAwaitingCompatibleRelease(
+		&output, "0.0.2-beta.1", releaseChannelBeta,
+		"0.0.1", releaseChannelStable,
+	)
+	if !strings.Contains(output.String(), "awaiting_compatible_release") ||
+		!strings.Contains(output.String(), "no receipt or runtime state was changed") {
+		t.Fatalf("unexpected awaiting-compatible-release message: %s", output.String())
+	}
+}
+
+func TestUpdateCheckAndMutationWaitForCompatibleLowerRiskRelease(t *testing.T) {
+	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
+		t.Skip("OneNod local receipts are supported on macOS hosts")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, userAgentDirectoryName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	currentVersion := "0.0.2-beta.1"
+	localName, err := localArtifactName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperName, err := helperArtifactName("1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	receipt := localInstallReceipt{
+		Artifacts: map[string]string{
+			localName:                         digest,
+			helperName:                        digest,
+			skillArtifactName(currentVersion): digest,
+		},
+		Channel: string(releaseChannelBeta),
+		Files: map[string]string{
+			"bin/may":                         digest,
+			"bin/" + gitSignAdapterBinaryName: digest,
+		},
+		Origin:         "https://gateway.account.workers.dev",
+		ReleaseVersion: currentVersion,
+		SourceCommit:   strings.Repeat("b", 40),
+	}
+	receipt.Helper.Artifact = helperName
+	receipt.Helper.ArtifactSHA = digest
+	receipt.Helper.BinarySHA256 = digest
+	receipt.Helper.Protocol = 1
+	receipt.Helper.SourceDigest = digest
+	receipt.Helper.Version = "1.0.0"
+	receipt.Skill.Artifact = skillArtifactName(currentVersion)
+	receipt.Skill.ArtifactSHA = digest
+	receipt.Skill.Discovery = []string{"~/.agents/skills/onenod", "~/.claude/skills/onenod"}
+	receipt.Skill.TreeSHA256 = digest
+	receipt.Skill.Version = currentVersion
+	receiptPath := filepath.Join(root, "install.json")
+	if err := writeLocalInstallReceipt(receiptPath, receipt); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := validManifestFixture("0.0.1", nil)
+	source := &memoryReleaseSource{}
+	source.release = &verifiedRelease{Manifest: manifest, Source: source}
+	deps := dependencies{
+		releases: source,
+		stderr:   io.Discard,
+		platformProbe: func() (hostPlatform, error) {
+			return hostPlatform{OS: "darwin", Architecture: runtime.GOARCH, Version: "15.0"}, nil
+		},
+	}
+	var checkOutput strings.Builder
+	deps.stdout = &checkOutput
+	if err := runUpdateCheck([]string{"--channel", "stable", "--json"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	var report updateCheckReport
+	if err := json.Unmarshal([]byte(checkOutput.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "awaiting_compatible_release" {
+		t.Fatalf("update status = %q, want awaiting_compatible_release", report.Status)
+	}
+
+	var updateOutput strings.Builder
+	deps.stdout = &updateOutput
+	if err := runLocalUpdate([]string{"--channel", "stable"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updateOutput.String(), "awaiting_compatible_release") {
+		t.Fatalf("mutation command did not explain the wait: %s", updateOutput.String())
+	}
+	after, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("channel switch modified the local receipt while awaiting a non-downgrading stable release")
+	}
+}
+
+func TestRemoteRuntimeVersionCrossChecksDeclaredReleaseChannels(t *testing.T) {
+	base := map[string]any{
+		"release_channel": "beta",
+		"release_version": "0.0.2-beta.1",
+		"components": map[string]any{
+			"executor": map[string]any{"channel": "beta", "version": "0.0.2-beta.1"},
+			"gateway": map[string]any{
+				"accepted_client_protocol": map[string]int{"min": 1, "max": 1},
+				"channel":                  "beta",
+				"protocol":                 1,
+				"version":                  "0.0.2-beta.1",
+			},
+			"pwa": map[string]any{"channel": "beta", "version": "0.0.2-beta.1"},
+		},
+	}
+	for _, fixture := range []struct {
+		name     string
+		mutate   func(map[string]any)
+		complete bool
+	}{
+		{name: "matching declarations", mutate: func(map[string]any) {}, complete: true},
+		{name: "top-level mismatch", mutate: func(value map[string]any) {
+			value["release_channel"] = "stable"
+		}},
+		{name: "component mismatch", mutate: func(value map[string]any) {
+			value["components"].(map[string]any)["pwa"].(map[string]any)["channel"] = "alpha"
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			encoded, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value map[string]any
+			if err := json.Unmarshal(encoded, &value); err != nil {
+				t.Fatal(err)
+			}
+			fixture.mutate(value)
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/api/version" {
+					t.Fatalf("unexpected runtime version path %s", request.URL.Path)
+				}
+				response.Header().Set("content-type", "application/json")
+				_ = json.NewEncoder(response).Encode(value)
+			}))
+			defer server.Close()
+			remote, complete := readRemoteRuntimeVersion(server.URL, server.Client())
+			if complete != fixture.complete {
+				t.Fatalf("complete = %v, want %v; remote = %+v", complete, fixture.complete, remote)
 			}
 		})
 	}
@@ -404,22 +987,81 @@ func TestGitHubArtifactDownloadChecksExactSizeAndDigest(t *testing.T) {
 	}
 }
 
-func TestReleaseArchiveExtractionRejectsTraversalAndSymlinks(t *testing.T) {
-	for _, fixture := range []struct {
-		name     string
-		typeflag byte
-	}{
-		{name: "../may", typeflag: tar.TypeReg},
-		{name: "onenod/bin/may", typeflag: tar.TypeSymlink},
-	} {
-		archive := filepath.Join(t.TempDir(), "unsafe.tar.gz")
-		writeTestArchive(t, archive, fixture.name, fixture.typeflag, []byte("binary"))
-		err := extractReleaseArchive(archive, t.TempDir(), map[string]os.FileMode{
-			"onenod/bin/may": 0o700,
+type archiveExtractorFixture struct {
+	name    string
+	entry   string
+	extract func(string, string) error
+}
+
+func archiveExtractorFixtures() []archiveExtractorFixture {
+	return []archiveExtractorFixture{
+		{
+			name:  "release",
+			entry: "onenod/bin/may",
+			extract: func(archive, destination string) error {
+				return extractReleaseArchive(archive, destination, map[string]os.FileMode{
+					"onenod/bin/may": 0o700,
+				})
+			},
+		},
+		{name: "Skill", entry: "onenod-skill/onenod/SKILL.md", extract: extractSkillArchive},
+		{name: "deployment", entry: "onenod-deployment/gateway/worker.mjs", extract: extractDeploymentBundleArchive},
+	}
+}
+
+func TestArchiveExtractionRejectsTraversal(t *testing.T) {
+	for _, fixture := range archiveExtractorFixtures() {
+		t.Run(fixture.name, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "unsafe.tar.gz")
+			writeTestArchive(t, archive, "../escape", tar.TypeReg, []byte("binary"))
+			if err := fixture.extract(archive, t.TempDir()); err == nil {
+				t.Fatal("archive traversal entry was accepted")
+			}
 		})
-		if err == nil {
-			t.Fatalf("unsafe archive entry %q was accepted", fixture.name)
-		}
+	}
+}
+
+func TestReleaseArchiveExtractionRejectsSymlinkEntry(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "unsafe.tar.gz")
+	writeTestArchive(t, archive, "onenod/bin/may", tar.TypeSymlink, nil)
+	if err := archiveExtractorFixtures()[0].extract(archive, t.TempDir()); err == nil {
+		t.Fatal("archive symlink entry was accepted")
+	}
+}
+
+func TestReleaseArchiveExtractionWritesInsideRoot(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "release.tar.gz")
+	writeTestArchive(t, archive, "onenod/bin/may", tar.TypeReg, []byte("binary"))
+	destination := t.TempDir()
+	if err := archiveExtractorFixtures()[0].extract(archive, destination); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := os.ReadFile(filepath.Join(destination, "onenod", "bin", "may")); err != nil || string(value) != "binary" {
+		t.Fatal("release archive was not extracted inside its root")
+	}
+}
+
+func TestArchiveExtractionRejectsDestinationSymlinkEscape(t *testing.T) {
+	for _, test := range archiveExtractorFixtures() {
+		t.Run(test.name, func(t *testing.T) {
+			destination := t.TempDir()
+			outside := t.TempDir()
+			topLevel, remainder, found := strings.Cut(test.entry, "/")
+			if !found {
+				t.Fatal("test entry must contain a top-level directory")
+			}
+			if err := os.Symlink(outside, filepath.Join(destination, topLevel)); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "unsafe.tar.gz")
+			writeTestArchive(t, archive, test.entry, tar.TypeReg, []byte("outside root"))
+			if err := test.extract(archive, destination); err == nil {
+				t.Fatal("archive extraction followed a destination symlink outside its root")
+			}
+			if _, err := os.Lstat(filepath.Join(outside, filepath.FromSlash(remainder))); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("archive extraction created a file outside its root")
+			}
+		})
 	}
 }
 
@@ -449,8 +1091,60 @@ func TestUpdateCheckJSONIsReadOnlyAndReportsUninstalledState(t *testing.T) {
 	if report.Status != "mixed_installation" || len(report.Plan) != 1 {
 		t.Fatalf("unexpected read-only report %+v", report)
 	}
+	if source.requested != releaseChannelStable {
+		t.Fatalf("default update channel = %q, want stable", source.requested)
+	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), userAgentDirectoryName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("update check mutated local installation state")
+	}
+
+	output.Reset()
+	if err := runUpdateCheck([]string{"--channel", "beta", "--json"}, dependencies{
+		releases: source, stderr: io.Discard, stdout: &output,
+		platformProbe: func() (hostPlatform, error) {
+			return hostPlatform{OS: "darwin", Architecture: "arm64", Version: "15.0"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if source.requested != releaseChannelBeta {
+		t.Fatalf("explicit update channel = %q, want beta", source.requested)
+	}
+}
+
+func TestUpdateCheckSelectsAnExactImmutablePrerelease(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const version = "0.0.2-alpha.7"
+	artifact := releaseArtifact{
+		Name: "onenod-darwin-arm64.tar.gz", Size: 1,
+		SHA256: "sha256:" + strings.Repeat("a", 64),
+	}
+	manifest := validManifestFixture(version, []releaseArtifact{artifact})
+	source := &memoryReleaseSource{}
+	source.release = &verifiedRelease{Manifest: manifest, Source: source}
+	var output strings.Builder
+	err := runUpdateCheck([]string{"--version", version, "--json"}, dependencies{
+		releases: source, stderr: io.Discard, stdout: &output,
+		platformProbe: func() (hostPlatform, error) {
+			return hostPlatform{OS: "darwin", Architecture: "arm64", Version: "15.0"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report updateCheckReport
+	if err := json.Unmarshal([]byte(output.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	if source.requestedVersion != version || source.requested != releaseChannelAlpha {
+		t.Fatalf("resolver request = %q on %q", source.requestedVersion, source.requested)
+	}
+	if report.RequestedVersion != version || report.LatestVersion != version ||
+		report.Channel != string(releaseChannelAlpha) {
+		t.Fatalf("unexpected exact-version report: %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), userAgentDirectoryName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("exact-version update check mutated local installation state")
 	}
 }
 

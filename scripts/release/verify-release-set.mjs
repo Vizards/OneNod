@@ -4,11 +4,33 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { readArtifactArchive, readArtifactIdentity } from "./artifact-tar.mjs";
+import {
+  parseProductVersion,
+  releaseChannelPolicy,
+  releaseMatchesTrain,
+  releaseTrainTarget,
+  validateReleaseChannelContract,
+} from "./release-version.mjs";
 
 const options = parseOptions(process.argv.slice(2));
+const releaseContract = parseRecord(
+  await readFile(resolve(import.meta.dirname, "release-contract.json"), "utf8"),
+  "release contract",
+);
+if (!validateReleaseChannelContract(releaseContract)) {
+  fail("release channel contract is invalid");
+}
+if (
+  releaseTrainTarget(releaseContract) === null ||
+  !releaseMatchesTrain(releaseContract, options.version)
+) {
+  fail("release version differs from the reviewed release train");
+}
+const channelPolicy = releaseChannelPolicy(releaseContract, options.version);
+if (channelPolicy === null) fail("release version has no channel policy");
 const manifestPath = resolve(options.directory, "release-manifest.json");
 const manifest = parseRecord(await readFile(manifestPath, "utf8"), "release manifest");
-validateManifest(manifest, options);
+validateManifest(manifest, options, channelPolicy);
 
 const helperVersion = manifest.components.keychain_helper.version;
 const releaseArchives = [
@@ -195,12 +217,12 @@ process.stdout.write(
   })}\n`,
 );
 
-function validateManifest(value, values) {
+function validateManifest(value, values, policy) {
   if (
     value.schema_version !== 1 ||
     value.release_version !== values.version ||
-    value.channel !== "stable" ||
-    value.product_label !== "Public Preview" ||
+    value.channel !== policy.channel ||
+    value.product_label !== policy.product_label ||
     value.tag !== `v${values.version}` ||
     value.source?.repository !== "Vizards/OneNod" ||
     value.source?.workflow !== ".github/workflows/release.yml" ||
@@ -583,8 +605,8 @@ function parseOptions(args) {
   if (!/^[0-9a-f]{40}$/u.test(values.commit)) {
     fail("source commit must be a full lowercase Git SHA");
   }
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.version)) {
-    fail("release version must be a stable semantic version");
+  if (parseProductVersion(values.version) === null) {
+    fail("release version must be stable SemVer or use the exact alpha.N/beta.N form");
   }
   if (values.directory === "" || !["assembled", "complete"].includes(values.phase)) {
     fail("release directory and verification phase are required");

@@ -238,7 +238,9 @@ function RootLayout() {
     : "Connecting";
   const authenticated = Boolean(humanState.data?.authenticated);
   const releaseMismatch = Boolean(
-    health.data && health.data.version !== PWA_RELEASE_METADATA.releaseVersion,
+    health.data &&
+      (health.data.version !== PWA_RELEASE_METADATA.releaseVersion ||
+        health.data.channel !== PWA_RELEASE_METADATA.releaseChannel),
   );
 
   return (
@@ -304,7 +306,7 @@ function RootLayout() {
               <div
                 className="rounded-pill border border-subtle px-3 py-1.5 text-xs text-secondary"
                 aria-live="polite"
-                title={`Gateway ${health.data?.version ?? "unknown"} · PWA ${PWA_RELEASE_METADATA.releaseVersion} · ${PWA_RELEASE_METADATA.sourceCommit}`}
+                title={`Gateway ${health.data?.version ?? "unknown"} (${health.data?.channel ?? "unknown"}) · PWA ${PWA_RELEASE_METADATA.releaseVersion} (${PWA_RELEASE_METADATA.releaseChannel}) · ${PWA_RELEASE_METADATA.sourceCommit}`}
               >
                 {environment}{authenticated ? " · Signed in" : ""}
               </div>

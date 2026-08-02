@@ -6,6 +6,8 @@ import { gzipSync, gunzipSync } from "node:zlib";
 
 import tar from "tar-stream";
 
+import { parseProductVersion, parseStableVersion } from "./release-version.mjs";
+
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 4_096;
 const MAX_ENTRY_BYTES = 256 * 1024 * 1024;
@@ -140,11 +142,15 @@ export function readArtifactIdentity(files) {
   }
   const helper = kind === "keychain_helper";
   const version = helper ? descriptor.helper_version : descriptor.release_version;
-  if (
-    typeof version !== "string" ||
-    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version)
-  ) {
-    fail("release archive has no stable component version");
+  const parsedVersion = helper
+    ? parseStableVersion(version)
+    : parseProductVersion(version);
+  if (parsedVersion === null) {
+    fail(
+      helper
+        ? "Keychain helper archive has no stable component version"
+        : "release archive has no supported product version",
+    );
   }
   let helperProtocol;
   let helperSourceDigest;

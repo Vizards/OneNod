@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
 import { readArtifactArchive, readArtifactIdentity } from "./artifact-tar.mjs";
+import { parseProductVersion } from "./release-version.mjs";
 
 const options = parseOptions(process.argv.slice(2));
 const archiveName = basename(options.archive);
@@ -268,7 +269,7 @@ function parseOptions(args) {
     values.sbom === "" ||
     values.output === "" ||
     !/^[0-9a-f]{40}$/u.test(values.commit) ||
-    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.version)
+    parseProductVersion(values.version) === null
   ) {
     fail("archive, Syft SBOM, output, version, and source commit are required");
   }

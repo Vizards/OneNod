@@ -2,12 +2,24 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import {
+  compareProductVersions,
+  parseProductVersion,
+  parseStableVersion,
+  releaseChannelPolicy,
+  releaseMatchesTrain,
+  releaseTrainTarget,
+  validateReleaseChannelContract,
+} from "./release-version.mjs";
+
 const options = parseOptions(process.argv.slice(2));
 const contract = parseRecord(
   await readFile(resolve(import.meta.dirname, "release-contract.json"), "utf8"),
   "release contract",
 );
 validateContract(contract, options);
+const channelPolicy = releaseChannelPolicy(contract, options.version);
+if (channelPolicy === null) fail("release version has no channel policy");
 
 const helperVersion = contract.components.keychain_helper.version;
 const releaseArchives = [
@@ -83,8 +95,8 @@ for (const expected of expectedArtifacts) {
 const manifest = {
   schema_version: contract.schema_version,
   release_version: options.version,
-  channel: contract.channel,
-  product_label: contract.product_label,
+  channel: channelPolicy.channel,
+  product_label: channelPolicy.product_label,
   tag: `v${options.version}`,
   published_at: options.publishedAt,
   source: {
@@ -172,8 +184,9 @@ function validateContract(value, values) {
     value.schema_version !== 1 ||
     value.repository !== "Vizards/OneNod" ||
     value.workflow !== ".github/workflows/release.yml" ||
-    value.channel !== "stable" ||
-    value.product_label !== "Public Preview"
+    !validateReleaseChannelContract(value) ||
+    releaseTrainTarget(value) === null ||
+    !releaseMatchesTrain(value, values.version)
   ) {
     fail("release contract identity is invalid");
   }
@@ -183,7 +196,7 @@ function validateContract(value, values) {
     value.upgrade?.minimum_safe_version,
   ];
   for (const componentVersion of componentVersions) {
-    strictVersion(componentVersion, "release contract version");
+    strictStableVersion(componentVersion, "release contract version");
   }
   if (
     typeof value.components?.keychain_helper?.source_digest !== "string" ||
@@ -193,7 +206,9 @@ function validateContract(value, values) {
   ) {
     fail("Keychain helper source digest is invalid");
   }
-  if (compareVersions(value.upgrade.minimum_safe_version, values.version) > 0) {
+  if (
+    compareProductVersions(value.upgrade.minimum_safe_version, values.version) > 0
+  ) {
     fail("minimum safe version cannot exceed the published release");
   }
   if (
@@ -208,8 +223,8 @@ function validateContract(value, values) {
     fail("v0.0.1 must not claim a previous public release");
   }
   if (values.version !== "0.0.1") {
-    strictVersion(values.previousVersion, "previous release version");
-    if (compareVersions(values.previousVersion, values.version) >= 0) {
+    strictProductVersion(values.previousVersion, "previous release version");
+    if (compareProductVersions(values.previousVersion, values.version) >= 0) {
       fail("previous release version must be older than this release");
     }
   }
@@ -260,7 +275,7 @@ function parseOptions(args) {
         fail(`unknown option ${name}`);
     }
   }
-  strictVersion(values.version, "release version");
+  strictProductVersion(values.version, "release version");
   if (!/^[0-9a-f]{40}$/u.test(values.commit)) {
     fail("source commit must be a full lowercase Git SHA");
   }
@@ -275,22 +290,18 @@ function parseOptions(args) {
   return values;
 }
 
-function strictVersion(value, label) {
-  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(value)) {
-    fail(`${label} must be a stable semantic version`);
+function strictProductVersion(value, label) {
+  const parsed = parseProductVersion(value);
+  if (parsed === null) {
+    fail(`${label} must be stable SemVer or use the exact alpha.N/beta.N form`);
   }
-  return value;
+  return parsed.version;
 }
 
-function compareVersions(left, right) {
-  const leftParts = left.split(".").map(Number);
-  const rightParts = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] !== rightParts[index]) {
-      return leftParts[index] - rightParts[index];
-    }
-  }
-  return 0;
+function strictStableVersion(value, label) {
+  const parsed = parseStableVersion(value);
+  if (parsed === null) fail(`${label} must be a stable semantic version`);
+  return parsed.version;
 }
 
 function fail(message) {

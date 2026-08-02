@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,7 @@ var wranglerProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{
 type operatorDeploymentReceipt struct {
 	AccountID                string `json:"account_id"`
 	AccountSubdomain         string `json:"account_subdomain"`
+	Channel                  string `json:"channel"`
 	CloudflareProfile        string `json:"cloudflare_profile"`
 	CloudflareProfileRevoked bool   `json:"cloudflare_profile_revoked"`
 	DeploymentArtifact       string `json:"deployment_artifact"`
@@ -145,7 +147,12 @@ func (value *observedDeploymentError) Error() string {
 	)
 }
 
-func runBinaryFirstProductionDeployment(console *operatorConsole, deps dependencies) (returnErr error) {
+func runBinaryFirstProductionDeployment(
+	console *operatorConsole,
+	deps dependencies,
+	selection releaseSelection,
+) (returnErr error) {
+	channel := selection.Channel
 	var onePasswordInventory onePasswordProvisioningInventory
 	onePasswordCleanupActive := false
 	defer func() {
@@ -159,14 +166,42 @@ func runBinaryFirstProductionDeployment(console *operatorConsole, deps dependenc
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	release, err := releaseSourceFor(deps).Latest(ctx)
+	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
 		return err
 	}
 	if err := requireSupportedReleaseHost(release.Manifest, deps); err != nil {
 		return err
 	}
-	reexecuted, err := ensureCurrentInitializer(ctx, release, deps)
+	currentChannel := releaseChannelStable
+	currentVersion := ""
+	if initializer, found, readErr := readInitializerInstallReceipt(); readErr != nil {
+		return readErr
+	} else if found {
+		currentChannel = releaseChannel(initializer.Channel)
+		currentVersion = initializer.ReleaseVersion
+	}
+	if currentVersion != "" && compareProductVersions(release.Manifest.ReleaseVersion, currentVersion) < 0 {
+		if awaitingCompatibleRelease(
+			currentVersion, currentChannel,
+			release.Manifest.ReleaseVersion, channel,
+		) {
+			writeAwaitingCompatibleRelease(
+				console.stdout, currentVersion, currentChannel,
+				release.Manifest.ReleaseVersion, channel,
+			)
+			return nil
+		}
+		return errors.New("anti_rollback: selected official release is older than the installed initializer")
+	}
+	if os.Getenv(initializerReexecIdentity) == "" {
+		if err := confirmHigherRiskChannel(
+			console.stdin, console.stdout, currentChannel, channel, "Operator initialization",
+		); err != nil {
+			return err
+		}
+	}
+	reexecuted, err := ensureCurrentInitializer(ctx, release, deps, selection)
 	if err != nil {
 		return err
 	}
@@ -282,6 +317,7 @@ func runBinaryFirstProductionDeployment(console *operatorConsole, deps dependenc
 	gatewayVersion = currentGatewayVersion
 	receipt := operatorDeploymentReceipt{
 		AccountID: material.AccountID, AccountSubdomain: material.AccountSubdomain,
+		Channel:           string(selectedReleaseChannel(release)),
 		CloudflareProfile: profile, DeploymentArtifact: bundle.Artifact.Name,
 		DeploymentArtifactSHA: bundle.Artifact.SHA256, ExecutorVersionID: executorVersion,
 		ExecutorWorker: material.ExecutorName, GatewayVersionID: gatewayVersion,
@@ -328,6 +364,7 @@ func ensureCurrentInitializer(
 	ctx context.Context,
 	release *verifiedRelease,
 	deps dependencies,
+	selection releaseSelection,
 ) (bool, error) {
 	expectedIdentity := release.Manifest.ReleaseVersion + "@" + release.Manifest.Source.Commit
 	marker := os.Getenv(initializerReexecIdentity)
@@ -352,7 +389,9 @@ func ensureCurrentInitializer(
 		return false, errors.New("resolve installed initializer path failed")
 	}
 	path := filepath.Join(home, userAgentDirectoryName, "bin", "may")
-	command := exec.CommandContext(ctx, path, "operator", "init")
+	selectionArgs := releaseSelectionArguments(selection)
+	commandArgs := append([]string{"operator", "init"}, selectionArgs...)
+	command := exec.CommandContext(ctx, path, commandArgs...)
 	command.Dir = home
 	command.Env = initializerReexecEnvironment(expectedIdentity)
 	command.Stdin = deps.stdin
@@ -661,6 +700,8 @@ func writeFirstDeploymentPlan(
 ) {
 	fmt.Fprintln(output, "\nOneNod first-deployment plan")
 	fmt.Fprintf(output, "  Verified release: %s (%s)\n", release.Manifest.ReleaseVersion, release.Manifest.Source.Commit)
+	fmt.Fprintf(output, "  Release channel: %s (artifact channel %s)\n",
+		selectedReleaseChannel(release), release.Manifest.Channel)
 	fmt.Fprintf(output, "  Deployment bundle: %s (%s)\n", artifact.Name, artifact.SHA256)
 	fmt.Fprintf(output, "  Temporary Wrangler profile: %s\n", profile)
 	fmt.Fprintf(output, "  Cloudflare account: %s (%s)\n", account.Name, account.ID)
@@ -1307,6 +1348,11 @@ func writeOperatorDeploymentReceipt(receipt operatorDeploymentReceipt) error {
 		return err
 	}
 	receipt.SchemaVersion = operatorReceiptSchema
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return err
+	}
+	receipt.Channel = string(channel)
 	return writeAtomicPrivateJSON(path, receipt)
 }
 
@@ -1320,12 +1366,17 @@ func readOperatorDeploymentReceipt() (*operatorDeploymentReceipt, error) {
 		return nil, err
 	}
 	if receipt.SchemaVersion != operatorReceiptSchema || !cloudflareAccountIDPattern.MatchString(receipt.AccountID) ||
-		!dnsLabelPattern.MatchString(receipt.AccountSubdomain) || !validStableVersion(receipt.ReleaseVersion) ||
+		!dnsLabelPattern.MatchString(receipt.AccountSubdomain) || !validProductVersion(receipt.ReleaseVersion) ||
 		!commitPattern.MatchString(receipt.SourceCommit) || !digestPattern.MatchString(receipt.DeploymentArtifactSHA) ||
 		!uuidPattern.MatchString(receipt.ExecutorVersionID) || !uuidPattern.MatchString(receipt.GatewayVersionID) ||
 		!onePasswordVaultIDPattern.MatchString(receipt.OnePasswordVaultID) {
 		return nil, errors.New("operator deployment receipt is invalid")
 	}
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return nil, errors.New("operator deployment receipt has an invalid release channel")
+	}
+	receipt.Channel = string(channel)
 	if _, err := parseGatewayOrigin(receipt.Origin); err != nil || receipt.RPID != strings.TrimPrefix(receipt.Origin, "https://") {
 		return nil, errors.New("operator deployment receipt has an invalid immutable Origin")
 	}
@@ -1468,8 +1519,18 @@ func runWranglerStreaming(
 }
 
 func runBinaryOperatorUpdate(args []string, deps dependencies) error {
-	if len(args) != 0 {
-		return errors.New("usage: may operator update")
+	flags := flag.NewFlagSet("operator update", flag.ContinueOnError)
+	flags.SetOutput(deps.stderr)
+	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
+	versionValue := flags.String("version", "", "exact immutable release version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateExplicitReleaseSelection(*channelValue, *versionValue); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 	}
 	if err := assertNoCloudflareCredentialEnvironment(); err != nil {
 		return err
@@ -1478,13 +1539,35 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if err != nil {
 		return err
 	}
+	currentChannel := releaseChannel(receipt.Channel)
+	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, currentChannel)
+	if err != nil {
+		return err
+	}
+	channel := selection.Channel
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	release, err := releaseSourceFor(deps).Latest(ctx)
+	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
 		return err
 	}
 	if err := requireSupportedReleaseHost(release.Manifest, deps); err != nil {
+		return err
+	}
+	if compareProductVersions(release.Manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
+		if awaitingCompatibleRelease(
+			receipt.ReleaseVersion, currentChannel,
+			release.Manifest.ReleaseVersion, channel,
+		) {
+			writeAwaitingCompatibleRelease(
+				deps.stdout, receipt.ReleaseVersion, currentChannel,
+				release.Manifest.ReleaseVersion, channel,
+			)
+			return nil
+		}
+		return errors.New("anti_rollback: latest official release is older than the deployed receipt")
+	}
+	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
 		return err
 	}
 	localReceipt, _, err := readLocalInstallReceipt()
@@ -1492,11 +1575,10 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	helperPlan := buildKeychainHelperUpdatePlan(release, localReceipt)
-	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
+	if err := confirmHigherRiskChannel(
+		deps.stdin, deps.stdout, currentChannel, channel, "Operator updates",
+	); err != nil {
 		return err
-	}
-	if compareVersions(release.Manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
-		return errors.New("anti_rollback: latest official release is older than the deployed receipt")
 	}
 	if release.Manifest.ReleaseVersion == receipt.ReleaseVersion {
 		if release.Manifest.Source.Commit != receipt.SourceCommit ||
@@ -1506,6 +1588,13 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		remote, complete := readRemoteRuntimeVersion(receipt.Origin, deps.httpClient)
 		if complete && remote.GatewayVersion == receipt.ReleaseVersion && remote.ExecutorVersion == receipt.ReleaseVersion && remote.PwaVersion == receipt.ReleaseVersion {
 			if localInstallExactlyMatchesRelease(release, receipt.Origin) {
+				if receipt.Channel != string(selectedReleaseChannel(release)) {
+					receipt.Channel = string(selectedReleaseChannel(release))
+					receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+					if err := writeOperatorDeploymentReceipt(*receipt); err != nil {
+						return err
+					}
+				}
 				fmt.Fprintf(deps.stdout, "OneNod remote deployment and this Mac are already on %s.\n", receipt.ReleaseVersion)
 				return nil
 			}
@@ -1522,6 +1611,11 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			}
 			if err := installVerifiedRelease(ctx, release, receipt.Origin, deps, helperPlan.Replace); err != nil {
 				return fmt.Errorf("remote deployment is current but local reconciliation failed: %w", err)
+			}
+			receipt.Channel = string(selectedReleaseChannel(release))
+			receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			if err := writeOperatorDeploymentReceipt(*receipt); err != nil {
+				return err
 			}
 			return nil
 		}
@@ -1599,6 +1693,8 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	fmt.Fprintf(console.stdout, "  Cloudflare account: %s (%s)\n", account.Name, account.ID)
 	fmt.Fprintf(console.stdout, "  Origin / RP ID: %s / %s (unchanged)\n", receipt.Origin, receipt.RPID)
 	fmt.Fprintf(console.stdout, "  Release: %s -> %s\n", receipt.ReleaseVersion, release.Manifest.ReleaseVersion)
+	fmt.Fprintf(console.stdout, "  Channel: %s -> %s (artifact channel %s)\n",
+		currentChannel, channel, release.Manifest.Channel)
 	fmt.Fprintf(console.stdout, "  Executor baseline: %s\n  Gateway baseline: %s\n", executorBefore, gatewayBefore)
 	fmt.Fprintf(console.stdout, "  Bundle: %s (%s)\n", bundle.Artifact.Name, bundle.Artifact.SHA256)
 	fmt.Fprintf(console.stdout, "  Promotion order: %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
@@ -1637,6 +1733,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	receipt.ReleaseVersion = release.Manifest.ReleaseVersion
+	receipt.Channel = string(selectedReleaseChannel(release))
 	receipt.SourceCommit = release.Manifest.Source.Commit
 	receipt.DeploymentArtifact = bundle.Artifact.Name
 	receipt.DeploymentArtifactSHA = bundle.Artifact.SHA256
@@ -1665,6 +1762,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 func localInstallExactlyMatchesRelease(release *verifiedRelease, origin string) bool {
 	receipt, found, err := readLocalInstallReceipt()
 	if err != nil || !found || receipt.Origin != origin ||
+		receipt.Channel != string(selectedReleaseChannel(release)) ||
 		receipt.ReleaseVersion != release.Manifest.ReleaseVersion ||
 		validateReceiptReleaseIdentity(receipt, release.Manifest) != nil ||
 		validateInstalledReceiptState(receipt) != nil {

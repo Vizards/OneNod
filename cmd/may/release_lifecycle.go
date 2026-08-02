@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	in_toto "github.com/in-toto/attestation/go/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
@@ -33,6 +35,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -43,8 +46,9 @@ const (
 	// human-readable owner/name is ever deleted and recreated. Never discover
 	// and trust this value dynamically at runtime.
 	officialRepositoryID      = "1318524698"
-	officialReleaseChannel    = "stable"
 	officialLatestReleaseAPI  = "https://api.github.com/repos/Vizards/OneNod/releases/latest"
+	officialReleasesAPI       = "https://api.github.com/repos/Vizards/OneNod/releases?per_page=100"
+	officialReleaseByTagAPI   = "https://api.github.com/repos/Vizards/OneNod/releases/tags/"
 	releaseManifestAssetName  = "release-manifest.json"
 	provenanceBundleAssetName = "onenod-provenance.intoto.jsonl"
 	localReceiptSchema        = 2
@@ -52,20 +56,38 @@ const (
 	manifestSchema            = 1
 	mayClientProtocol         = 1
 	maxManifestBytes          = 1 << 20
+	maxReleaseListBytes       = 4 << 20
 	maxReleaseArtifactBytes   = 256 << 20
 	maxAttestationBytes       = 32 << 20
 	releaseRequestTimeout     = 30 * time.Second
 	sigstoreTUFRepository     = "https://tuf-repo-cdn.sigstore.dev"
+	maxSafeVersionInteger     = uint64(9_007_199_254_740_991)
 )
 
 var (
-	productVersion = "0.0.0-dev"
-	sourceCommit   = "unknown"
-	releaseTag     = "dev"
-	semverPattern  = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
-	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	commitPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	productVersion       = "0.0.0-dev"
+	sourceCommit         = "unknown"
+	releaseTag           = "dev"
+	semverPattern        = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	productSemverPattern = regexp.MustCompile(
+		`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(alpha|beta)\.([1-9][0-9]*))?$`,
+	)
+	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
+
+type releaseChannel string
+
+const (
+	releaseChannelStable releaseChannel = "stable"
+	releaseChannelBeta   releaseChannel = "beta"
+	releaseChannelAlpha  releaseChannel = "alpha"
+)
+
+type releaseSelection struct {
+	Channel releaseChannel
+	Version string
+}
 
 type versionRange struct {
 	MaximumExclusive string `json:"maximum_exclusive"`
@@ -180,25 +202,32 @@ type verifiedRelease struct {
 	Manifest          releaseManifest
 	ProvenanceBundles []*bundle.Bundle
 	RepositoryID      string
+	RequestedVersion  string
+	SelectedChannel   releaseChannel
 	Tag               string
 	Source            releaseSource
 }
 
 type releaseSource interface {
-	Latest(context.Context) (*verifiedRelease, error)
+	Latest(context.Context, releaseChannel) (*verifiedRelease, error)
+	Exact(context.Context, string) (*verifiedRelease, error)
 	Download(context.Context, *verifiedRelease, releaseArtifact, string) error
 }
 
 type githubReleaseSource struct {
-	client       *http.Client
-	latestURL    string
-	verifierOnce sync.Once
-	verifier     *verify.Verifier
-	verifierErr  error
+	client          *http.Client
+	latestURL       string
+	official        bool
+	releaseByTagURL string
+	releasesURL     string
+	verifierOnce    sync.Once
+	verifier        *verify.Verifier
+	verifierErr     error
 }
 
 type localInstallReceipt struct {
 	Artifacts map[string]string `json:"artifacts"`
+	Channel   string            `json:"channel"`
 	Files     map[string]string `json:"files"`
 	Helper    struct {
 		Artifact     string `json:"artifact"`
@@ -226,6 +255,7 @@ type localInstallReceipt struct {
 type initializerInstallReceipt struct {
 	AdoptedBackups []string          `json:"adopted_backups"`
 	Artifacts      map[string]string `json:"artifacts"`
+	Channel        string            `json:"channel"`
 	Files          map[string]string `json:"files"`
 	HelperProtocol int               `json:"helper_protocol"`
 	HelperVersion  string            `json:"helper_version"`
@@ -238,6 +268,7 @@ type initializerInstallReceipt struct {
 
 type runtimeVersion struct {
 	AcceptedClientProtocol protocolRange `json:"accepted_client_protocol,omitempty"`
+	Channel                string        `json:"channel,omitempty"`
 	ExecutorVersion        string        `json:"executor_version,omitempty"`
 	GatewayProtocol        int           `json:"gateway_protocol,omitempty"`
 	GatewayVersion         string        `json:"gateway_version,omitempty"`
@@ -271,12 +302,14 @@ type stagedDeploymentBundle struct {
 type updateCheckReport struct {
 	Assurance          string         `json:"assurance"`
 	Channel            string         `json:"channel"`
+	CurrentChannel     string         `json:"current_channel,omitempty"`
 	CurrentVersion     string         `json:"current_version,omitempty"`
 	LatestVersion      string         `json:"latest_version"`
 	MinimumSafeVersion string         `json:"minimum_safe_version"`
 	Origin             string         `json:"origin,omitempty"`
 	Platform           hostPlatform   `json:"platform"`
 	Plan               []string       `json:"plan"`
+	RequestedVersion   string         `json:"requested_version,omitempty"`
 	Remote             runtimeVersion `json:"remote"`
 	Status             string         `json:"status"`
 	Warnings           []string       `json:"warnings"`
@@ -290,6 +323,18 @@ type keychainHelperUpdatePlan struct {
 	TargetProtocol      protocolRange
 	TargetSourceDigest  string
 	TargetVersion       string
+}
+
+type githubReleaseMetadata struct {
+	Assets []struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+		URL  string `json:"url"`
+	} `json:"assets"`
+	Draft      bool   `json:"draft"`
+	Immutable  bool   `json:"immutable"`
+	Prerelease bool   `json:"prerelease"`
+	Tag        string `json:"tag_name"`
 }
 
 func defaultReleaseSource(client *http.Client) releaseSource {
@@ -310,7 +355,11 @@ func defaultReleaseSource(client *http.Client) releaseSource {
 		}
 		return nil
 	}
-	return &githubReleaseSource{client: &safe, latestURL: officialLatestReleaseAPI}
+	return &githubReleaseSource{
+		client: &safe, latestURL: officialLatestReleaseAPI,
+		official: true, releaseByTagURL: officialReleaseByTagAPI,
+		releasesURL: officialReleasesAPI,
+	}
 }
 
 func releaseSourceFor(deps dependencies) releaseSource {
@@ -320,37 +369,88 @@ func releaseSourceFor(deps dependencies) releaseSource {
 	return defaultReleaseSource(deps.httpClient)
 }
 
-func (source *githubReleaseSource) Latest(ctx context.Context) (*verifiedRelease, error) {
+func (source *githubReleaseSource) Latest(
+	ctx context.Context,
+	channel releaseChannel,
+) (*verifiedRelease, error) {
 	if source == nil || source.client == nil || source.latestURL == "" {
 		return nil, errors.New("release source is unavailable")
 	}
-	var release struct {
-		Assets []struct {
-			Name string `json:"name"`
-			Size int64  `json:"size"`
-			URL  string `json:"url"`
-		} `json:"assets"`
-		Draft      bool   `json:"draft"`
-		Immutable  bool   `json:"immutable"`
-		Prerelease bool   `json:"prerelease"`
-		Tag        string `json:"tag_name"`
+	if !validReleaseChannel(channel) {
+		return nil, errors.New("release channel is invalid")
 	}
-	if err := source.readJSON(ctx, source.latestURL, maxManifestBytes, "application/vnd.github+json", &release); err != nil {
-		return nil, fmt.Errorf("discover latest OneNod release: %w", err)
+	var release githubReleaseMetadata
+	if channel == releaseChannelStable {
+		if err := source.readJSON(ctx, source.latestURL, maxManifestBytes, "application/vnd.github+json", &release); err != nil {
+			return nil, fmt.Errorf("discover latest stable OneNod release: %w", err)
+		}
+	} else {
+		if source.releasesURL == "" {
+			return nil, errors.New("release source cannot discover prerelease channels")
+		}
+		var releases []githubReleaseMetadata
+		if err := source.readJSON(ctx, source.releasesURL, maxReleaseListBytes, "application/vnd.github+json", &releases); err != nil {
+			return nil, fmt.Errorf("discover OneNod %s channel: %w", channel, err)
+		}
+		var selectErr error
+		release, selectErr = selectLatestReleaseMetadata(releases, channel)
+		if selectErr != nil {
+			return nil, selectErr
+		}
 	}
-	if release.Draft || release.Prerelease || !release.Immutable {
-		return nil, errors.New("latest OneNod release is not a published immutable stable release")
+	return source.verifyReleaseMetadata(ctx, release, channel, "")
+}
+
+func (source *githubReleaseSource) Exact(
+	ctx context.Context,
+	version string,
+) (*verifiedRelease, error) {
+	if source == nil || source.client == nil || source.releaseByTagURL == "" {
+		return nil, errors.New("release source cannot resolve an exact version")
+	}
+	if !validProductVersion(version) {
+		return nil, errors.New("exact release version is invalid")
+	}
+	tag := "v" + version
+	address := strings.TrimRight(source.releaseByTagURL, "/") + "/" + url.PathEscape(tag)
+	var release githubReleaseMetadata
+	if err := source.readJSON(
+		ctx, address, maxManifestBytes, "application/vnd.github+json", &release,
+	); err != nil {
+		return nil, fmt.Errorf("resolve exact OneNod release %s: %w", version, err)
+	}
+	if release.Tag != tag {
+		return nil, errors.New("exact OneNod release endpoint returned a different tag")
+	}
+	return source.verifyReleaseMetadata(
+		ctx, release, releaseChannelForVersion(version), version,
+	)
+}
+
+func (source *githubReleaseSource) verifyReleaseMetadata(
+	ctx context.Context,
+	release githubReleaseMetadata,
+	channel releaseChannel,
+	requestedVersion string,
+) (*verifiedRelease, error) {
+	if release.Draft || !release.Immutable {
+		return nil, errors.New("selected OneNod release is not published and immutable")
 	}
 	if !validReleaseTag(release.Tag) {
-		return nil, errors.New("latest OneNod release has an invalid stable tag")
+		return nil, errors.New("selected OneNod release has an invalid product tag")
+	}
+	actualChannel := releaseChannelForVersion(strings.TrimPrefix(release.Tag, "v"))
+	if release.Prerelease != (actualChannel != releaseChannelStable) ||
+		!releaseChannelAccepts(channel, actualChannel) {
+		return nil, errors.New("selected OneNod release channel metadata is inconsistent")
 	}
 	assets := make(map[string]releaseAsset, len(release.Assets))
 	for _, asset := range release.Assets {
 		if asset.Name == "" || asset.URL == "" || asset.Size <= 0 {
-			return nil, errors.New("latest OneNod release contains invalid asset metadata")
+			return nil, errors.New("selected OneNod release contains invalid asset metadata")
 		}
 		if _, exists := assets[asset.Name]; exists {
-			return nil, errors.New("latest OneNod release contains duplicate asset names")
+			return nil, errors.New("selected OneNod release contains duplicate asset names")
 		}
 		assets[asset.Name] = releaseAsset{Name: asset.Name, Size: asset.Size, APIURL: asset.URL}
 	}
@@ -379,8 +479,14 @@ func (source *githubReleaseSource) Latest(ctx context.Context) (*verifiedRelease
 	if err := validateReleaseManifest(manifest, release.Tag, assets); err != nil {
 		return nil, err
 	}
-	verified := &verifiedRelease{Assets: assets, Manifest: manifest, Tag: release.Tag, Source: source}
-	if source.latestURL == officialLatestReleaseAPI {
+	if releaseChannel(manifest.Channel) != actualChannel {
+		return nil, errors.New("OneNod release manifest channel differs from GitHub release metadata")
+	}
+	verified := &verifiedRelease{
+		Assets: assets, Manifest: manifest, SelectedChannel: channel,
+		RequestedVersion: requestedVersion, Tag: release.Tag, Source: source,
+	}
+	if source.official {
 		if err := requireOfficialRepositoryID(); err != nil {
 			return nil, err
 		}
@@ -392,7 +498,7 @@ func (source *githubReleaseSource) Latest(ctx context.Context) (*verifiedRelease
 			return nil, err
 		}
 	}
-	if source.latestURL == officialLatestReleaseAPI {
+	if source.official {
 		provenanceAsset, ok := assets[provenanceBundleAssetName]
 		if !ok || provenanceAsset.Size <= 0 || provenanceAsset.Size > maxAttestationBytes {
 			return nil, errors.New("immutable OneNod release is missing its bounded provenance bundle")
@@ -416,6 +522,37 @@ func (source *githubReleaseSource) Latest(ctx context.Context) (*verifiedRelease
 		}
 	}
 	return verified, nil
+}
+
+func selectLatestReleaseMetadata(
+	releases []githubReleaseMetadata,
+	channel releaseChannel,
+) (githubReleaseMetadata, error) {
+	if !validReleaseChannel(channel) {
+		return githubReleaseMetadata{}, errors.New("release channel is invalid")
+	}
+	var selected githubReleaseMetadata
+	selectedVersion := ""
+	for _, candidate := range releases {
+		version := strings.TrimPrefix(candidate.Tag, "v")
+		candidateChannel := releaseChannelForVersion(version)
+		if candidate.Draft || !candidate.Immutable || !validProductVersion(version) ||
+			candidate.Prerelease != (candidateChannel != releaseChannelStable) ||
+			!releaseChannelAccepts(channel, candidateChannel) {
+			continue
+		}
+		if selectedVersion == "" || compareProductVersions(version, selectedVersion) > 0 {
+			selected = candidate
+			selectedVersion = version
+		}
+	}
+	if selectedVersion == "" {
+		return githubReleaseMetadata{}, fmt.Errorf(
+			"no published immutable OneNod release is available for the %s channel",
+			channel,
+		)
+	}
+	return selected, nil
 }
 
 func requireOfficialRepositoryID() error {
@@ -807,7 +944,7 @@ func (source *githubReleaseSource) readBytes(
 }
 
 func (source *githubReleaseSource) validateAddress(address string) error {
-	if source.latestURL != officialLatestReleaseAPI {
+	if !source.official {
 		return nil
 	}
 	parsed, err := url.Parse(address)
@@ -877,13 +1014,15 @@ func validateReleaseManifest(
 	tag string,
 	assets map[string]releaseAsset,
 ) error {
-	if manifest.SchemaVersion != manifestSchema || manifest.Channel != officialReleaseChannel ||
-		manifest.ProductLabel != "Public Preview" ||
+	expectedChannel := releaseChannelForVersion(manifest.ReleaseVersion)
+	if manifest.SchemaVersion != manifestSchema || !validReleaseChannel(expectedChannel) ||
+		manifest.Channel != string(expectedChannel) ||
+		!validProductLabel(manifest.ProductLabel) ||
 		manifest.Tag != tag || tag != "v"+manifest.ReleaseVersion ||
-		!validStableVersion(manifest.ReleaseVersion) || manifest.Source.Repository != officialRepository ||
+		!validProductVersion(manifest.ReleaseVersion) || manifest.Source.Repository != officialRepository ||
 		manifest.Source.Workflow != officialReleaseWorkflow ||
 		!commitPattern.MatchString(manifest.Source.Commit) || !manifest.Support.LatestOnly {
-		return errors.New("release manifest does not match the official immutable stable release identity")
+		return errors.New("release manifest does not match the official immutable release identity")
 	}
 	if manifest.Attestations.Issuer != "https://token.actions.githubusercontent.com" ||
 		manifest.Attestations.Repository != officialRepository ||
@@ -916,14 +1055,14 @@ func validateReleaseManifest(
 		return errors.New("release manifest compatibility fields are incomplete")
 	}
 	if !validStableVersion(manifest.Support.MinimumSafeVersion) ||
-		compareVersions(manifest.Support.MinimumSafeVersion, manifest.ReleaseVersion) > 0 ||
+		compareProductVersions(manifest.Support.MinimumSafeVersion, manifest.ReleaseVersion) > 0 ||
 		!validStableVersion(manifest.Upgrade.MinimumUpdaterVersion) ||
-		compareVersions(manifest.Upgrade.MinimumUpdaterVersion, manifest.ReleaseVersion) > 0 {
+		compareProductVersions(manifest.Upgrade.MinimumUpdaterVersion, manifest.ReleaseVersion) > 0 {
 		return errors.New("release manifest update safety versions are invalid")
 	}
 	if manifest.Support.PreviousReleaseVersion != "" &&
-		(!validStableVersion(manifest.Support.PreviousReleaseVersion) ||
-			compareVersions(manifest.Support.PreviousReleaseVersion, manifest.ReleaseVersion) >= 0) {
+		(!validProductVersion(manifest.Support.PreviousReleaseVersion) ||
+			compareProductVersions(manifest.Support.PreviousReleaseVersion, manifest.ReleaseVersion) >= 0) {
 		return errors.New("release manifest previous release compatibility is invalid")
 	}
 	if manifest.ReleaseVersion != "0.0.1" && manifest.Support.PreviousReleaseVersion == "" {
@@ -1052,10 +1191,230 @@ func artifactMatchesContract(artifact releaseArtifact, expected releaseArtifactC
 }
 
 func validReleaseTag(value string) bool {
-	return strings.HasPrefix(value, "v") && validStableVersion(strings.TrimPrefix(value, "v"))
+	return strings.HasPrefix(value, "v") && validProductVersion(strings.TrimPrefix(value, "v"))
 }
 
 func validStableVersion(value string) bool { return semverPattern.MatchString(value) }
+
+func validProductVersion(value string) bool {
+	match := productSemverPattern.FindStringSubmatch(value)
+	if match == nil || !semver.IsValid("v"+value) {
+		return false
+	}
+	for _, component := range []string{match[1], match[2], match[3], match[5]} {
+		if component == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(component, 10, 64)
+		if err != nil || parsed > maxSafeVersionInteger {
+			return false
+		}
+	}
+	return true
+}
+
+func releaseChannelForVersion(value string) releaseChannel {
+	match := productSemverPattern.FindStringSubmatch(value)
+	if match == nil {
+		return ""
+	}
+	switch match[4] {
+	case "alpha":
+		return releaseChannelAlpha
+	case "beta":
+		return releaseChannelBeta
+	default:
+		return releaseChannelStable
+	}
+}
+
+func validProductLabel(value string) bool {
+	if value == "" || len(value) > 64 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if !unicode.IsPrint(character) || unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func parseReleaseChannel(value string) (releaseChannel, error) {
+	channel := releaseChannel(strings.TrimSpace(value))
+	if !validReleaseChannel(channel) {
+		return "", errors.New("release channel must be stable, beta, or alpha")
+	}
+	return channel, nil
+}
+
+func releaseChannelFromFlag(value string, fallback releaseChannel) (releaseChannel, error) {
+	if value == "" {
+		if validReleaseChannel(fallback) {
+			return fallback, nil
+		}
+		return releaseChannelStable, nil
+	}
+	return parseReleaseChannel(value)
+}
+
+func releaseSelectionFromFlags(
+	channelValue string,
+	versionValue string,
+	fallback releaseChannel,
+) (releaseSelection, error) {
+	if err := validateExplicitReleaseSelection(channelValue, versionValue); err != nil {
+		return releaseSelection{}, err
+	}
+	if versionValue != "" {
+		return releaseSelection{
+			Channel: releaseChannelForVersion(versionValue),
+			Version: versionValue,
+		}, nil
+	}
+	channel, err := releaseChannelFromFlag(channelValue, fallback)
+	if err != nil {
+		return releaseSelection{}, err
+	}
+	return releaseSelection{Channel: channel}, nil
+}
+
+func validateExplicitReleaseSelection(channelValue string, versionValue string) error {
+	if channelValue != "" && versionValue != "" {
+		return errors.New(
+			"--channel and --version are mutually exclusive; an exact version determines its release channel",
+		)
+	}
+	if versionValue != "" {
+		if strings.TrimSpace(versionValue) != versionValue || !validProductVersion(versionValue) {
+			return errors.New(
+				"release version must be a canonical X.Y.Z, X.Y.Z-alpha.N, or X.Y.Z-beta.N version without a v prefix",
+			)
+		}
+	}
+	if channelValue != "" {
+		if _, err := parseReleaseChannel(channelValue); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveSelectedRelease(
+	ctx context.Context,
+	source releaseSource,
+	selection releaseSelection,
+) (*verifiedRelease, error) {
+	if selection.Version != "" {
+		return source.Exact(ctx, selection.Version)
+	}
+	return source.Latest(ctx, selection.Channel)
+}
+
+func releaseSelectionArguments(selection releaseSelection) []string {
+	if selection.Version != "" {
+		return []string{"--version", selection.Version}
+	}
+	return []string{"--channel", string(selection.Channel)}
+}
+
+func confirmHigherRiskChannel(
+	input io.Reader,
+	output io.Writer,
+	current releaseChannel,
+	selected releaseChannel,
+	action string,
+) error {
+	if releaseChannelRisk(selected) <= releaseChannelRisk(current) {
+		return nil
+	}
+	fmt.Fprintf(output,
+		"\nPRERELEASE CHANNEL OPT-IN\n  Current channel: %s\n  Requested channel: %s\n  %s will accept %s prereleases and all safer channels.\n",
+		current, selected, action, selected,
+	)
+	confirmed, err := promptYesNo(input, output, "Continue with this higher-risk release channel?", false)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errors.New("higher-risk release channel was not approved; no changes were made")
+	}
+	return nil
+}
+
+func validReleaseChannel(channel releaseChannel) bool {
+	return channel == releaseChannelStable || channel == releaseChannelBeta || channel == releaseChannelAlpha
+}
+
+func releaseChannelRisk(channel releaseChannel) int {
+	switch channel {
+	case releaseChannelStable:
+		return 0
+	case releaseChannelBeta:
+		return 1
+	case releaseChannelAlpha:
+		return 2
+	default:
+		return -1
+	}
+}
+
+func releaseChannelAccepts(selected, candidate releaseChannel) bool {
+	return validReleaseChannel(selected) && validReleaseChannel(candidate) &&
+		releaseChannelRisk(candidate) <= releaseChannelRisk(selected)
+}
+
+func awaitingCompatibleRelease(
+	currentVersion string,
+	currentChannel releaseChannel,
+	candidateVersion string,
+	selectedChannel releaseChannel,
+) bool {
+	return validProductVersion(currentVersion) && validProductVersion(candidateVersion) &&
+		validReleaseChannel(currentChannel) && validReleaseChannel(selectedChannel) &&
+		releaseChannelRisk(selectedChannel) < releaseChannelRisk(currentChannel) &&
+		compareProductVersions(candidateVersion, currentVersion) < 0
+}
+
+func writeAwaitingCompatibleRelease(
+	output io.Writer,
+	currentVersion string,
+	currentChannel releaseChannel,
+	candidateVersion string,
+	selectedChannel releaseChannel,
+) {
+	fmt.Fprintf(output,
+		"OneNod update status: awaiting_compatible_release\n  current: %s (channel %s)\n  latest acceptable %s release: %s\n  no receipt or runtime state was changed; retry after %s publishes a release at or above %s.\n",
+		currentVersion, currentChannel, selectedChannel, candidateVersion,
+		selectedChannel, currentVersion,
+	)
+}
+
+func compareProductVersions(first, second string) int {
+	if !validProductVersion(first) || !validProductVersion(second) {
+		return strings.Compare(first, second)
+	}
+	return semver.Compare("v"+first, "v"+second)
+}
+
+func selectedReleaseChannel(release *verifiedRelease) releaseChannel {
+	if release != nil && validReleaseChannel(release.SelectedChannel) {
+		return release.SelectedChannel
+	}
+	return releaseChannelStable
+}
+
+func normalizedReceiptChannel(value string, version string) (releaseChannel, error) {
+	if value == "" {
+		value = string(releaseChannelStable)
+	}
+	channel, err := parseReleaseChannel(value)
+	if err != nil || !validProductVersion(version) ||
+		!releaseChannelAccepts(channel, releaseChannelForVersion(version)) {
+		return "", errors.New("receipt release channel is invalid")
+	}
+	return channel, nil
+}
 
 func compareVersions(first, second string) int {
 	left := semverPattern.FindStringSubmatch(first)
@@ -1092,20 +1451,20 @@ func protocolContains(accepted protocolRange, version int) bool {
 }
 
 func runningReleaseCanConsume(manifest releaseManifest) (bool, error) {
-	if !validStableVersion(productVersion) || releaseTag != "v"+productVersion ||
+	if !validProductVersion(productVersion) || releaseTag != "v"+productVersion ||
 		!commitPattern.MatchString(sourceCommit) {
 		return false, errors.New("unsupported_running_binary: use an immutable official OneNod Release binary")
 	}
 	if !protocolContains(manifest.Components.KeychainHelper.HelperProtocol, keychainHelperProtocol) {
 		return false, errors.New("unsupported_update_path: the running may Keychain-helper protocol is outside the latest Release contract")
 	}
-	if compareVersions(productVersion, manifest.Upgrade.MinimumUpdaterVersion) < 0 {
+	if compareProductVersions(productVersion, manifest.Upgrade.MinimumUpdaterVersion) < 0 {
 		return false, fmt.Errorf(
 			"unsupported_update_path: running may %s is below minimum_updater_version %s; install a supported official bridge or latest Release binary manually",
 			productVersion, manifest.Upgrade.MinimumUpdaterVersion,
 		)
 	}
-	comparison := compareVersions(productVersion, manifest.ReleaseVersion)
+	comparison := compareProductVersions(productVersion, manifest.ReleaseVersion)
 	if comparison > 0 {
 		return false, fmt.Errorf(
 			"anti_rollback: running may %s is newer than latest official Release %s",
@@ -1203,6 +1562,11 @@ func extractReleaseArchive(
 	}
 	defer compressed.Close()
 	reader := tar.NewReader(compressed)
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return errors.New("open release extraction root failed")
+	}
+	defer root.Close()
 	seen := map[string]struct{}{}
 	var totalBytes int64
 	for {
@@ -1214,7 +1578,11 @@ func extractReleaseArchive(
 			return errors.New("read verified release archive failed")
 		}
 		clean := filepath.ToSlash(filepath.Clean(header.Name))
+		relative := filepath.FromSlash(clean)
 		if clean == "." || strings.HasPrefix(clean, "../") || filepath.IsAbs(header.Name) {
+			return errors.New("verified release archive contains an unsafe path")
+		}
+		if !filepath.IsLocal(relative) {
 			return errors.New("verified release archive contains an unsafe path")
 		}
 		if header.Typeflag == tar.TypeDir {
@@ -1240,11 +1608,10 @@ func extractReleaseArchive(
 			return errors.New("verified release archive contains duplicate files")
 		}
 		seen[clean] = struct{}{}
-		target := filepath.Join(destination, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		if err := root.MkdirAll(filepath.Dir(relative), 0o700); err != nil {
 			return errors.New("create release extraction directory failed")
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+		output, err := root.OpenFile(relative, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 		if err != nil {
 			return errors.New("create extracted release file failed")
 		}
@@ -1275,6 +1642,11 @@ func extractSkillArchive(archivePath, destination string) error {
 	}
 	defer compressed.Close()
 	reader := tar.NewReader(compressed)
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return errors.New("open Skill extraction root failed")
+	}
+	defer root.Close()
 	seen := map[string]struct{}{}
 	var totalBytes int64
 	for {
@@ -1286,7 +1658,11 @@ func extractSkillArchive(archivePath, destination string) error {
 			return errors.New("read verified Skill archive failed")
 		}
 		clean := filepath.ToSlash(filepath.Clean(header.Name))
+		relative := filepath.FromSlash(clean)
 		if clean == "." || strings.HasPrefix(clean, "../") || filepath.IsAbs(header.Name) {
+			return errors.New("verified Skill archive contains an unsafe path")
+		}
+		if !filepath.IsLocal(relative) {
 			return errors.New("verified Skill archive contains an unsafe path")
 		}
 		if header.Typeflag == tar.TypeDir {
@@ -1303,11 +1679,10 @@ func extractSkillArchive(archivePath, destination string) error {
 			return errors.New("verified Skill archive contains duplicate files")
 		}
 		seen[clean] = struct{}{}
-		target := filepath.Join(destination, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		if err := root.MkdirAll(filepath.Dir(relative), 0o700); err != nil {
 			return errors.New("create Skill extraction directory failed")
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		output, err := root.OpenFile(relative, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return errors.New("create extracted Skill file failed")
 		}
@@ -1414,6 +1789,11 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 	}
 	defer compressed.Close()
 	reader := tar.NewReader(compressed)
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return errors.New("open deployment extraction root failed")
+	}
+	defer root.Close()
 	required := map[string]bool{
 		"onenod-deployment/deployment.json":         false,
 		"onenod-deployment/RELEASE.json":            false,
@@ -1435,7 +1815,11 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 			return errors.New("read verified deployment archive failed")
 		}
 		clean := filepath.ToSlash(filepath.Clean(header.Name))
+		relative := filepath.FromSlash(clean)
 		if clean == "." || strings.HasPrefix(clean, "../") || filepath.IsAbs(header.Name) {
+			return errors.New("verified deployment archive contains an unsafe path")
+		}
+		if !filepath.IsLocal(relative) {
 			return errors.New("verified deployment archive contains an unsafe path")
 		}
 		if header.Typeflag == tar.TypeDir {
@@ -1458,11 +1842,10 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 		if exact {
 			required[clean] = true
 		}
-		target := filepath.Join(destination, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		if err := root.MkdirAll(filepath.Dir(relative), 0o700); err != nil {
 			return errors.New("create deployment extraction directory failed")
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		output, err := root.OpenFile(relative, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return errors.New("create deployment extraction file failed")
 		}
@@ -1586,12 +1969,17 @@ func readInitializerInstallReceipt() (*initializerInstallReceipt, bool, error) {
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&receipt) != nil || ensureDecoderEOF(decoder) != nil ||
 		receipt.SchemaVersion != initializerReceiptSchema ||
-		!validStableVersion(receipt.ReleaseVersion) || !commitPattern.MatchString(receipt.SourceCommit) ||
+		!validProductVersion(receipt.ReleaseVersion) || !commitPattern.MatchString(receipt.SourceCommit) ||
 		len(receipt.Artifacts) != 3 || len(receipt.Files) != 3 ||
 		receipt.HelperProtocol <= 0 || receipt.HelperVersion == "" ||
 		!digestPattern.MatchString(receipt.SkillTreeSHA) {
 		return nil, false, errors.New("initializer receipt is invalid")
 	}
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return nil, false, errors.New("initializer receipt has an invalid release channel")
+	}
+	receipt.Channel = string(channel)
 	for _, digest := range receipt.Artifacts {
 		if !digestPattern.MatchString(digest) {
 			return nil, false, errors.New("initializer receipt contains an invalid artifact digest")
@@ -1635,10 +2023,15 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil || receipt.SchemaVersion != localReceiptSchema ||
-		ensureDecoderEOF(decoder) != nil || !validStableVersion(receipt.ReleaseVersion) ||
+		ensureDecoderEOF(decoder) != nil || !validProductVersion(receipt.ReleaseVersion) ||
 		!commitPattern.MatchString(receipt.SourceCommit) {
 		return nil, false, errors.New("local OneNod install receipt is invalid")
 	}
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return nil, false, errors.New("local OneNod install receipt has an invalid release channel")
+	}
+	receipt.Channel = string(channel)
 	if parsed, err := parseGatewayOrigin(receipt.Origin); err != nil || parsed.String() != receipt.Origin {
 		return nil, false, errors.New("local OneNod install receipt Origin is invalid")
 	}
@@ -1686,6 +2079,11 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 
 func writeLocalInstallReceipt(path string, receipt localInstallReceipt) error {
 	receipt.SchemaVersion = localReceiptSchema
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return err
+	}
+	receipt.Channel = string(channel)
 	encoded, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return errors.New("encode local OneNod install receipt failed")
@@ -1721,10 +2119,17 @@ func runVersion(args []string, deps dependencies) error {
 	if flags.NArg() != 0 {
 		return errors.New("usage: may version [--json]")
 	}
+	runtimeChannel := releaseChannelForVersion(productVersion)
+	runtimeChannelText := string(runtimeChannel)
+	if !validReleaseChannel(runtimeChannel) {
+		runtimeChannelText = "development"
+	}
+	selectedChannel := runtimeChannelText
 	value := map[string]any{
-		"channel": officialReleaseChannel, "client_protocol": mayClientProtocol,
-		"release_tag": releaseTag, "repository": officialRepository,
-		"source_commit": sourceCommit, "supported_release": validStableVersion(productVersion),
+		"channel": selectedChannel, "release_channel": runtimeChannelText,
+		"client_protocol": mayClientProtocol,
+		"release_tag":     releaseTag, "repository": officialRepository,
+		"source_commit": sourceCommit, "supported_release": validProductVersion(productVersion),
 		"version": productVersion,
 	}
 	receipt, found, err := readLocalInstallReceipt()
@@ -1732,6 +2137,8 @@ func runVersion(args []string, deps dependencies) error {
 		return err
 	}
 	if found {
+		selectedChannel = receipt.Channel
+		value["channel"] = selectedChannel
 		value["installed_release"] = receipt.ReleaseVersion
 		value["origin"] = receipt.Origin
 		value["components"] = map[string]any{
@@ -1745,6 +2152,8 @@ func runVersion(args []string, deps dependencies) error {
 	} else if initializer, initializerFound, initializerErr := readInitializerInstallReceipt(); initializerErr != nil {
 		return initializerErr
 	} else if initializerFound {
+		selectedChannel = initializer.Channel
+		value["channel"] = selectedChannel
 		value["initializer_install"] = map[string]any{
 			"release_version": initializer.ReleaseVersion,
 			"source_commit":   initializer.SourceCommit,
@@ -1772,8 +2181,9 @@ func runVersion(args []string, deps dependencies) error {
 		return writeIndentedValue(deps.stdout, value)
 	}
 	fmt.Fprintf(deps.stdout, "may %s\n", productVersion)
+	fmt.Fprintf(deps.stdout, "channel %s (release %s)\n", selectedChannel, runtimeChannelText)
 	fmt.Fprintf(deps.stdout, "repository %s\n", officialRepository)
-	if !validStableVersion(productVersion) {
+	if !validProductVersion(productVersion) {
 		fmt.Fprintln(deps.stdout, "support unsupported development build (main is not a release channel)")
 	}
 	return nil
@@ -1921,28 +2331,40 @@ func readBoundedRegularFile(path string, limit int64) ([]byte, error) {
 }
 
 func runUpdate(args []string, deps dependencies) error {
-	if len(args) == 0 {
-		return runLocalUpdate(nil, deps)
-	}
-	if args[0] == "check" {
+	if len(args) > 0 && args[0] == "check" {
 		return runUpdateCheck(args[1:], deps)
 	}
-	return errors.New("usage: may update [check [--json]]")
+	return runLocalUpdate(args, deps)
 }
 
 func runUpdateCheck(args []string, deps dependencies) error {
 	flags := flag.NewFlagSet("update check", flag.ContinueOnError)
 	flags.SetOutput(deps.stderr)
+	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
+	versionValue := flags.String("version", "", "exact immutable release version")
 	jsonOutput := flags.Bool("json", false, "emit machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if err := validateExplicitReleaseSelection(*channelValue, *versionValue); err != nil {
+		return err
+	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: may update check [--json]")
+		return errors.New("usage: may update check [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--json]")
+	}
+	fallback := releaseChannelStable
+	if receipt, found, err := readLocalInstallReceipt(); err != nil {
+		return err
+	} else if found {
+		fallback = releaseChannel(receipt.Channel)
+	}
+	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, fallback)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), releaseRequestTimeout)
 	defer cancel()
-	release, err := releaseSourceFor(deps).Latest(ctx)
+	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
 		return err
 	}
@@ -1961,9 +2383,10 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 	manifest := release.Manifest
 	report := updateCheckReport{
 		Assurance: "verified_release_and_runtime_self_report",
-		Channel:   officialReleaseChannel, LatestVersion: manifest.ReleaseVersion,
+		Channel:   string(selectedReleaseChannel(release)), LatestVersion: manifest.ReleaseVersion,
 		MinimumSafeVersion: manifest.Support.MinimumSafeVersion,
-		Plan:               []string{}, Warnings: []string{},
+		Plan:               []string{}, RequestedVersion: release.RequestedVersion,
+		Warnings: []string{},
 	}
 	platform, platformErr := currentHostPlatform(deps)
 	report.Platform = platform
@@ -1986,8 +2409,20 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 		return report, nil
 	}
 	report.CurrentVersion = receipt.ReleaseVersion
+	report.CurrentChannel = receipt.Channel
 	report.Origin = receipt.Origin
-	if compareVersions(manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
+	if compareProductVersions(manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
+		if awaitingCompatibleRelease(
+			receipt.ReleaseVersion, releaseChannel(receipt.Channel),
+			manifest.ReleaseVersion, selectedReleaseChannel(release),
+		) {
+			report.Status = "awaiting_compatible_release"
+			report.Plan = append(report.Plan, fmt.Sprintf(
+				"wait for the %s channel to publish version %s or newer; do not change local or remote state",
+				report.Channel, receipt.ReleaseVersion,
+			))
+			return report, nil
+		}
 		return report, fmt.Errorf(
 			"anti_rollback: latest official release %s is older than installed release %s",
 			manifest.ReleaseVersion, receipt.ReleaseVersion,
@@ -2014,11 +2449,11 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 			}
 		}
 	}
-	if compareVersions(receipt.ReleaseVersion, manifest.Support.MinimumSafeVersion) < 0 {
+	if compareProductVersions(receipt.ReleaseVersion, manifest.Support.MinimumSafeVersion) < 0 {
 		report.Warnings = append(report.Warnings, "installed release is below minimum_safe_version")
 	}
-	if compareVersions(productVersion, manifest.Upgrade.MinimumUpdaterVersion) < 0 &&
-		validStableVersion(productVersion) {
+	if compareProductVersions(productVersion, manifest.Upgrade.MinimumUpdaterVersion) < 0 &&
+		validProductVersion(productVersion) {
 		report.Status = "unsupported_update_path"
 		report.Plan = append(report.Plan, "install a supported bridge updater before continuing")
 		return report, nil
@@ -2050,7 +2485,8 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 		report.Plan = append(report.Plan, "deploy a compatible Gateway before updating local clients")
 		return report, nil
 	}
-	localCurrent := receipt.ReleaseVersion == manifest.ReleaseVersion
+	localCurrent := receipt.ReleaseVersion == manifest.ReleaseVersion &&
+		receipt.Channel == string(selectedReleaseChannel(release))
 	remoteCurrent := remote.GatewayVersion == manifest.ReleaseVersion &&
 		remote.ExecutorVersion == manifest.ReleaseVersion && remote.PwaVersion == manifest.ReleaseVersion
 	if localCurrent && remoteCurrent {
@@ -2059,7 +2495,8 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 	}
 	if report.Status == "" || report.Status == "check_incomplete" {
 		if !localCurrent {
-			report.Plan = append(report.Plan, "update this Mac to "+manifest.ReleaseVersion)
+			report.Plan = append(report.Plan,
+				"update this Mac to "+manifest.ReleaseVersion+" on the "+report.Channel+" channel")
 		}
 		if complete && !remoteCurrent {
 			report.Plan = append(report.Plan, "run may operator update from the operator Mac")
@@ -2138,6 +2575,10 @@ func validateReceiptReleaseIdentity(receipt *localInstallReceipt, manifest relea
 	if receipt == nil || receipt.SourceCommit != manifest.Source.Commit {
 		return errors.New("installed source commit differs from the signed release manifest")
 	}
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil || !releaseChannelAccepts(channel, releaseChannel(manifest.Channel)) {
+		return errors.New("installed release channel does not accept the signed release manifest")
+	}
 	if len(receipt.Artifacts) == 0 {
 		return errors.New("installed receipt contains no artifact digests")
 	}
@@ -2157,28 +2598,38 @@ func readRemoteRuntimeVersion(origin string, client *http.Client) (runtimeVersio
 	var response struct {
 		Components struct {
 			Executor struct {
+				Channel string `json:"channel"`
 				Version string `json:"version"`
 			} `json:"executor"`
 			Gateway struct {
 				AcceptedClientProtocol protocolRange `json:"accepted_client_protocol"`
+				Channel                string        `json:"channel"`
 				Protocol               int           `json:"protocol"`
 				Version                string        `json:"version"`
 			} `json:"gateway"`
 			PWA struct {
+				Channel string `json:"channel"`
 				Version string `json:"version"`
 			} `json:"pwa"`
 		} `json:"components"`
+		ReleaseChannel string `json:"release_channel"`
 		ReleaseVersion string `json:"release_version"`
 	}
 	if err := readPublicGatewayJSON(safePublicHTTPClient(client), origin, "/api/version", &response); err == nil {
+		expectedChannel := releaseChannelForVersion(response.ReleaseVersion)
 		remote := runtimeVersion{
 			AcceptedClientProtocol: response.Components.Gateway.AcceptedClientProtocol,
+			Channel:                response.ReleaseChannel,
 			ExecutorVersion:        response.Components.Executor.Version,
 			GatewayProtocol:        response.Components.Gateway.Protocol,
 			GatewayVersion:         response.Components.Gateway.Version,
 			PwaVersion:             response.Components.PWA.Version,
 		}
-		return remote, validStableVersion(response.ReleaseVersion) &&
+		return remote, validProductVersion(response.ReleaseVersion) && validReleaseChannel(expectedChannel) &&
+			releaseChannel(response.ReleaseChannel) == expectedChannel &&
+			releaseChannel(response.Components.Gateway.Channel) == expectedChannel &&
+			releaseChannel(response.Components.Executor.Channel) == expectedChannel &&
+			releaseChannel(response.Components.PWA.Channel) == expectedChannel &&
 			remote.GatewayVersion == response.ReleaseVersion &&
 			remote.ExecutorVersion == response.ReleaseVersion &&
 			remote.PwaVersion == response.ReleaseVersion
@@ -2190,11 +2641,15 @@ func writeHumanUpdateReport(output io.Writer, report updateCheckReport) {
 	fmt.Fprintf(output, "OneNod update status: %s\n", report.Status)
 	fmt.Fprintf(output, "  channel: %s (official repository %s)\n", report.Channel, officialRepository)
 	if report.CurrentVersion != "" {
-		fmt.Fprintf(output, "  this Mac: %s\n", report.CurrentVersion)
+		fmt.Fprintf(output, "  this Mac: %s (channel %s)\n", report.CurrentVersion, report.CurrentChannel)
 	} else {
 		fmt.Fprintln(output, "  this Mac: not installed from a verified release")
 	}
-	fmt.Fprintf(output, "  latest: %s\n", report.LatestVersion)
+	if report.RequestedVersion != "" {
+		fmt.Fprintf(output, "  selected: %s (exact immutable release)\n", report.LatestVersion)
+	} else {
+		fmt.Fprintf(output, "  latest: %s\n", report.LatestVersion)
+	}
 	fmt.Fprintf(output, "  minimum safe: %s\n", report.MinimumSafeVersion)
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(output, "  warning: %s\n", warning)
@@ -2205,8 +2660,18 @@ func writeHumanUpdateReport(output io.Writer, report updateCheckReport) {
 }
 
 func runLocalUpdate(args []string, deps dependencies) error {
-	if len(args) != 0 {
-		return errors.New("usage: may update")
+	flags := flag.NewFlagSet("update", flag.ContinueOnError)
+	flags.SetOutput(deps.stderr)
+	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
+	versionValue := flags.String("version", "", "exact immutable release version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateExplicitReleaseSelection(*channelValue, *versionValue); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 	}
 	receipt, found, err := readLocalInstallReceipt()
 	if err != nil {
@@ -2215,26 +2680,47 @@ func runLocalUpdate(args []string, deps dependencies) error {
 	if !found {
 		return errors.New("OneNod is not installed; run may install --origin https://<worker>.<account>.workers.dev")
 	}
+	currentChannel := releaseChannel(receipt.Channel)
+	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, currentChannel)
+	if err != nil {
+		return err
+	}
+	channel := selection.Channel
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	release, err := releaseSourceFor(deps).Latest(ctx)
+	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
 		return err
 	}
 	if err := requireSupportedReleaseHost(release.Manifest, deps); err != nil {
 		return err
 	}
-	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
-		return err
-	}
-	if compareVersions(release.Manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
+	if compareProductVersions(release.Manifest.ReleaseVersion, receipt.ReleaseVersion) < 0 {
+		if awaitingCompatibleRelease(
+			receipt.ReleaseVersion, currentChannel,
+			release.Manifest.ReleaseVersion, channel,
+		) {
+			writeAwaitingCompatibleRelease(
+				deps.stdout, receipt.ReleaseVersion, currentChannel,
+				release.Manifest.ReleaseVersion, channel,
+			)
+			return nil
+		}
 		return fmt.Errorf("anti_rollback: latest official release %s is older than installed release %s",
 			release.Manifest.ReleaseVersion, receipt.ReleaseVersion)
+	}
+	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
+		return err
 	}
 	if receipt.ReleaseVersion == release.Manifest.ReleaseVersion {
 		if err := validateReceiptReleaseIdentity(receipt, release.Manifest); err != nil {
 			return fmt.Errorf("same_version_identity_mismatch: %w", err)
 		}
+	}
+	if err := confirmHigherRiskChannel(
+		deps.stdin, deps.stdout, currentChannel, channel, "Local updates",
+	); err != nil {
+		return err
 	}
 	helperPlan := buildKeychainHelperUpdatePlan(release, receipt)
 	includeHelper := helperPlan.Replace
@@ -2299,32 +2785,74 @@ func writeKeychainHelperUpdatePlan(output io.Writer, plan keychainHelperUpdatePl
 func runBinaryInstall(args []string, deps dependencies) error {
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(deps.stderr)
+	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
+	versionValue := flags.String("version", "", "exact immutable release version")
 	origin := flags.String("origin", "", "public workers.dev Gateway origin")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if err := validateExplicitReleaseSelection(*channelValue, *versionValue); err != nil {
+		return err
+	}
 	if flags.NArg() != 0 || *origin == "" {
-		return errors.New("usage: may install --origin https://<worker>.<account>.workers.dev")
+		return errors.New("usage: may install --origin https://<worker>.<account>.workers.dev [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 	}
 	parsed, err := parseGatewayOrigin(*origin)
 	if err != nil || !workersDevHostPattern.MatchString(parsed.Host) {
 		return errors.New("install Origin must be a normalized workers.dev HTTPS origin")
 	}
-	if existing, found, err := readLocalInstallReceipt(); err != nil {
+	existing, found, err := readLocalInstallReceipt()
+	if err != nil {
 		return err
-	} else if found && existing.Origin != *origin {
+	}
+	if found && existing.Origin != *origin {
 		return fmt.Errorf("existing OneNod installation targets %s; refusing to switch to %s", existing.Origin, *origin)
 	}
+	currentChannel := releaseChannelStable
+	currentVersion := ""
+	if found {
+		currentChannel = releaseChannel(existing.Channel)
+		currentVersion = existing.ReleaseVersion
+	} else if initializer, initializerFound, initializerErr := readInitializerInstallReceipt(); initializerErr != nil {
+		return initializerErr
+	} else if initializerFound {
+		currentChannel = releaseChannel(initializer.Channel)
+		currentVersion = initializer.ReleaseVersion
+	}
+	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, currentChannel)
+	if err != nil {
+		return err
+	}
+	channel := selection.Channel
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	release, err := releaseSourceFor(deps).Latest(ctx)
+	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
 		return err
 	}
 	if err := requireSupportedReleaseHost(release.Manifest, deps); err != nil {
 		return err
 	}
+	if currentVersion != "" && compareProductVersions(release.Manifest.ReleaseVersion, currentVersion) < 0 {
+		if awaitingCompatibleRelease(
+			currentVersion, currentChannel,
+			release.Manifest.ReleaseVersion, channel,
+		) {
+			writeAwaitingCompatibleRelease(
+				deps.stdout, currentVersion, currentChannel,
+				release.Manifest.ReleaseVersion, channel,
+			)
+			return nil
+		}
+		return fmt.Errorf("anti_rollback: selected official release %s is older than installed release %s",
+			release.Manifest.ReleaseVersion, currentVersion)
+	}
 	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
+		return err
+	}
+	if err := confirmHigherRiskChannel(
+		deps.stdin, deps.stdout, currentChannel, channel, "Local installation",
+	); err != nil {
 		return err
 	}
 	return installVerifiedRelease(ctx, release, *origin, deps, true)
@@ -2637,7 +3165,7 @@ func activateVerifiedInitializer(
 			skillArtifact.Name:  skillArtifact.SHA256,
 			helperArtifact.Name: helperArtifact.SHA256,
 		},
-		Files: map[string]string{}, HelperProtocol: helper.Protocol,
+		Channel: string(selectedReleaseChannel(release)), Files: map[string]string{}, HelperProtocol: helper.Protocol,
 		HelperVersion: helper.Version, InstalledAt: time.Now().UTC().Format(time.RFC3339),
 		ReleaseVersion: release.Manifest.ReleaseVersion, SchemaVersion: initializerReceiptSchema,
 		SkillTreeSHA: skillDigest, SourceCommit: release.Manifest.Source.Commit,
@@ -2826,6 +3354,7 @@ func activateVerifiedLocalRelease(
 			localArtifact.Name: localArtifact.SHA256,
 			skillArtifact.Name: skillArtifact.SHA256,
 		},
+		Channel:     string(selectedReleaseChannel(release)),
 		Files:       map[string]string{},
 		InstalledAt: time.Now().UTC().Format(time.RFC3339), Origin: origin,
 		ReleaseVersion: release.Manifest.ReleaseVersion, SourceCommit: release.Manifest.Source.Commit,

@@ -105,6 +105,7 @@ export default {
 function executorVersion(): {
   accepted_gateway_protocol: { max: number; min: number };
   ok: true;
+  release_channel: typeof EXECUTOR_RELEASE.channel;
   release_tag: string;
   release_version: string;
   service: "onenod-executor";
@@ -117,6 +118,7 @@ function executorVersion(): {
       min: ACCEPTED_GATEWAY_PROTOCOL_MIN,
     },
     ok: true,
+    release_channel: EXECUTOR_RELEASE.channel,
     release_tag: EXECUTOR_RELEASE.tag,
     release_version: EXECUTOR_RELEASE.version,
     service: "onenod-executor",

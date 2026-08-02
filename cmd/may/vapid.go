@@ -23,13 +23,13 @@ func runDev(args []string, deps dependencies) error {
 }
 
 func runOperator(args []string, deps dependencies) error {
-	if len(args) == 1 && args[0] == "init" {
+	if len(args) >= 1 && args[0] == "init" {
 		return runProductionInitialization(args[1:], deps)
 	}
-	if len(args) == 1 && args[0] == "update" {
+	if len(args) >= 1 && args[0] == "update" {
 		return runBinaryOperatorUpdate(args[1:], deps)
 	}
-	return errors.New("usage: may operator init | may operator update")
+	return errors.New("usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 }
 
 func newVapidCredential() (vapidCredential, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -82,8 +83,28 @@ type operatorConsole struct {
 }
 
 func runProductionInitialization(args []string, deps dependencies) error {
-	if len(args) != 0 {
-		return errors.New("usage: may operator init")
+	flags := flag.NewFlagSet("operator init", flag.ContinueOnError)
+	flags.SetOutput(deps.stderr)
+	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
+	versionValue := flags.String("version", "", "exact immutable release version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateExplicitReleaseSelection(*channelValue, *versionValue); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
+	}
+	fallback := releaseChannelStable
+	if receipt, found, err := readInitializerInstallReceipt(); err != nil {
+		return err
+	} else if found {
+		fallback = releaseChannel(receipt.Channel)
+	}
+	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, fallback)
+	if err != nil {
+		return err
 	}
 	console := operatorConsole{
 		input:  bufio.NewReader(deps.stdin),
@@ -91,7 +112,7 @@ func runProductionInitialization(args []string, deps dependencies) error {
 		stderr: deps.stderr,
 		stdout: deps.stdout,
 	}
-	return runBinaryFirstProductionDeployment(&console, deps)
+	return runBinaryFirstProductionDeployment(&console, deps, selection)
 }
 
 func newProductionInitializationMaterial(

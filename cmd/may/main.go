@@ -840,10 +840,10 @@ func writeIndentedValue(output io.Writer, value any) error {
 const usageText = `may — requester for the OneNod approval gateway
 
 Usage:
-  may install --origin https://<worker>.<account>.workers.dev
+  may install --origin https://<worker>.<account>.workers.dev [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
   may version [--json]
-  may update check [--json]
-  may update
+  may update check [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--json]
+  may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
   may configure ssh <status|apply|restore>
   may configure git-signing status
   may configure git-signing apply --signing-key <key-or-path>
@@ -859,11 +859,11 @@ Usage:
   may [--origin URL] ssh public-key export --item <id> --output <path.pub>
   may [--origin URL] agent <serve|status|refresh>
   may dev verify-release --directory <dist/release> [--artifact <basename>]...
-  may operator init
-  may operator update
+  may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
+  may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
 
 The install and update commands consume manifest- and provenance-verified artifacts from the
-latest immutable stable GitHub Release in Vizards/OneNod. They never inspect a
+selected immutable GitHub Release channel in Vizards/OneNod; stable is the default. They never inspect a
 source checkout or update external tools such as Wrangler or 1Password CLI.
 For requester commands, the default origin is read from ONENOD_ORIGIN or the
 strict per-user ~/.onenod/env, in that order.

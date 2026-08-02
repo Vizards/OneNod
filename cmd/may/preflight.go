@@ -16,6 +16,7 @@ const requesterPreflightTimeout = 15 * time.Second
 
 type requesterPreflightReport struct {
 	Assurance string `json:"assurance"`
+	Channel   string `json:"channel"`
 	Executor  struct {
 		Declared bool   `json:"declared"`
 		Runtime  string `json:"runtime"`
@@ -69,19 +70,23 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 
 	var version struct {
 		OK             bool   `json:"ok"`
+		ReleaseChannel string `json:"release_channel"`
 		ReleaseVersion string `json:"release_version"`
 		Service        string `json:"service"`
 		SourceCommit   string `json:"source_commit"`
 		Components     struct {
 			Executor struct {
 				Declared bool   `json:"declared"`
+				Channel  string `json:"channel"`
 				Version  string `json:"version"`
 			} `json:"executor"`
 			Gateway struct {
 				AcceptedClientProtocol protocolRange `json:"accepted_client_protocol"`
+				Channel                string        `json:"channel"`
 				Version                string        `json:"version"`
 			} `json:"gateway"`
 			PWA struct {
+				Channel string `json:"channel"`
 				Version string `json:"version"`
 			} `json:"pwa"`
 		} `json:"components"`
@@ -89,8 +94,13 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 	if err := readPublicGatewayJSON(client, origin, "/api/version", &version); err != nil {
 		return fmt.Errorf("Gateway static version preflight failed: %w", err)
 	}
+	expectedChannel := releaseChannelForVersion(version.ReleaseVersion)
 	if !version.OK || version.Service != "onenod-gateway" ||
-		!validStableVersion(version.ReleaseVersion) || !commitPattern.MatchString(version.SourceCommit) ||
+		!validProductVersion(version.ReleaseVersion) || !commitPattern.MatchString(version.SourceCommit) ||
+		!validReleaseChannel(expectedChannel) || releaseChannel(version.ReleaseChannel) != expectedChannel ||
+		releaseChannel(version.Components.Gateway.Channel) != expectedChannel ||
+		releaseChannel(version.Components.Executor.Channel) != expectedChannel ||
+		releaseChannel(version.Components.PWA.Channel) != expectedChannel ||
 		version.Components.Gateway.Version != version.ReleaseVersion ||
 		version.Components.Executor.Version != version.ReleaseVersion ||
 		version.Components.PWA.Version != version.ReleaseVersion ||
@@ -101,6 +111,7 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 
 	report := requesterPreflightReport{
 		Assurance:     "anonymous_runtime_self_report; deep readiness is proven by enrollment or an approved operation",
+		Channel:       version.ReleaseChannel,
 		GatewayCrypto: "not_checked_anonymously",
 		HumanIdentity: "not_checked_anonymously",
 		Origin:        origin,

@@ -9,6 +9,21 @@ is the bootstrap location for a separately distributed copy of this Skill.
 After obtaining the first `may` binary, let the binary own artifact
 verification, installation, and update mechanics.
 
+Stable is the default release channel. A human who is deliberately testing a
+candidate may select `beta` or `alpha` through the CLI's `--channel` option.
+That selection is a risk ceiling: `beta` may consume beta or stable Releases,
+while `alpha` may consume alpha, beta, or stable Releases. Moving to a higher
+risk channel requires an explicit default-no confirmation and is persisted in
+the applicable local or operator receipt. Do not infer prerelease consent from
+the fact that the task is a test.
+
+A stable binary released before channel support cannot discover the first
+candidate. In that one bootstrap case, obtain `may` from the exact GitHub
+prerelease selected by the human, then pass its canonical version with
+`--version X.Y.Z-alpha.N` to setup. Exact version selection and `--channel` are
+mutually exclusive. Once installed, the receipt carries the inferred channel
+and normal update discovery applies.
+
 ## First Gateway deployment
 
 Start with the verified Release binary and `may operator init`. The CLI owns

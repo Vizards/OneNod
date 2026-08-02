@@ -2,11 +2,19 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import {
+  compareProductVersions,
+  parseStableVersion,
+  releaseTrainTarget,
+  validateReleaseChannelContract,
+} from "./release-version.mjs";
+
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const manifest = await readJSON(".release-please-manifest.json");
 const config = await readJSON("release-please-config.json");
 const contract = await readJSON("scripts/release/release-contract.json");
 const expectedVersion = strictVersion(manifest["."], "release-please manifest");
+const releaseTrainTargetVersion = releaseTrainTarget(contract);
 const versionedPackages = [
   "package.json",
   "apps/gateway/package.json",
@@ -44,7 +52,9 @@ if (
   config.packages?.["."]?.["initial-version"] !== "0.0.1" ||
   contract.repository !== "Vizards/OneNod" ||
   contract.workflow !== ".github/workflows/release.yml" ||
-  contract.channel !== "stable"
+  releaseTrainTargetVersion === null ||
+  compareProductVersions(releaseTrainTargetVersion, expectedVersion) < 0 ||
+  !validateReleaseChannelContract(contract)
 ) {
   fail("canonical release identity is inconsistent");
 }
@@ -67,20 +77,52 @@ for (const jobName of [
     fail(`release job ${jobName} does not install the frozen Node dependency set`);
   }
 }
+const prepareJob = workflowJob(releaseWorkflow, "prepare");
+if (
+  !prepareJob.includes("name: Check out the reviewed release controller") ||
+  !prepareJob.includes("branches-where-head") ||
+  !prepareJob.includes("--source-sha \"$SOURCE_SHA_INPUT\"") ||
+  !prepareJob.includes("github.ref == 'refs/heads/main'") ||
+  !prepareJob.includes("Require a GitHub-verified source commit signature") ||
+  !prepareJob.includes("GITHUB_STEP_SUMMARY") ||
+  prepareJob.includes("contents: write") ||
+  prepareJob.includes("Create or verify the exact lightweight tag")
+) {
+  fail(
+    "prepare job must produce a read-only, signed-source plan through the reviewed main controller",
+  );
+}
+const authorizeJob = workflowJob(releaseWorkflow, "authorize");
+if (
+  !authorizeJob.includes("needs: prepare") ||
+  !authorizeJob.includes("github.ref == 'refs/heads/main'") ||
+  !authorizeJob.includes("name: ${{ github.event_name == 'workflow_dispatch'") ||
+  !authorizeJob.includes("contents: write") ||
+  !authorizeJob.includes("Create or verify the exact lightweight tag")
+) {
+  fail("authorize job must gate and bind the exact reviewed release plan");
+}
+for (const jobName of ["local-artifacts", "deployment-artifacts"]) {
+  if (!workflowJob(releaseWorkflow, jobName).includes("- authorize")) {
+    fail(`release build job ${jobName} must wait for release authorization`);
+  }
+}
 const publishJob = workflowJob(releaseWorkflow, "publish");
 if (
-  !publishJob.includes("name: Check out the exact release tag") ||
-  !publishJob.includes("ref: refs/tags/${{ needs.prepare.outputs.tag }}") ||
   !publishJob.includes("name: Check out the reviewed release controller") ||
   !publishJob.includes("ref: ${{ github.sha }}") ||
-  !publishJob.includes("path: .release-controller") ||
+  !publishJob.includes("- authorize") ||
+  !publishJob.includes("needs.authorize.result == 'success'") ||
+  !publishJob.includes("github.ref == 'refs/heads/main'") ||
   !publishJob.includes('run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"') ||
+  publishJob.includes("refs/tags/${{ needs.prepare.outputs.tag }}") ||
+  publishJob.includes(".release-controller") ||
   (publishJob.match(
-    /node \.release-controller\/scripts\/release\/verify-github-release\.mjs/gu,
+    /node scripts\/release\/verify-github-release\.mjs/gu,
   )?.length ?? 0) !== 2
 ) {
   fail(
-    "publish job must keep release assets on the immutable tag and use the reviewed main controller for remote verification",
+    "publish job must execute only the reviewed main controller while handling candidate artifacts",
   );
 }
 const helperSourceDigest = await digestHelperSources();
@@ -147,6 +189,7 @@ process.stdout.write(
   `${JSON.stringify({
     event: "release_source_contract_verified",
     packages: versionedPackages.length,
+    release_train_target: releaseTrainTargetVersion,
     version: expectedVersion,
   })}\n`,
 );
@@ -192,7 +235,7 @@ function workflowJob(workflow, name) {
 }
 
 function strictVersion(value, label) {
-  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(value)) {
+  if (parseStableVersion(value) === null) {
     fail(`${label} must be a stable semantic version`);
   }
   return value;
