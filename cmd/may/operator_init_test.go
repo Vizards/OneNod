@@ -142,6 +142,48 @@ func TestCloudflareSubdomainPrecheckRejectsRedirectBeforeCredentialCanMoveHosts(
 	}
 }
 
+func TestWranglerProfileInspectionUsesNamedOAuthTokenInsteadOfWhoami(t *testing.T) {
+	directory := t.TempDir()
+	logPath := filepath.Join(directory, "calls")
+	wrangler := writeWranglerFixture(t, `
+printf '%s\n' "$*" >> "`+logPath+`"
+if [ "$1 $2" = "auth token" ] && [ "$3 $4" = "--profile onenod-operator-test" ]; then
+  printf '%s\n' '{"type":"oauth","token":"profile-oauth-token"}'
+  exit 0
+fi
+exit 9
+`)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Scheme != "https" || request.URL.Hostname() != "api.cloudflare.com" ||
+			request.URL.Path != "/client/v4/accounts" ||
+			request.URL.Query().Get("page") != "1" ||
+			request.URL.Query().Get("per_page") != "50" ||
+			request.Header.Get("Authorization") != "Bearer profile-oauth-token" {
+			t.Fatal("unexpected Cloudflare accounts request")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"success":true,"result":[{"id":"` + testCloudflareAccountID + `","name":"Dedicated"}]}`,
+			)),
+			Header: make(http.Header),
+		}, nil
+	})
+	identity, err := inspectWranglerIdentity(wrangler, "onenod-operator-test", transport)
+	if err != nil || identity.AuthType != "OAuth Token" || len(identity.Accounts) != 1 ||
+		identity.Accounts[0].ID != testCloudflareAccountID {
+		t.Fatalf("named Wrangler profile inspection failed: %+v, %v", identity, err)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "whoami") ||
+		!strings.Contains(string(calls), "auth token --profile onenod-operator-test --json") {
+		t.Fatalf("unexpected Wrangler identity commands: %s", calls)
+	}
+}
+
 func TestSecureCloudflareClientRejectsUnexpectedHostBeforeTransport(t *testing.T) {
 	calls := 0
 	client := secureCloudflareAPIClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -286,6 +328,7 @@ func TestExplicitWranglerProfileRetentionSkipsDeletion(t *testing.T) {
 		"/does/not/exist",
 		"onenod-operator-test",
 		strings.Repeat("a", 32),
+		nil,
 		&console,
 	)
 	if err != nil || revoked {

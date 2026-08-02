@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,17 +151,31 @@ func TestOtherWranglerProfileForDedicatedAccountFailsClosed(t *testing.T) {
 if [ "$1 $2" = "auth list" ]; then
   printf '%s\n' '│ Profile │ Bound Directories │'
   printf '%s\n' '│ default │ - │'
-  printf '%s\n' '│ onenod-operator-test │ /tmp/project │'
-  exit 0
+	printf '%s\n' '│ onenod-operator-test │ /tmp/project │'
+	exit 0
 fi
-if [ "$1" = "whoami" ] && [ "$3" = "default" ]; then
-  printf '%s\n' '{"loggedIn":true,"accounts":[{"id":"0123456789abcdef0123456789abcdef","name":"Dedicated"}]}'
-  exit 0
+if [ "$1 $2" = "auth token" ] && [ "$3 $4" = "--profile default" ]; then
+	printf '%s\n' '{"type":"oauth","token":"default-token"}'
+	exit 0
 fi
 exit 2
 `)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Authorization") != "Bearer default-token" ||
+			request.URL.Path != "/client/v4/accounts" {
+			t.Fatal("unexpected Cloudflare account request")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"success":true,"result":[{"id":"0123456789abcdef0123456789abcdef","name":"Dedicated"}]}`,
+			)),
+			Header: make(http.Header),
+		}, nil
+	})
 	err := assertNoOtherWranglerProfileAccess(
 		wrangler, "onenod-operator-test", "0123456789abcdef0123456789abcdef", true,
+		transport,
 	)
 	if err == nil || !strings.Contains(err.Error(), "default") {
 		t.Fatalf("same-account profile did not block the ceremony: %v", err)

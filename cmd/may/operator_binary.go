@@ -15,17 +15,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
 const (
-	operatorReceiptSchema     = 1
-	operatorTransactionSchema = 1
-	operatorCommandTimeout    = 5 * time.Minute
-	initializerReexecIdentity = "ONENOD_INIT_REEXEC_IDENTITY"
+	cloudflareAccountPageSize    = 50
+	maxCloudflareAccountPages    = 100
+	maxCloudflareAccountResponse = 256 * 1024
+	operatorReceiptSchema        = 1
+	operatorTransactionSchema    = 1
+	operatorCommandTimeout       = 5 * time.Minute
+	initializerReexecIdentity    = "ONENOD_INIT_REEXEC_IDENTITY"
 )
 
 var workerVersionIDPattern = regexp.MustCompile(`(?i)Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
@@ -75,9 +77,8 @@ type operatorUpdateTransaction struct {
 }
 
 type activeWranglerAccount struct {
-	ID          string
-	Name        string
-	Permissions []string
+	ID   string
+	Name string
 }
 
 type humanRecoveryVault struct {
@@ -107,9 +108,8 @@ type onePasswordProvisioningInventory struct {
 const independentCloudflareAccountWarning = "IMPORTANT: deploy OneNod to a dedicated Cloudflare account, not the account used by your primary or everyday Wrangler workflow."
 
 type wranglerIdentity struct {
-	AuthType    string
-	Permissions []string
-	Accounts    []activeWranglerAccount
+	AuthType string
+	Accounts []activeWranglerAccount
 }
 
 type operatorTools struct {
@@ -233,7 +233,9 @@ func runBinaryFirstProductionDeployment(
 			}
 		}
 	}()
-	identity, err := inspectWranglerIdentity(tools.Wrangler, profile)
+	identity, err := inspectWranglerIdentity(
+		tools.Wrangler, profile, deps.cloudflareTransport,
+	)
 	if err != nil {
 		return err
 	}
@@ -241,7 +243,9 @@ func runBinaryFirstProductionDeployment(
 	if err != nil {
 		return err
 	}
-	if err := assertNoOtherWranglerProfileAccess(tools.Wrangler, profile, account.ID, true); err != nil {
+	if err := assertNoOtherWranglerProfileAccess(
+		tools.Wrangler, profile, account.ID, true, deps.cloudflareTransport,
+	); err != nil {
 		return err
 	}
 	token, err := readNamedWranglerOAuthToken(tools.Wrangler, profile)
@@ -337,7 +341,9 @@ func runBinaryFirstProductionDeployment(
 	if installNow {
 		localInstallErr = installVerifiedRelease(ctx, release, material.Origin, deps, true)
 	}
-	profileRevoked, err = promptAndRevokeWranglerProfile(tools.Wrangler, profile, account.ID, console)
+	profileRevoked, err = promptAndRevokeWranglerProfile(
+		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console,
+	)
 	profileRetainedByHuman = err == nil && !profileRevoked
 	receipt.CloudflareProfileRevoked = profileRevoked
 	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -538,6 +544,7 @@ func checkBinaryOperatorTools(manifest releaseManifest, requireOnePassword bool)
 	}
 	wrangler, err := checkExternalTool("wrangler", manifest.Requirements.Wrangler, [][]string{
 		{"auth", "create", "--help"}, {"auth", "delete", "--help"}, {"auth", "list", "--help"},
+		{"auth", "token", "--help"},
 		{"versions", "upload", "--help"}, {"versions", "deploy", "--help"},
 		{"deployments", "status", "--help"}, {"secret", "put", "--help"},
 		{"triggers", "deploy", "--help"},
@@ -570,37 +577,19 @@ func createTemporaryWranglerProfile(wrangler string, console *operatorConsole) (
 	return profile, nil
 }
 
-func inspectWranglerIdentity(wrangler, profile string) (wranglerIdentity, error) {
-	output, err := runOperatorCapture(wrangler, []string{"whoami", "--profile", profile, "--json"}, "", nil, operatorCommandTimeout)
-	defer zeroBytes(output)
+func inspectWranglerIdentity(
+	wrangler string,
+	profile string,
+	base http.RoundTripper,
+) (wranglerIdentity, error) {
+	accounts, err := inspectWranglerProfileAccounts(wrangler, profile, base)
 	if err != nil {
 		return wranglerIdentity{}, errors.New("Wrangler named profile is not OAuth-authenticated")
 	}
-	var raw struct {
-		LoggedIn         bool     `json:"loggedIn"`
-		AuthType         string   `json:"authType"`
-		TokenPermissions []string `json:"tokenPermissions"`
-		Accounts         []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"accounts"`
+	if len(accounts) == 0 {
+		return wranglerIdentity{}, errors.New("Wrangler OAuth cannot access any Cloudflare account")
 	}
-	if json.Unmarshal(output, &raw) != nil || !raw.LoggedIn || raw.AuthType != "OAuth Token" || len(raw.Accounts) == 0 {
-		return wranglerIdentity{}, errors.New("Wrangler must use an OAuth named profile with at least one account")
-	}
-	for _, required := range []string{"account:read", "workers_scripts:write"} {
-		if !slices.Contains(raw.TokenPermissions, required) {
-			return wranglerIdentity{}, fmt.Errorf("Wrangler OAuth is missing required permission %s", required)
-		}
-	}
-	identity := wranglerIdentity{AuthType: raw.AuthType, Permissions: append([]string(nil), raw.TokenPermissions...)}
-	for _, rawAccount := range raw.Accounts {
-		if !cloudflareAccountIDPattern.MatchString(rawAccount.ID) || strings.TrimSpace(rawAccount.Name) == "" {
-			return wranglerIdentity{}, errors.New("Wrangler returned an invalid Cloudflare account")
-		}
-		identity.Accounts = append(identity.Accounts, activeWranglerAccount{ID: rawAccount.ID, Name: rawAccount.Name, Permissions: identity.Permissions})
-	}
-	return identity, nil
+	return wranglerIdentity{AuthType: "OAuth Token", Accounts: accounts}, nil
 }
 
 func selectWranglerAccount(identity wranglerIdentity, console *operatorConsole) (activeWranglerAccount, error) {
@@ -626,7 +615,7 @@ func readNamedWranglerOAuthToken(wrangler, profile string) ([]byte, error) {
 	output, err := runOperatorCapture(wrangler, []string{"auth", "token", "--profile", profile, "--json"}, "", nil, operatorCommandTimeout)
 	defer zeroBytes(output)
 	if err != nil {
-		return nil, errors.New("Wrangler OAuth token cannot be loaded for account subdomain discovery")
+		return nil, errors.New("Wrangler OAuth credential cannot be loaded from the named profile")
 	}
 	var credential struct {
 		Type  string `json:"type"`
@@ -1177,7 +1166,13 @@ func completeBootstrapCeremony(
 	}
 }
 
-func promptAndRevokeWranglerProfile(wrangler, profile, accountID string, console *operatorConsole) (bool, error) {
+func promptAndRevokeWranglerProfile(
+	wrangler string,
+	profile string,
+	accountID string,
+	base http.RoundTripper,
+	console *operatorConsole,
+) (bool, error) {
 	revoke, err := console.confirmDefaultYes("Revoke this Mac's Cloudflare deployment authority now?")
 	if err != nil {
 		return false, err
@@ -1194,13 +1189,21 @@ func promptAndRevokeWranglerProfile(wrangler, profile, accountID string, console
 	if err == nil {
 		return false, errors.New("Wrangler profile still yields an OAuth token after deletion")
 	}
-	if err := assertNoOtherWranglerProfileAccess(wrangler, profile, accountID, false); err != nil {
+	if err := assertNoOtherWranglerProfileAccess(
+		wrangler, profile, accountID, false, base,
+	); err != nil {
 		return false, fmt.Errorf("temporary profile was deleted, but current-Mac Cloudflare revocation could not be proven: %w", err)
 	}
 	return true, nil
 }
 
-func assertNoOtherWranglerProfileAccess(wrangler, temporaryProfile, accountID string, requireTemporaryProfile bool) error {
+func assertNoOtherWranglerProfileAccess(
+	wrangler string,
+	temporaryProfile string,
+	accountID string,
+	requireTemporaryProfile bool,
+	base http.RoundTripper,
+) error {
 	profiles, err := listWranglerProfiles(wrangler)
 	if err != nil {
 		return err
@@ -1212,7 +1215,7 @@ func assertNoOtherWranglerProfileAccess(wrangler, temporaryProfile, accountID st
 			temporaryMatches++
 			continue
 		}
-		accounts, err := inspectWranglerProfileAccounts(wrangler, profile)
+		accounts, err := inspectWranglerProfileAccounts(wrangler, profile, base)
 		if err != nil {
 			return fmt.Errorf("cannot safely inspect Wrangler profile %q; clean it up manually and retry", profile)
 		}
@@ -1287,38 +1290,17 @@ func parseWranglerProfiles(output []byte) ([]string, error) {
 	return profiles, nil
 }
 
-func inspectWranglerProfileAccounts(wrangler, profile string) ([]activeWranglerAccount, error) {
-	output, err := runOperatorCapture(wrangler, []string{"whoami", "--profile", profile, "--json"}, "", nil, operatorCommandTimeout)
-	defer zeroBytes(output)
+func inspectWranglerProfileAccounts(
+	wrangler string,
+	profile string,
+	base http.RoundTripper,
+) ([]activeWranglerAccount, error) {
+	token, err := readNamedWranglerOAuthToken(wrangler, profile)
 	if err != nil {
 		return nil, err
 	}
-	var raw struct {
-		LoggedIn bool `json:"loggedIn"`
-		Accounts []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"accounts"`
-	}
-	if json.Unmarshal(output, &raw) != nil {
-		return nil, errors.New("Wrangler profile returned invalid identity JSON")
-	}
-	if !raw.LoggedIn {
-		return []activeWranglerAccount{}, nil
-	}
-	accounts := make([]activeWranglerAccount, 0, len(raw.Accounts))
-	seen := map[string]struct{}{}
-	for _, account := range raw.Accounts {
-		if !cloudflareAccountIDPattern.MatchString(account.ID) || strings.TrimSpace(account.Name) == "" {
-			return nil, errors.New("Wrangler profile returned an invalid Cloudflare account")
-		}
-		if _, duplicate := seen[account.ID]; duplicate {
-			return nil, errors.New("Wrangler profile returned duplicate Cloudflare accounts")
-		}
-		seen[account.ID] = struct{}{}
-		accounts = append(accounts, activeWranglerAccount{ID: account.ID, Name: account.Name})
-	}
-	return accounts, nil
+	defer zeroBytes(token)
+	return fetchCloudflareAccounts(base, token)
 }
 
 func bestEffortDeleteWranglerProfile(wrangler, profile string) bool {
@@ -1646,7 +1628,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			}
 		}
 	}()
-	identity, err := inspectWranglerIdentity(tools.Wrangler, profile)
+	identity, err := inspectWranglerIdentity(
+		tools.Wrangler, profile, deps.cloudflareTransport,
+	)
 	if err != nil {
 		return err
 	}
@@ -1654,7 +1638,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if !found {
 		return errors.New("temporary Wrangler profile does not expose the receipt's dedicated Cloudflare account")
 	}
-	if err := assertNoOtherWranglerProfileAccess(tools.Wrangler, profile, account.ID, true); err != nil {
+	if err := assertNoOtherWranglerProfileAccess(
+		tools.Wrangler, profile, account.ID, true, deps.cloudflareTransport,
+	); err != nil {
 		return err
 	}
 	token, err := readNamedWranglerOAuthToken(tools.Wrangler, profile)
@@ -1721,7 +1707,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	transaction.Phase = "remote_verified"
 	transaction.Outcome = "remote_complete"
 	_ = writeAtomicPrivateJSON(transactionPath, transaction)
-	profileRevoked, err = promptAndRevokeWranglerProfile(tools.Wrangler, profile, account.ID, console)
+	profileRevoked, err = promptAndRevokeWranglerProfile(
+		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console,
+	)
 	profileRetainedByHuman = err == nil && !profileRevoked
 	transaction.ProfileRevoked = profileRevoked
 	if !profileRevoked {
@@ -1972,6 +1960,74 @@ func agentServiceAccountCreateArguments(account, name, agentVaultID string) []st
 		"--vault", agentVaultID + ":read_items,write_items",
 		"--raw", "--account", account,
 	}
+}
+
+func fetchCloudflareAccounts(
+	base http.RoundTripper,
+	oauthToken []byte,
+) ([]activeWranglerAccount, error) {
+	if len(oauthToken) == 0 {
+		return nil, errors.New("Wrangler OAuth token is empty")
+	}
+	client := secureCloudflareAPIClient(base)
+	seen := map[string]struct{}{}
+	var accounts []activeWranglerAccount
+	for page := 1; page <= maxCloudflareAccountPages; page++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		address := fmt.Sprintf(
+			"https://api.cloudflare.com/client/v4/accounts?page=%d&per_page=%d",
+			page, cloudflareAccountPageSize,
+		)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+		if err != nil {
+			cancel()
+			return nil, errors.New("build Cloudflare accounts request failed")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(oauthToken))
+		response, err := client.Do(request)
+		if err != nil {
+			cancel()
+			return nil, errors.New("list Cloudflare accounts for Wrangler profile failed")
+		}
+		encoded, readErr := io.ReadAll(io.LimitReader(
+			response.Body, maxCloudflareAccountResponse+1,
+		))
+		closeErr := response.Body.Close()
+		cancel()
+		if readErr != nil || closeErr != nil || len(encoded) > maxCloudflareAccountResponse {
+			zeroBytes(encoded)
+			return nil, errors.New("read Cloudflare accounts response failed")
+		}
+		var envelope struct {
+			Success bool `json:"success"`
+			Result  []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"result"`
+		}
+		if response.StatusCode != http.StatusOK || json.Unmarshal(encoded, &envelope) != nil || !envelope.Success {
+			zeroBytes(encoded)
+			return nil, errors.New("Wrangler OAuth cannot list Cloudflare accounts")
+		}
+		zeroBytes(encoded)
+		for _, account := range envelope.Result {
+			if !cloudflareAccountIDPattern.MatchString(account.ID) ||
+				strings.TrimSpace(account.Name) == "" {
+				return nil, errors.New("Cloudflare returned an invalid account")
+			}
+			if _, duplicate := seen[account.ID]; duplicate {
+				return nil, errors.New("Cloudflare returned a duplicate account")
+			}
+			seen[account.ID] = struct{}{}
+			accounts = append(accounts, activeWranglerAccount{
+				ID: account.ID, Name: account.Name,
+			})
+		}
+		if len(envelope.Result) < cloudflareAccountPageSize {
+			return accounts, nil
+		}
+	}
+	return nil, errors.New("Cloudflare account discovery exceeded its page limit")
 }
 
 func fetchCloudflareAccountSubdomain(base http.RoundTripper, accountID string, oauthToken []byte) (string, error) {
