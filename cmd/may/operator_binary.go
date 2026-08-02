@@ -998,13 +998,8 @@ func deployFirstReleaseBundle(
 	_ = ctx
 	executorConfig := bundleExecutorConfig(bundle)
 	gatewayConfig := bundleGatewayConfig(bundle)
-	executorVersion, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
-		material.ExecutorName, "OneNod "+release.Manifest.ReleaseVersion+" executor scaffold", console)
-	if err != nil {
-		return "", "", err
-	}
-	if err := deployWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
-		material.ExecutorName, executorVersion, "OneNod executor scaffold", console); err != nil {
+	if _, err := deployPrivateWorkerScaffold(wrangler, profile, executorConfig,
+		material.ExecutorName, "OneNod "+release.Manifest.ReleaseVersion+" executor scaffold", console); err != nil {
 		return "", "", err
 	}
 	for _, secret := range []struct{ name, value string }{
@@ -1015,7 +1010,7 @@ func deployFirstReleaseBundle(
 			return "", "", err
 		}
 	}
-	executorVersion, err = uploadWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
+	executorVersion, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
 		material.ExecutorName, "OneNod "+release.Manifest.ReleaseVersion+" executor", console)
 	if err != nil {
 		return "", "", err
@@ -1033,13 +1028,8 @@ func deployFirstReleaseBundle(
 		return "", "", err
 	}
 
-	gatewayVersion, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
-		material.GatewayName, "OneNod "+release.Manifest.ReleaseVersion+" gateway scaffold", console)
-	if err != nil {
-		return "", "", err
-	}
-	if err := deployWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
-		material.GatewayName, gatewayVersion, "OneNod gateway scaffold", console); err != nil {
+	if _, err := deployPrivateWorkerScaffold(wrangler, profile, gatewayConfig,
+		material.GatewayName, "OneNod "+release.Manifest.ReleaseVersion+" gateway scaffold", console); err != nil {
 		return "", "", err
 	}
 	for _, secret := range []struct{ name, value string }{
@@ -1052,7 +1042,7 @@ func deployFirstReleaseBundle(
 			return "", "", err
 		}
 	}
-	gatewayVersion, err = uploadWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
+	gatewayVersion, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
 		material.GatewayName, "OneNod "+release.Manifest.ReleaseVersion+" gateway", console)
 	if err != nil {
 		return "", "", err
@@ -1070,6 +1060,112 @@ func deployFirstReleaseBundle(
 		return "", "", err
 	}
 	return executorVersion, gatewayVersion, nil
+}
+
+// Wrangler versions upload cannot create a Worker. The first deploy therefore
+// uses a derived config with every public trigger disabled; the real config is
+// not applied until the secret-bearing version has been inspected.
+func deployPrivateWorkerScaffold(
+	wrangler, profile, config, worker, message string,
+	console *operatorConsole,
+) (string, error) {
+	scaffoldConfig, err := stagePrivateWorkerConfig(config)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(scaffoldConfig)
+
+	output, commandErr := runWranglerCapture(wrangler, profile, filepath.Dir(config), []string{
+		"deploy", "--config", scaffoldConfig, "--name", worker,
+		"--strict", "--message", message,
+	}, nil, operatorCommandTimeout)
+	defer zeroBytes(output)
+	match := workerVersionIDPattern.FindSubmatch(output)
+	requested := ""
+	if len(match) == 2 {
+		requested = strings.ToLower(string(match[1]))
+	}
+	if commandErr != nil {
+		writeWranglerFailureDiagnostic(console.stderr, output)
+	}
+
+	observed, absent, inspectErr := readWorkerDeploymentState(
+		wrangler, profile, scaffoldConfig, worker,
+	)
+	if inspectErr != nil {
+		return "", &remoteOutcomeUnknownError{
+			ObservedVersion: requested, Operation: "create private Worker scaffold", Worker: worker,
+		}
+	}
+	if absent {
+		if commandErr != nil {
+			return "", fmt.Errorf("create private Worker scaffold for %s failed; Cloudflare confirms that the Worker is absent", worker)
+		}
+		return "", &remoteOutcomeUnknownError{
+			ObservedVersion: requested, Operation: "create private Worker scaffold", Worker: worker,
+		}
+	}
+	if requested != "" && requested != observed {
+		return "", &observedDeploymentError{
+			ObservedVersion: observed, RequestedVersion: requested, Worker: worker,
+		}
+	}
+	if commandErr != nil {
+		if requested == "" {
+			return "", &remoteOutcomeUnknownError{
+				ObservedVersion: observed, Operation: "create private Worker scaffold", Worker: worker,
+			}
+		}
+		fmt.Fprintf(console.stderr,
+			"Wrangler reported an error for %s, but authoritative deployment status confirms private scaffold %s at 100%%. Continuing without retry.\n",
+			worker, observed,
+		)
+	} else {
+		fmt.Fprint(console.stdout, string(output))
+	}
+	return observed, nil
+}
+
+func stagePrivateWorkerConfig(config string) (string, error) {
+	encoded, exists, err := readOptionalRegularFile(config, 4<<20)
+	if err != nil || !exists {
+		return "", errors.New("read Worker scaffold configuration failed")
+	}
+	var document map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	if decoder.Decode(&document) != nil || ensureDecoderEOF(decoder) != nil || document == nil {
+		return "", errors.New("Worker scaffold configuration is not strict JSON")
+	}
+	document["workers_dev"] = json.RawMessage("false")
+	document["preview_urls"] = json.RawMessage("false")
+	delete(document, "route")
+	delete(document, "routes")
+	delete(document, "triggers")
+	privateConfig, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return "", errors.New("encode private Worker scaffold configuration failed")
+	}
+	privateConfig = append(privateConfig, '\n')
+	staged, err := os.CreateTemp(filepath.Dir(config), ".onenod-private-scaffold-*.jsonc")
+	if err != nil {
+		return "", errors.New("stage private Worker scaffold configuration failed")
+	}
+	path := staged.Name()
+	remove := true
+	defer func() {
+		if remove {
+			_ = staged.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if staged.Chmod(0o600) != nil {
+		return "", errors.New("secure private Worker scaffold configuration failed")
+	}
+	if _, err := staged.Write(privateConfig); err != nil || staged.Sync() != nil || staged.Close() != nil {
+		return "", errors.New("write private Worker scaffold configuration failed")
+	}
+	remove = false
+	return path, nil
 }
 
 func bundleExecutorConfig(bundle *stagedDeploymentBundle) string {
@@ -1091,6 +1187,7 @@ func uploadWorkerVersion(
 	defer zeroBytes(output)
 	match := workerVersionIDPattern.FindSubmatch(output)
 	if err != nil {
+		writeWranglerFailureDiagnostic(console.stderr, output)
 		observed := ""
 		if len(match) == 2 {
 			observed = strings.ToLower(string(match[1]))
@@ -1106,6 +1203,19 @@ func uploadWorkerVersion(
 		}
 	}
 	return strings.ToLower(string(match[1])), nil
+}
+
+func writeWranglerFailureDiagnostic(output io.Writer, commandOutput []byte) {
+	plain := ansiEscapePattern.ReplaceAll(commandOutput, nil)
+	defer zeroBytes(plain)
+	diagnostic := strings.TrimSpace(strings.ToValidUTF8(string(plain), ""))
+	const maxDiagnosticBytes = 2048
+	if len(diagnostic) > maxDiagnosticBytes {
+		diagnostic = "…" + strings.ToValidUTF8(diagnostic[len(diagnostic)-maxDiagnosticBytes:], "")
+	}
+	if diagnostic != "" {
+		fmt.Fprintf(output, "Wrangler diagnostic (the operation will not be retried):\n%s\n", diagnostic)
+	}
 }
 
 func deployWorkerVersion(
@@ -1219,12 +1329,26 @@ func inspectWorkerVersionSecretBindings(
 }
 
 func readExactDeploymentVersion(wrangler, profile, config, worker string) (string, error) {
+	version, absent, err := readWorkerDeploymentState(wrangler, profile, config, worker)
+	if err != nil {
+		return "", err
+	}
+	if absent {
+		return "", fmt.Errorf("Worker %s does not exist", worker)
+	}
+	return version, nil
+}
+
+func readWorkerDeploymentState(wrangler, profile, config, worker string) (string, bool, error) {
 	output, err := runWranglerCapture(wrangler, profile, filepath.Dir(config), []string{
 		"deployments", "status", "--config", config, "--name", worker, "--json",
 	}, nil, operatorCommandTimeout)
 	defer zeroBytes(output)
 	if err != nil {
-		return "", fmt.Errorf("read deployment status for %s failed", worker)
+		if bytes.Contains(output, []byte("[code: 10007]")) || bytes.Contains(output, []byte(`"code":10007`)) {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("read deployment status for %s failed", worker)
 	}
 	var status struct {
 		Versions []struct {
@@ -1234,9 +1358,9 @@ func readExactDeploymentVersion(wrangler, profile, config, worker string) (strin
 	}
 	if json.Unmarshal(output, &status) != nil || len(status.Versions) != 1 ||
 		status.Versions[0].Percentage != 100 || !uuidPattern.MatchString(status.Versions[0].VersionID) {
-		return "", fmt.Errorf("deployment %s is not an exact single-version 100%% state", worker)
+		return "", false, fmt.Errorf("deployment %s is not an exact single-version 100%% state", worker)
 	}
-	return status.Versions[0].VersionID, nil
+	return status.Versions[0].VersionID, false, nil
 }
 
 func completeBootstrapCeremony(
