@@ -247,7 +247,7 @@ func runBinaryFirstProductionDeployment(
 	if err != nil {
 		return err
 	}
-	accountSubdomain, err := fetchCloudflareAccountSubdomain(deps.httpClient, account.ID, token)
+	accountSubdomain, err := fetchCloudflareAccountSubdomain(deps.cloudflareTransport, account.ID, token)
 	zeroBytes(token)
 	if err != nil {
 		return err
@@ -1629,7 +1629,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if err != nil {
 		return err
 	}
-	console := &operatorConsole{input: bufio.NewReader(deps.stdin), stdin: deps.stdin, stdout: deps.stdout, stderr: deps.stderr}
+	console := &operatorConsole{stdin: deps.stdin, stdout: deps.stdout, stderr: deps.stderr}
 	profile, err := createTemporaryWranglerProfile(tools.Wrangler, console)
 	if err != nil {
 		return err
@@ -1660,7 +1660,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if err != nil {
 		return err
 	}
-	subdomain, err := fetchCloudflareAccountSubdomain(deps.httpClient, account.ID, token)
+	subdomain, err := fetchCloudflareAccountSubdomain(deps.cloudflareTransport, account.ID, token)
 	zeroBytes(token)
 	if err != nil || subdomain != receipt.AccountSubdomain {
 		return errors.New("Cloudflare workers.dev subdomain differs from the immutable deployment receipt")
@@ -1982,10 +1982,8 @@ func stringSliceContains(values []string, expected string) bool {
 	return false
 }
 
-func fetchCloudflareAccountSubdomain(client *http.Client, accountID string, oauthToken []byte) (string, error) {
-	if client == nil {
-		client = secureCloudflareAPIClient(nil)
-	}
+func fetchCloudflareAccountSubdomain(base http.RoundTripper, accountID string, oauthToken []byte) (string, error) {
+	client := secureCloudflareAPIClient(base)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,

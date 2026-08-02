@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -76,7 +75,6 @@ type productionTargetIdentity struct {
 }
 
 type operatorConsole struct {
-	input  *bufio.Reader
 	stdin  io.Reader
 	stderr io.Writer
 	stdout io.Writer
@@ -107,7 +105,6 @@ func runProductionInitialization(args []string, deps dependencies) error {
 		return err
 	}
 	console := operatorConsole{
-		input:  bufio.NewReader(deps.stdin),
 		stdin:  deps.stdin,
 		stderr: deps.stderr,
 		stdout: deps.stdout,
@@ -429,7 +426,7 @@ func destroyProductionInitializationSecrets(
 
 func (console *operatorConsole) readLine(prompt string) (string, error) {
 	fmt.Fprint(console.stderr, prompt)
-	value, err := console.input.ReadString('\n')
+	value, err := readPromptLine(console.stdin)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}

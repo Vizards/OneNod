@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -86,7 +86,7 @@ func TestServiceAccountCreationIsAgentOnlyRawAndExplicitAccount(t *testing.T) {
 
 func TestBinaryTargetDerivesWorkersDevOriginWithoutSubdomainPrompt(t *testing.T) {
 	input := strings.NewReader("\n\n")
-	console := operatorConsole{input: newBufferedReader(input), stdin: input, stdout: io.Discard, stderr: io.Discard}
+	console := operatorConsole{stdin: input, stdout: io.Discard, stderr: io.Discard}
 	identity, err := readBinaryProductionTargetIdentity(testCloudflareAccountID, "human-vault", &console)
 	if err != nil {
 		t.Fatal(err)
@@ -113,38 +113,105 @@ func TestProductionTargetIdentityRejectsUnsafeInputs(t *testing.T) {
 }
 
 func TestCloudflareSubdomainPrecheckUsesAuthenticatedAccount(t *testing.T) {
-	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != "/client/v4/accounts/"+testCloudflareAccountID+"/workers/subdomain" || request.Header.Get("Authorization") != "Bearer oauth-test-token" {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Scheme != "https" || request.URL.Hostname() != "api.cloudflare.com" ||
+			request.URL.Path != "/client/v4/accounts/"+testCloudflareAccountID+"/workers/subdomain" ||
+			request.Header.Get("Authorization") != "Bearer oauth-test-token" {
 			t.Fatal("unexpected Cloudflare request")
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"subdomain":"human-vault"}}`)), Header: make(http.Header)}, nil
-	})}
-	subdomain, err := fetchCloudflareAccountSubdomain(client, testCloudflareAccountID, []byte("oauth-test-token"))
+	})
+	subdomain, err := fetchCloudflareAccountSubdomain(transport, testCloudflareAccountID, []byte("oauth-test-token"))
 	if err != nil || subdomain != "human-vault" {
 		t.Fatalf("%q %v", subdomain, err)
 	}
 }
 
-func TestSecureCloudflareClientRejectsRedirectBeforeCredentialCanMoveHosts(t *testing.T) {
+func TestCloudflareSubdomainPrecheckRejectsRedirectBeforeCredentialCanMoveHosts(t *testing.T) {
 	calls := 0
-	client := secureCloudflareAPIClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
 		if request.URL.Hostname() != "api.cloudflare.com" {
 			t.Fatal("credential reached another host")
 		}
 		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://attacker.example/steal"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
-	}))
-	request, _ := http.NewRequest(http.MethodGet, "https://api.cloudflare.com/client/v4/test", nil)
-	request.Header.Set("Authorization", "Bearer secret")
-	response, err := client.Do(request)
+	})
+	_, err := fetchCloudflareAccountSubdomain(transport, testCloudflareAccountID, []byte("oauth-test-token"))
 	if err == nil {
 		t.Fatal("redirect was accepted")
 	}
-	if response != nil {
-		response.Body.Close()
-	}
 	if calls != 1 {
 		t.Fatalf("transport called %d times", calls)
+	}
+}
+
+func TestSecureCloudflareClientRejectsUnexpectedHostBeforeTransport(t *testing.T) {
+	calls := 0
+	client := secureCloudflareAPIClient(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected transport call")
+	}))
+	request, err := http.NewRequest(http.MethodGet, "https://attacker.example/steal", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Do(request); err == nil {
+		t.Fatal("unexpected Cloudflare API host was accepted")
+	}
+	if calls != 0 {
+		t.Fatalf("unsafe request reached the base transport %d times", calls)
+	}
+}
+
+func TestSecureCloudflareClientDisablesEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "https://attacker.example")
+	client := secureCloudflareAPIClient(nil)
+	pinned, ok := client.Transport.(exactHostTransport)
+	if !ok {
+		t.Fatal("Cloudflare client is not wrapped by the exact-host transport")
+	}
+	base, ok := pinned.base.(*http.Transport)
+	if !ok || base.Proxy != nil {
+		t.Fatal("Cloudflare client inherited an environment proxy")
+	}
+}
+
+func TestOperatorPromptsDoNotPrefetchAcrossPromptKinds(t *testing.T) {
+	input := strings.NewReader("Agent\ny\nOneNod Recovery\n")
+	console := operatorConsole{stdin: input, stdout: io.Discard, stderr: io.Discard}
+	first, err := console.readRequiredValue("Agent vault")
+	if err != nil || first != "Agent" {
+		t.Fatalf("first prompt returned %q: %v", first, err)
+	}
+	confirmed, err := promptYesNo(console.stdin, console.stdout, "Continue?", false)
+	if err != nil || !confirmed {
+		t.Fatalf("security prompt returned %v: %v", confirmed, err)
+	}
+	second, err := console.readRequiredValue("Recovery vault")
+	if err != nil || second != "OneNod Recovery" {
+		t.Fatalf("prompt after security confirmation returned %q: %v", second, err)
+	}
+}
+
+func TestSecurityPromptRejectsNonTerminalFileWithoutConsumingIt(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		reader.Close()
+		writer.Close()
+	})
+	if _, err := writer.WriteString("y\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := promptYesNo(reader, io.Discard, "Continue?", false); err == nil ||
+		!strings.Contains(err.Error(), "interactive terminal") {
+		t.Fatalf("non-terminal confirmation returned %v", err)
+	}
+	remaining := make([]byte, 2)
+	if _, err := io.ReadFull(reader, remaining); err != nil || string(remaining) != "y\n" {
+		t.Fatalf("non-terminal input was consumed: %q %v", remaining, err)
 	}
 }
 
@@ -216,7 +283,7 @@ exit 0
 func TestExplicitWranglerProfileRetentionSkipsDeletion(t *testing.T) {
 	input := strings.NewReader("n\n")
 	console := operatorConsole{
-		input: bufio.NewReader(input), stdin: input, stdout: io.Discard, stderr: io.Discard,
+		stdin: input, stdout: io.Discard, stderr: io.Discard,
 	}
 	revoked, err := promptAndRevokeWranglerProfile(
 		"/does/not/exist",
@@ -292,5 +359,3 @@ func TestOperatorEnvironmentCannotInheritCloudflareOrOnePasswordAuthority(t *tes
 		t.Fatal("operator child omitted required explicit safety overrides")
 	}
 }
-
-func newBufferedReader(reader io.Reader) *bufio.Reader { return bufio.NewReader(reader) }

@@ -284,11 +284,16 @@ func TestGitSigningConfigurationRefusesConcurrentEditAfterConfirmation(t *testin
 		t.Fatal(err)
 	}
 	publicKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPublic)))
+	answer := strings.NewReader("y\n")
+	changed := false
 	stdin := testReaderFunc(func(buffer []byte) (int, error) {
-		if err := setGitGlobalValue("gpg.format", "changed-during-review"); err != nil {
-			t.Fatal(err)
+		if !changed {
+			changed = true
+			if err := setGitGlobalValue("gpg.format", "changed-during-review"); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return copy(buffer, "y\n"), nil
+		return answer.Read(buffer)
 	})
 	err = runConfigureGitSigning(
 		[]string{"apply", "--signing-key", publicKey},
@@ -316,11 +321,16 @@ func TestSSHConfigurationRefusesAConcurrentEditAfterConfirmation(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	answer := strings.NewReader("y\n")
+	changedOnce := false
 	stdin := testReaderFunc(func(buffer []byte) (int, error) {
-		if err := os.WriteFile(path, changed, 0o600); err != nil {
-			t.Fatal(err)
+		if !changedOnce {
+			changedOnce = true
+			if err := os.WriteFile(path, changed, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return copy(buffer, "y\n"), nil
+		return answer.Read(buffer)
 	})
 	err := runConfigureSSH(
 		[]string{"apply"},

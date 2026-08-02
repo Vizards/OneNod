@@ -687,7 +687,7 @@ type exactHostTransport struct {
 func (transport exactHostTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request == nil || request.URL == nil || request.URL.Scheme != "https" ||
 		request.URL.User != nil || strings.ToLower(request.URL.Hostname()) != transport.host {
-		return nil, errors.New("attestation trust request left its pinned HTTPS origin")
+		return nil, errors.New("request left its pinned HTTPS origin")
 	}
 	return transport.base.RoundTrip(request)
 }
@@ -4155,7 +4155,7 @@ func promptYesNo(input io.Reader, output io.Writer, prompt string, defaultYes bo
 		suffix = "[Y/n]"
 	}
 	fmt.Fprintf(output, "%s %s ", prompt, suffix)
-	line, err := bufio.NewReader(input).ReadString('\n')
+	line, err := readPromptLine(input)
 	if err != nil {
 		return false, errors.New("read security confirmation failed")
 	}
@@ -4170,6 +4170,29 @@ func promptYesNo(input io.Reader, output io.Writer, prompt string, defaultYes bo
 		return false, nil
 	}
 	return false, errors.New("confirmation must be y or n")
+}
+
+func readPromptLine(input io.Reader) (string, error) {
+	if input == nil {
+		return "", io.EOF
+	}
+	var line strings.Builder
+	var next [1]byte
+	for {
+		count, err := input.Read(next[:])
+		if count == 1 {
+			if next[0] == '\n' {
+				return line.String(), nil
+			}
+			line.WriteByte(next[0])
+		}
+		if err != nil {
+			return line.String(), err
+		}
+		if count == 0 {
+			return line.String(), io.ErrNoProgress
+		}
+	}
 }
 
 func sortedArtifactNames(manifest releaseManifest) []string {

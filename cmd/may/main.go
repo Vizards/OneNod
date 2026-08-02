@@ -19,13 +19,14 @@ const gatewayRequestTimeout = 5 * time.Minute
 const approvalObservationGrace = 5 * time.Second
 
 type dependencies struct {
-	httpClient    *http.Client
-	keychain      keychainStore
-	platformProbe func() (hostPlatform, error)
-	releases      releaseSource
-	stderr        io.Writer
-	stdin         io.Reader
-	stdout        io.Writer
+	cloudflareTransport http.RoundTripper
+	httpClient          *http.Client
+	keychain            keychainStore
+	platformProbe       func() (hostPlatform, error)
+	releases            releaseSource
+	stderr              io.Writer
+	stdin               io.Reader
+	stdout              io.Writer
 }
 
 type cliConfig struct {
