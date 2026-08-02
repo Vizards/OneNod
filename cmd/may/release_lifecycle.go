@@ -1616,6 +1616,7 @@ func extractReleaseArchive(
 	defer root.Close()
 	seen := map[string]struct{}{}
 	var totalBytes int64
+	entryCount := 0
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
@@ -1623,6 +1624,10 @@ func extractReleaseArchive(
 		}
 		if err != nil {
 			return errors.New("read verified release archive failed")
+		}
+		entryCount++
+		if entryCount > 4096 {
+			return errors.New("verified release archive contains too many entries")
 		}
 		clean := filepath.ToSlash(filepath.Clean(header.Name))
 		relative := filepath.FromSlash(clean)
@@ -1640,21 +1645,17 @@ func extractReleaseArchive(
 			return fmt.Errorf("verified release archive entry %q exceeds the extraction budget", clean)
 		}
 		totalBytes += header.Size
-		mode, required := allowed[clean]
-		if !required {
-			if clean == "LICENSE" || strings.HasSuffix(clean, "/LICENSE") ||
-				clean == "RELEASE.json" || strings.HasSuffix(clean, "/RELEASE.json") {
-				continue
-			}
-			return fmt.Errorf("verified release archive contains unexpected entry %q", clean)
-		}
-		if header.Size <= 0 {
-			return fmt.Errorf("verified release archive entry %q is not a bounded regular file", clean)
-		}
 		if _, duplicate := seen[clean]; duplicate {
 			return errors.New("verified release archive contains duplicate files")
 		}
 		seen[clean] = struct{}{}
+		mode, required := allowed[clean]
+		if !required {
+			continue
+		}
+		if header.Size <= 0 {
+			return fmt.Errorf("verified release archive entry %q is not a bounded regular file", clean)
+		}
 		if err := root.MkdirAll(filepath.Dir(relative), 0o700); err != nil {
 			return errors.New("create release extraction directory failed")
 		}
@@ -1841,18 +1842,10 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 		return errors.New("open deployment extraction root failed")
 	}
 	defer root.Close()
-	required := map[string]bool{
-		"onenod-deployment/deployment.json":         false,
-		"onenod-deployment/RELEASE.json":            false,
-		"onenod-deployment/LICENSE":                 false,
-		"onenod-deployment/gateway/wrangler.jsonc":  false,
-		"onenod-deployment/gateway/worker.mjs":      false,
-		"onenod-deployment/executor/wrangler.jsonc": false,
-		"onenod-deployment/executor/worker.mjs":     false,
-		"onenod-deployment/executor/plugin.wasm":    false,
-	}
+	required := deploymentBundleRequiredFiles()
 	seen := map[string]struct{}{}
 	var totalBytes int64
+	entryCount := 0
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
@@ -1860,6 +1853,10 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 		}
 		if err != nil {
 			return errors.New("read verified deployment archive failed")
+		}
+		entryCount++
+		if entryCount > 4096 {
+			return errors.New("verified deployment archive contains too many entries")
 		}
 		clean := filepath.ToSlash(filepath.Clean(header.Name))
 		relative := filepath.FromSlash(clean)
@@ -1869,23 +1866,29 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 		if !filepath.IsLocal(relative) {
 			return errors.New("verified deployment archive contains an unsafe path")
 		}
+		if clean != "onenod-deployment" && !strings.HasPrefix(clean, "onenod-deployment/") {
+			return errors.New("verified deployment archive contains an unexpected top-level path")
+		}
 		if header.Typeflag == tar.TypeDir {
 			continue
 		}
-		if header.Typeflag != tar.TypeReg || header.Size <= 0 ||
-			header.Size > maxReleaseArtifactBytes-totalBytes || len(seen) >= 4096 {
+		if header.Typeflag != tar.TypeReg || header.Size < 0 ||
+			header.Size > maxReleaseArtifactBytes-totalBytes {
 			return fmt.Errorf("verified deployment archive entry %q exceeds the extraction budget", clean)
 		}
 		totalBytes += header.Size
 		_, exact := required[clean]
 		asset := strings.HasPrefix(clean, "onenod-deployment/gateway/assets/")
-		if !exact && !asset {
-			return fmt.Errorf("verified deployment archive contains unexpected entry %q", clean)
-		}
 		if _, duplicate := seen[clean]; duplicate {
 			return errors.New("verified deployment archive contains duplicate files")
 		}
 		seen[clean] = struct{}{}
+		if !exact && !asset {
+			continue
+		}
+		if header.Size == 0 {
+			return fmt.Errorf("verified deployment archive entry %q is empty", clean)
+		}
 		if exact {
 			required[clean] = true
 		}
@@ -1913,6 +1916,18 @@ func extractDeploymentBundleArchive(archivePath, destination string) error {
 		return errors.New("verified deployment archive contains no Gateway assets")
 	}
 	return nil
+}
+
+func deploymentBundleRequiredFiles() map[string]bool {
+	return map[string]bool{
+		"onenod-deployment/deployment.json":         false,
+		"onenod-deployment/RELEASE.json":            false,
+		"onenod-deployment/gateway/wrangler.jsonc":  false,
+		"onenod-deployment/gateway/worker.mjs":      false,
+		"onenod-deployment/executor/wrangler.jsonc": false,
+		"onenod-deployment/executor/worker.mjs":     false,
+		"onenod-deployment/executor/plugin.wasm":    false,
+	}
 }
 
 func readStrictJSONFile(path string, limit int64, value any) error {
@@ -2316,6 +2331,9 @@ func runDevVerifyRelease(args []string, deps dependencies) error {
 			"sha256:"+hex.EncodeToString(digest[:]) != artifact.SHA256 {
 			return fmt.Errorf("release artifact %q does not match its manifest entry", artifact.Name)
 		}
+		if err := verifyReleaseArtifactInstallability(artifact, path); err != nil {
+			return fmt.Errorf("release artifact %q cannot be consumed by may: %w", artifact.Name, err)
+		}
 	}
 	if err := validateReleaseManifest(manifest, manifest.Tag, assets); err != nil {
 		return err
@@ -2345,6 +2363,34 @@ func runDevVerifyRelease(args []string, deps dependencies) error {
 	fmt.Fprintf(deps.stdout, "Verified OneNod %s release manifest, provenance, and %d selected artifacts.\n",
 		manifest.ReleaseVersion, len(toVerify))
 	return nil
+}
+
+func verifyReleaseArtifactInstallability(artifact releaseArtifact, path string) error {
+	if artifact.Kind != "local" && artifact.Kind != "keychain_helper" &&
+		artifact.Kind != "deployment" && artifact.Kind != "skill" {
+		return nil
+	}
+	destination, err := os.MkdirTemp("", "onenod-release-contract-")
+	if err != nil {
+		return errors.New("create release contract verification directory failed")
+	}
+	defer os.RemoveAll(destination)
+	switch artifact.Kind {
+	case "local":
+		return extractReleaseArchive(path, destination, map[string]os.FileMode{
+			"onenod/bin/may": 0o700, "onenod/bin/may-ssh-sign": 0o700,
+		})
+	case "keychain_helper":
+		return extractReleaseArchive(path, destination, map[string]os.FileMode{
+			"onenod-keychain-helper/bin/onenod-keychain-helper": 0o700,
+		})
+	case "deployment":
+		return extractDeploymentBundleArchive(path, destination)
+	case "skill":
+		return extractSkillArchive(path, destination)
+	default:
+		return nil
+	}
 }
 
 type repeatedStringFlag []string

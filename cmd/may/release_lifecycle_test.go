@@ -1122,6 +1122,51 @@ func TestReleaseArchiveExtractionWritesInsideRoot(t *testing.T) {
 	}
 }
 
+func TestReleaseArchiveIgnoresSafeAuxiliaryFiles(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "release.tar.gz")
+	writeTestRegularArchive(t, archive, []testArchiveFile{
+		{name: "onenod/bin/may", content: []byte("binary")},
+		{name: "onenod/THIRD_PARTY_COMPONENTS.json", content: []byte("{}")},
+		{name: "onenod/THIRD_PARTY_NOTICES.txt", content: []byte("notices")},
+		{name: "onenod/future-metadata.txt"},
+	})
+	destination := t.TempDir()
+	if err := extractReleaseArchive(archive, destination, map[string]os.FileMode{
+		"onenod/bin/may": 0o700,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "onenod", "THIRD_PARTY_COMPONENTS.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unused auxiliary release file was promoted out of the archive")
+	}
+}
+
+func TestDeploymentArchiveRequiresRuntimeFilesButIgnoresSafeAuxiliaryFiles(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "deployment.tar.gz")
+	entries := []testArchiveFile{
+		{name: "onenod-deployment/gateway/assets/index.html", content: []byte("index")},
+		{name: "onenod-deployment/THIRD_PARTY_COMPONENTS.json", content: []byte("{}")},
+		{name: "onenod-deployment/THIRD_PARTY_NOTICES.txt", content: []byte("notices")},
+		{name: "onenod-deployment/executor/third-party/onepassword-sdk-go/LICENSE", content: []byte("MIT")},
+		{name: "onenod-deployment/executor/third-party/onepassword-sdk-go/SOURCE.json", content: []byte("{}")},
+		{name: "onenod-deployment/future-metadata.txt"},
+	}
+	for path := range deploymentBundleRequiredFiles() {
+		entries = append(entries, testArchiveFile{name: path, content: []byte("runtime")})
+	}
+	writeTestRegularArchive(t, archive, entries)
+	destination := t.TempDir()
+	if err := extractDeploymentBundleArchive(archive, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "onenod-deployment", "gateway", "worker.mjs")); err != nil {
+		t.Fatal("required deployment runtime file was not extracted")
+	}
+	if _, err := os.Stat(filepath.Join(destination, "onenod-deployment", "THIRD_PARTY_COMPONENTS.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unused auxiliary deployment file was promoted out of the archive")
+	}
+}
+
 func TestArchiveExtractionRejectsDestinationSymlinkEscape(t *testing.T) {
 	for _, test := range archiveExtractorFixtures() {
 		t.Run(test.name, func(t *testing.T) {
@@ -1471,6 +1516,41 @@ func writeTestArchive(t *testing.T, path, name string, typeflag byte, content []
 	}
 	if typeflag == tar.TypeReg {
 		if _, err := tarWriter.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type testArchiveFile struct {
+	content []byte
+	name    string
+}
+
+func writeTestRegularArchive(t *testing.T, path string, entries []testArchiveFile) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, entry := range entries {
+		header := &tar.Header{
+			Name: entry.name, Mode: 0o600, Size: int64(len(entry.content)), Typeflag: tar.TypeReg,
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(entry.content); err != nil {
 			t.Fatal(err)
 		}
 	}
