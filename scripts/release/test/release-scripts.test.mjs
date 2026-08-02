@@ -18,7 +18,8 @@ const mergeNoticesScript = resolve(
   repositoryRoot,
   "scripts/release/merge-artifact-notices.mjs",
 );
-const version = "0.0.1";
+const version = "0.0.2-beta.1";
+const previousVersion = "0.0.2-alpha.1";
 const helperVersion = "1.0.0";
 const releaseContract = JSON.parse(
   await readFile(resolve(repositoryRoot, "scripts/release/release-contract.json"), "utf8"),
@@ -265,7 +266,7 @@ test("release packager is deterministic and the verifier enforces the exact set"
       "--version",
       version,
       "--previous-version",
-      "",
+      previousVersion,
       "--commit",
       commit,
       "--published-at",
@@ -278,6 +279,12 @@ test("release packager is deterministic and the verifier enforces the exact set"
     const originalManifest = await readFile(manifestPath);
     const originalChecksums = await readFile(checksumsPath);
     const mismatchedManifest = JSON.parse(originalManifest.toString("utf8"));
+    assert.equal(mismatchedManifest.channel, "beta");
+    assert.equal(mismatchedManifest.product_label, "Beta");
+    assert.equal(
+      mismatchedManifest.support.previous_release_version,
+      previousVersion,
+    );
     mismatchedManifest.components.keychain_helper.source_digest =
       `sha256:${"b".repeat(64)}`;
     const mismatchedManifestBytes = Buffer.from(

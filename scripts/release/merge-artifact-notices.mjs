@@ -3,6 +3,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { readArtifactArchive, readArtifactIdentity } from "./artifact-tar.mjs";
+import { parseProductVersion } from "./release-version.mjs";
 
 const options = parseOptions(process.argv.slice(2));
 const archiveNames = (await readdir(options.directory))
@@ -192,7 +193,7 @@ function parseOptions(args) {
     values.directory === "" ||
     values.output === "" ||
     !/^[0-9a-f]{40}$/u.test(values.commit) ||
-    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.version)
+    parseProductVersion(values.version) === null
   ) {
     fail("directory, output, version, and source commit are required");
   }

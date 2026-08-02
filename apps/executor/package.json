@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@extism/extism": "2.0.0-rc13",
+    "@onenod/protocol": "workspace:*",
     "@scure/base": "2.2.0",
     "canonicalize": "3.0.0",
     "ssh2": "1.17.0"

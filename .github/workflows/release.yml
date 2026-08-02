@@ -8,56 +8,109 @@ on:
       - .release-please-manifest.json
   workflow_dispatch:
     inputs:
-      version:
-        description: Exact immutable release tag version to retry
+      intent:
+        description: Retry an existing tag or publish the next candidate
         required: true
+        default: retry
+        type: choice
+        options:
+          - retry
+          - alpha
+          - beta
+      source_sha:
+        description: Exact same-repository branch HEAD for alpha; leave empty otherwise
+        required: false
+        type: string
+      version:
+        description: Existing exact version for retry; leave empty for alpha or beta
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-release-${{ github.sha }}
+  group: publish-release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   prepare:
-    name: Bind release commit and tag
-    if: github.repository == 'Vizards/OneNod'
+    name: Derive and verify the release plan
+    if: >-
+      github.repository == 'Vizards/OneNod' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     outputs:
+      artifact_predecessor_version: ${{ steps.release.outputs.artifact_predecessor_version }}
+      channel: ${{ steps.release.outputs.channel }}
+      github_latest: ${{ steps.release.outputs.github_latest }}
+      github_prerelease: ${{ steps.release.outputs.github_prerelease }}
       helper_changed: ${{ steps.release.outputs.helper_changed }}
       helper_source_digest: ${{ steps.release.outputs.helper_source_digest }}
       helper_version: ${{ steps.release.outputs.helper_version }}
       previous_version: ${{ steps.release.outputs.previous_version }}
+      product_label: ${{ steps.release.outputs.product_label }}
       should_release: ${{ steps.release.outputs.should_release }}
       source_sha: ${{ steps.release.outputs.source_sha }}
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Check out the candidate release commit
+      - name: Check out the reviewed release controller
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.23.0
+          run_install: false
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.12.0
+          cache: pnpm
+      - name: Install the frozen release-controller dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify the release source contract
         run: node scripts/release/verify-source-contract.mjs
+      - name: Fetch the exact same-repository alpha source
+        if: github.event_name == 'workflow_dispatch' && inputs.intent == 'alpha'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA_INPUT: ${{ inputs.source_sha }}
+        run: |
+          if ! [[ "$SOURCE_SHA_INPUT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release blocked: alpha source_sha must be a full lowercase Git commit." >&2
+            exit 1
+          fi
+          branch_count="$(gh api \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA_INPUT/branches-where-head" \
+            --jq 'length')"
+          if [ "$branch_count" -lt 1 ]; then
+            echo "Release blocked: alpha source_sha must be the current HEAD of a branch in this repository." >&2
+            exit 1
+          fi
+          git fetch --no-tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            '+refs/heads/*:refs/remotes/origin/*'
+          test "$(git rev-parse "$SOURCE_SHA_INPUT^{commit}")" = "$SOURCE_SHA_INPUT"
       - name: Derive the release from the manifest transition
         id: release
         env:
+          RELEASE_INTENT: ${{ inputs.intent }}
+          SOURCE_SHA_INPUT: ${{ inputs.source_sha }}
           VERSION_INPUT: ${{ inputs.version }}
         run: >-
           node scripts/release/derive-release.mjs
           --event "$GITHUB_EVENT_NAME"
+          --intent "$RELEASE_INTENT"
           --ref "$GITHUB_REF"
           --sha "$GITHUB_SHA"
+          --source-sha "$SOURCE_SHA_INPUT"
           --version-input "$VERSION_INPUT"
           --output "$GITHUB_OUTPUT"
       - name: Require a public repository eligible for attestations
@@ -68,6 +121,20 @@ jobs:
           visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
           if [ "$visibility" != "public" ]; then
             echo "Release blocked: GitHub Artifact Attestations require this repository to be public or otherwise eligible; the public-preview workflow requires public." >&2
+            exit 1
+          fi
+      - name: Require a GitHub-verified source commit signature
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+        run: |
+          verified="$(gh api \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA" \
+            --jq '.commit.verification.verified')"
+          if [ "$verified" != "true" ]; then
+            echo "Release blocked: source commit $SOURCE_SHA does not have a GitHub-verified signature." >&2
             exit 1
           fi
       - name: Require immutable Releases to be enabled
@@ -91,10 +158,10 @@ jobs:
       - name: Require a published immutable predecessor
         if: >-
           steps.release.outputs.should_release == 'true' &&
-          steps.release.outputs.previous_version != ''
+          steps.release.outputs.artifact_predecessor_version != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PREVIOUS_VERSION: ${{ steps.release.outputs.previous_version }}
+          PREVIOUS_VERSION: ${{ steps.release.outputs.artifact_predecessor_version }}
         run: |
           lineage_dir="$(mktemp -d)"
           trap 'rm -rf "$lineage_dir"' EXIT
@@ -113,12 +180,48 @@ jobs:
             --manifest "$lineage_dir/release-manifest.json" \
             --version "$PREVIOUS_VERSION" \
             --commit "$previous_commit"
-      - name: Create or verify the exact lightweight tag
+      - name: Publish the complete release plan
         if: steps.release.outputs.should_release == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          PREDECESSOR: ${{ steps.release.outputs.artifact_predecessor_version }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          {
+            echo '## OneNod release plan'
+            echo
+            echo '| Field | Exact value |'
+            echo '| --- | --- |'
+            echo "| Channel | \`$CHANNEL\` |"
+            echo "| Version | \`$VERSION\` |"
+            echo "| Tag | \`$TAG\` |"
+            echo "| Source commit | \`$SOURCE_SHA\` |"
+            echo "| Artifact predecessor | \`${PREDECESSOR:-none}\` |"
+            echo
+            echo 'The source commit is the signed HEAD selected by the reviewed controller on main.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  authorize:
+    name: Approve and bind the exact release tag
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.should_release == 'true' &&
+      github.repository == 'Vizards/OneNod' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && format('release-{0}', inputs.intent) || 'release-stable' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create or verify the exact lightweight tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: |
           if existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + ":" + .object.sha' 2>/dev/null)"; then
             if [ "$existing" != "commit:$SOURCE_SHA" ]; then
@@ -133,7 +236,9 @@ jobs:
 
   local-artifacts:
     name: Native macOS ${{ matrix.arch }} artifacts
-    needs: prepare
+    needs:
+      - prepare
+      - authorize
     if: needs.prepare.outputs.should_release == 'true'
     strategy:
       fail-fast: false
@@ -210,7 +315,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           EXPECTED_ARCH: ${{ matrix.uname_arch }}
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
-          PREVIOUS_VERSION: ${{ needs.prepare.outputs.previous_version }}
+          PREVIOUS_VERSION: ${{ needs.prepare.outputs.artifact_predecessor_version }}
         run: |
           test -n "$PREVIOUS_VERSION"
           helper_name="onenod-keychain-helper-$HELPER_VERSION-darwin-$ARCH.tar.gz"
@@ -233,6 +338,7 @@ jobs:
       - name: Verify embedded binary versions
         env:
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
@@ -240,6 +346,7 @@ jobs:
           node scripts/release/verify-binary-version.mjs
           --may dist/build/may
           --helper dist/build/onenod-keychain-helper
+          --channel "$RELEASE_CHANNEL"
           --version "$RELEASE_VERSION"
           --helper-version "$HELPER_VERSION"
           --tag "$RELEASE_TAG"
@@ -310,7 +417,9 @@ jobs:
 
   deployment-artifacts:
     name: Deployment and Skill artifacts
-    needs: prepare
+    needs:
+      - prepare
+      - authorize
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -476,10 +585,15 @@ jobs:
     name: Attest, verify, and atomically publish
     needs:
       - prepare
+      - authorize
       - local-artifacts
       - deployment-artifacts
       - sbom
-    if: needs.prepare.outputs.should_release == 'true'
+    if: >-
+      needs.prepare.outputs.should_release == 'true' &&
+      needs.authorize.result == 'success' &&
+      github.repository == 'Vizards/OneNod' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -488,19 +602,12 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - name: Check out the exact release tag
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
-          persist-credentials: false
       - name: Check out the reviewed release controller
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
-          path: .release-controller
           persist-credentials: false
       - name: Verify the release controller identity
-        working-directory: .release-controller
         env:
           WORKFLOW_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
@@ -576,44 +683,66 @@ jobs:
       - name: Create a draft and upload the complete set
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PRERELEASE: ${{ needs.prepare.outputs.github_prerelease }}
+          PRODUCT_LABEL: ${{ needs.prepare.outputs.product_label }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release blocked: a Release already exists for $RELEASE_TAG; inspect it instead of overwriting assets." >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" \
-            --draft \
-            --verify-tag \
-            --title "OneNod $RELEASE_TAG — Public Preview" \
+          release_flags=(
+            --draft
+            --verify-tag
+            --title "OneNod $RELEASE_TAG — $PRODUCT_LABEL"
             --generate-notes
+          )
+          if [ "$GITHUB_PRERELEASE" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${release_flags[@]}"
           gh release upload "$RELEASE_TAG" dist/release/*
       - name: Verify the remote draft byte-for-byte
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: >-
-          node .release-controller/scripts/release/verify-github-release.mjs
+          node scripts/release/verify-github-release.mjs
           --directory dist/release
           --repository "$GITHUB_REPOSITORY"
+          --channel "$RELEASE_CHANNEL"
           --tag "$RELEASE_TAG"
+          --version "$RELEASE_VERSION"
           --commit "$SOURCE_SHA"
           --state draft
-      - name: Publish the verified normal Release
+      - name: Publish the verified immutable Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_LATEST: ${{ needs.prepare.outputs.github_latest }}
+          GITHUB_PRERELEASE: ${{ needs.prepare.outputs.github_prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+        run: |
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease="$GITHUB_PRERELEASE" \
+            -f make_latest="$GITHUB_LATEST" >/dev/null
       - name: Verify publication made the Release immutable
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: >-
-          node .release-controller/scripts/release/verify-github-release.mjs
+          node scripts/release/verify-github-release.mjs
           --directory dist/release
           --repository "$GITHUB_REPOSITORY"
+          --channel "$RELEASE_CHANNEL"
           --tag "$RELEASE_TAG"
+          --version "$RELEASE_VERSION"
           --commit "$SOURCE_SHA"
           --state published

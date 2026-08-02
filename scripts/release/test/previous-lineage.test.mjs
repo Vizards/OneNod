@@ -25,7 +25,21 @@ test("a published immutable predecessor is bound to its tag commit", async () =>
     await writeFile(fixture.release, `${JSON.stringify(release)}\n`);
     const mutable = verify(fixture);
     assert.notEqual(mutable.status, 0);
-    assert.match(mutable.stderr, /not published, stable, and immutable/u);
+    assert.match(mutable.stderr, /not published, correctly classified, and immutable/u);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("an immutable beta Release is a valid artifact predecessor", async () => {
+  const fixture = await lineageFixture({
+    channel: "beta",
+    prerelease: true,
+    version: "0.0.2-beta.3",
+  });
+  try {
+    const valid = verify(fixture);
+    assert.equal(valid.status, 0, valid.stderr);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }
@@ -45,20 +59,23 @@ test("the predecessor manifest must match immutable asset metadata and source", 
   }
 });
 
-async function lineageFixture() {
+async function lineageFixture(overrides = {}) {
+  const fixtureVersion = overrides.version ?? version;
+  const channel = overrides.channel ?? "stable";
+  const prerelease = overrides.prerelease ?? false;
   const root = await mkdtemp(join(tmpdir(), "onenod-lineage-test-"));
   const manifestPath = join(root, "release-manifest.json");
   const releasePath = join(root, "release.json");
   const manifestText = `${JSON.stringify({
-    channel: "stable",
-    release_version: version,
+    channel,
+    release_version: fixtureVersion,
     schema_version: 1,
     source: {
       commit,
       repository: "Vizards/OneNod",
       workflow: ".github/workflows/release.yml",
     },
-    tag: `v${version}`,
+    tag: `v${fixtureVersion}`,
   })}\n`;
   await writeFile(manifestPath, manifestText);
   const digest = `sha256:${createHash("sha256").update(manifestText).digest("hex")}`;
@@ -74,9 +91,9 @@ async function lineageFixture() {
     draft: false,
     id: 123,
     immutable: true,
-    prerelease: false,
+    prerelease,
     published_at: "2026-08-01T00:00:00Z",
-    tag_name: `v${version}`,
+    tag_name: `v${fixtureVersion}`,
   })}\n`;
   await writeFile(releasePath, releaseText);
   return {
@@ -85,6 +102,7 @@ async function lineageFixture() {
     release: releasePath,
     releaseText: () => readText(releasePath),
     root,
+    version: fixtureVersion,
   };
 }
 
@@ -98,7 +116,7 @@ function verify(fixture) {
       "--manifest",
       fixture.manifest,
       "--version",
-      version,
+      fixture.version,
       "--commit",
       commit,
     ],

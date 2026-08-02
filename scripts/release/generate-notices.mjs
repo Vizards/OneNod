@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
+import { parseProductVersion } from "./release-version.mjs";
+
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const options = parseOptions(process.argv.slice(2));
 const sections = [];
@@ -543,8 +545,8 @@ function parseOptions(args) {
   if (!/^[0-9a-f]{40}$/u.test(values.commit)) {
     fail("source commit must be a full lowercase Git SHA");
   }
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.version)) {
-    fail("release version must be a stable semantic version");
+  if (parseProductVersion(values.version) === null) {
+    fail("release version must be stable SemVer or use the exact alpha.N/beta.N form");
   }
   if (!new Set(["binary", "deployment"]).has(values.scope)) {
     fail("notice scope must be binary or deployment");

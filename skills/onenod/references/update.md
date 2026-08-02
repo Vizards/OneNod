@@ -17,6 +17,23 @@ private key. An available update is a normal successful result. Follow the
 binary's reported plan for provenance, compatibility, revoked artifacts, or a
 required bridge version rather than reconstructing an update from this Skill.
 
+Stable installations only discover stable Releases. `beta` accepts beta and
+stable Releases; `alpha` accepts alpha, beta, and stable Releases. The chosen
+risk ceiling is stored independently in each Mac's local receipt and in the
+operator deployment receipt. Raising it requires human confirmation. Lowering
+it never authorizes a version downgrade: when no compatible non-older Release
+exists, the CLI leaves state unchanged and reports that it is waiting for one.
+Use an explicit `--channel` only when the human has asked to join or leave a
+prerelease channel.
+
+For a branch-bound E2E candidate, use the exact immutable version selected by
+the human, for example `may update --version 0.0.2-alpha.7`. `--version` and
+`--channel` are mutually exclusive. An exact selection applies only to that
+operation; the resulting receipt records the version's inferred risk channel,
+so later unqualified updates follow that channel rather than remaining pinned.
+Never substitute a locally built binary for this test because it does not
+exercise OneNod's Release, provenance, installer, or deployment-bundle path.
+
 ## Local update
 
 Local update verifies the attributed Release, stages it privately, promotes it

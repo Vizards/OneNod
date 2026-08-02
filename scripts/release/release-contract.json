@@ -2,8 +2,26 @@
   "schema_version": 1,
   "repository": "Vizards/OneNod",
   "workflow": ".github/workflows/release.yml",
-  "channel": "stable",
-  "product_label": "Public Preview",
+  "release_train": {
+    "target_version": "0.0.2"
+  },
+  "release_channels": {
+    "alpha": {
+      "github_prerelease": true,
+      "github_latest": false,
+      "product_label": "Alpha"
+    },
+    "beta": {
+      "github_prerelease": true,
+      "github_latest": false,
+      "product_label": "Beta"
+    },
+    "stable": {
+      "github_prerelease": false,
+      "github_latest": true,
+      "product_label": "Public Preview"
+    }
+  },
   "components": {
     "may": {
       "client_protocol": 1

@@ -2,14 +2,19 @@ import { readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { parseProductVersion } from "./release-version.mjs";
+
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const options = parseOptions(process.argv.slice(2));
+const releaseChannel = parseProductVersion(options.version).channel;
 const releaseEnvironment = {
   ...process.env,
+  ONENOD_RELEASE_CHANNEL: releaseChannel,
   ONENOD_RELEASE_TAG: `v${options.version}`,
   ONENOD_RELEASE_VERSION: options.version,
   ONENOD_SOURCE_COMMIT: options.commit,
   SOURCE_DATE_EPOCH: commitTimestamp(options.commit),
+  VITE_ONENOD_RELEASE_CHANNEL: releaseChannel,
   VITE_ONENOD_RELEASE_TAG: `v${options.version}`,
   VITE_ONENOD_RELEASE_VERSION: options.version,
   VITE_ONENOD_SOURCE_COMMIT: options.commit,
@@ -56,11 +61,15 @@ if (
   !(await Promise.all(
     webAssets.map(async (path) => {
       const content = await readFile(path, "utf8");
-      return content.includes(options.version) && content.includes(options.commit);
+      return (
+        content.includes(options.version) &&
+        content.includes(options.commit) &&
+        content.includes(releaseChannel)
+      );
     }),
   )).some(Boolean)
 ) {
-  fail("PWA assets do not contain the release version and source commit");
+  fail("PWA assets do not contain the release version, channel, and source commit");
 }
 
 run(
@@ -96,6 +105,8 @@ function runWrangler(component, environment) {
       resolve(packageRoot, "wrangler.jsonc"),
       "--outdir",
       resolve(packageRoot, "dist/worker"),
+      "--define",
+      `ONENOD_RELEASE_CHANNEL:${JSON.stringify(releaseChannel)}`,
       "--define",
       `ONENOD_RELEASE_VERSION:${JSON.stringify(options.version)}`,
       "--define",
@@ -142,8 +153,12 @@ function commitTimestamp(commit) {
 
 async function assertBuildMetadata(path, values, label) {
   const content = await readFile(path, "utf8").catch(() => "");
-  if (!content.includes(values.version) || !content.includes(values.commit)) {
-    fail(`${label} does not contain the release version and source commit`);
+  if (
+    !content.includes(values.version) ||
+    !content.includes(releaseChannel) ||
+    !content.includes(values.commit)
+  ) {
+    fail(`${label} does not contain the release version, channel, and source commit`);
   }
 }
 
@@ -183,8 +198,8 @@ function parseOptions(args) {
   if (!/^[0-9a-f]{40}$/u.test(values.commit)) {
     fail("source commit must be a full lowercase Git SHA");
   }
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.version)) {
-    fail("release version must be a stable semantic version");
+  if (parseProductVersion(values.version) === null) {
+    fail("release version must be stable SemVer or use alpha.N/beta.N");
   }
   if (values.output === "" || values.notices === "" || values.components === "") {
     fail("release output, notices, and component inventory are required");

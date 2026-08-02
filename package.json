@@ -17,11 +17,14 @@
     "dev:worker": "pnpm build:protocol && pnpm --filter @onenod/gateway build:web && pnpm --filter @onenod/gateway dev:worker",
     "docs:check": "node scripts/check-doc-links.mjs && node scripts/validate-skill.mjs",
     "lint": "oxlint apps packages scripts --deny-warnings",
+    "release:alpha": "node scripts/release/request-candidate.mjs alpha",
+    "release:beta": "node scripts/release/request-candidate.mjs beta",
     "test": "pnpm build:protocol && pnpm --filter @onenod/protocol test && pnpm --filter @onenod/gateway test && pnpm --filter @onenod/executor test",
     "typecheck": "pnpm build:protocol && pnpm --filter @onenod/gateway typecheck && pnpm --filter @onenod/executor typecheck"
   },
   "devDependencies": {
     "oxlint": "catalog:",
+    "semver": "7.8.5",
     "tar-stream": "3.2.0",
     "typescript": "catalog:"
   }

@@ -19,7 +19,7 @@ const RAW_FIELD_SECRET = "raw-wire-item-value-must-never-be-used";
 const candidates = [
   {
     algorithm: "ssh-ed25519",
-    generate: () => utils.generateKeyPairSync("ed25519"),
+    generate: generateTestEd25519KeyPair,
   },
   {
     algorithm: "rsa-sha2-256",
@@ -63,7 +63,7 @@ for (const candidate of candidates) {
 }
 
 test("projects only public SSH metadata and identifies the resolver field", () => {
-  const keys = utils.generateKeyPairSync("ed25519");
+  const keys = generateTestEd25519KeyPair();
   const item = sshItem(keys.public);
   const metadata = projectWireSshKeyMetadata(item);
 
@@ -85,7 +85,7 @@ test("rejects ECDSA SSH keys that 1Password item creation cannot support", () =>
 });
 
 test("rejects stale metadata before parsing private key material", () => {
-  const keys = utils.generateKeyPairSync("ed25519");
+  const keys = generateTestEd25519KeyPair();
   const item = sshItem(keys.public);
   const metadata = projectWireSshKeyMetadata(item);
   assert.ok(metadata);
@@ -105,8 +105,8 @@ test("rejects stale metadata before parsing private key material", () => {
 });
 
 test("rejects fingerprint, key, and signature-algorithm confusion", () => {
-  const keys = utils.generateKeyPairSync("ed25519");
-  const otherKeys = utils.generateKeyPairSync("ed25519");
+  const keys = generateTestEd25519KeyPair();
+  const otherKeys = generateTestEd25519KeyPair();
   const item = sshItem(keys.public);
   const metadata = projectWireSshKeyMetadata(item);
   assert.ok(metadata);
@@ -151,7 +151,7 @@ test("rejects fingerprint, key, and signature-algorithm confusion", () => {
 });
 
 test("accepts only a single SSH field and an unencrypted OpenSSH private key", () => {
-  const keys = utils.generateKeyPairSync("ed25519");
+  const keys = generateTestEd25519KeyPair();
   const item = sshItem(keys.public);
   const metadata = projectWireSshKeyMetadata(item);
   assert.ok(metadata);
@@ -180,7 +180,7 @@ test("accepts only a single SSH field and an unencrypted OpenSSH private key", (
 });
 
 test("private-key parse failures expose only a stable safe code", () => {
-  const keys = utils.generateKeyPairSync("ed25519");
+  const keys = generateTestEd25519KeyPair();
   const item = sshItem(keys.public);
   const metadata = projectWireSshKeyMetadata(item);
   assert.ok(metadata);
@@ -237,6 +237,20 @@ function sshItem(publicKey: string): WireItem {
     version: 3,
     websites: [],
   };
+}
+
+function generateTestEd25519KeyPair(): ReturnType<
+  typeof utils.generateKeyPairSync
+> {
+  // ssh2 1.17.0 can omit a leading zero byte from roughly one in 256
+  // generated Ed25519 public blobs. Production correctly rejects that
+  // malformed 31-byte key; tests retry until the upstream fixture is valid.
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const keys = utils.generateKeyPairSync("ed25519");
+    const parsed = utils.parseKey(keys.public);
+    if (!(parsed instanceof Error) && !Array.isArray(parsed)) return keys;
+  }
+  throw new Error("ssh2_failed_to_generate_a_valid_ed25519_test_fixture");
 }
 
 function assertSshError(

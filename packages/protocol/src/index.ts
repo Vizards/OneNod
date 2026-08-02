@@ -77,5 +77,6 @@ export interface ExecutorHealthResponse {
 
 export * from "./canonical-json.js";
 export * from "./encoding.js";
+export * from "./release-version.js";
 export * from "./requester-signing.js";
 export * from "./v1.js";

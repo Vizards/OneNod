@@ -68,6 +68,9 @@ importers:
       oxlint:
         specifier: 'catalog:'
         version: 1.74.0
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
       tar-stream:
         specifier: 3.2.0
         version: 3.2.0
@@ -80,6 +83,9 @@ importers:
       '@extism/extism':
         specifier: 2.0.0-rc13
         version: 2.0.0-rc13
+      '@onenod/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@scure/base':
         specifier: 2.2.0
         version: 2.2.0

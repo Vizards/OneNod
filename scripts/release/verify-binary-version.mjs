@@ -2,6 +2,8 @@ import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { parseProductVersion, parseStableVersion } from "./release-version.mjs";
+
 const options = parseOptions(process.argv.slice(2));
 await assertExecutable(options.may, "may");
 await assertExecutable(options.helper, "Keychain helper");
@@ -12,7 +14,7 @@ if (
   may.release_tag !== options.tag ||
   may.source_commit !== options.commit ||
   may.repository !== "Vizards/OneNod" ||
-  may.channel !== "stable" ||
+  may.release_channel !== options.channel ||
   may.supported_release !== true ||
   may.client_protocol !== 1
 ) {
@@ -38,6 +40,7 @@ process.stdout.write(
   `${JSON.stringify({
     event: "release_binary_versions_verified",
     helper_version: helper.version,
+    release_channel: may.release_channel,
     release_version: may.version,
   })}\n`,
 );
@@ -77,6 +80,7 @@ async function assertExecutable(path, label) {
 
 function parseOptions(args) {
   const values = {
+    channel: "",
     commit: "",
     helper: "",
     helperVersion: "",
@@ -89,6 +93,9 @@ function parseOptions(args) {
     const value = args[index + 1];
     if (value === undefined) fail(`missing value for ${name}`);
     switch (name) {
+      case "--channel":
+        values.channel = value;
+        break;
       case "--commit":
         values.commit = value;
         break;
@@ -115,18 +122,16 @@ function parseOptions(args) {
     values.may === "" ||
     values.helper === "" ||
     !/^[0-9a-f]{40}$/u.test(values.commit) ||
-    !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(values.tag) ||
     values.tag !== `v${values.version}`
   ) {
     fail("binary verification arguments are invalid");
   }
-  for (const [label, version] of [
-    ["release", values.version],
-    ["helper", values.helperVersion],
-  ]) {
-    if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version)) {
-      fail(`${label} version must be a stable semantic version`);
-    }
+  const releaseVersion = parseProductVersion(values.version);
+  if (releaseVersion === null || releaseVersion.channel !== values.channel) {
+    fail("release version and channel are inconsistent");
+  }
+  if (parseStableVersion(values.helperVersion) === null) {
+    fail("helper version must be a stable semantic version");
   }
   return values;
 }

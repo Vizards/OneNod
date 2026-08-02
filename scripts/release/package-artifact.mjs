@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { writeArtifactArchive } from "./artifact-tar.mjs";
+import { parseProductVersion, parseStableVersion } from "./release-version.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const options = parseOptions(process.argv.slice(2));
@@ -371,7 +372,7 @@ function parseOptions(args) {
     fail("output and a full lowercase source commit are required");
   }
   if (["local", "deployment", "skill"].includes(values.kind)) {
-    requireVersion(values.version, "release version");
+    requireProductVersion(values.version, "release version");
   }
   if (["local", "helper", "deployment"].includes(values.kind)) {
     if (values.notices === "" || values.components === "") {
@@ -384,7 +385,7 @@ function parseOptions(args) {
     }
   }
   if (values.kind === "helper") {
-    requireVersion(values.helperVersion, "helper version");
+    requireStableVersion(values.helperVersion, "helper version");
     if (!/^sha256:[0-9a-f]{64}$/u.test(values.helperSourceDigest)) {
       fail("helper artifact requires its production source digest");
     }
@@ -392,8 +393,14 @@ function parseOptions(args) {
   return values;
 }
 
-function requireVersion(value, label) {
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(value)) {
+function requireProductVersion(value, label) {
+  if (parseProductVersion(value) === null) {
+    fail(`${label} must be stable SemVer or use the exact alpha.N/beta.N form`);
+  }
+}
+
+function requireStableVersion(value, label) {
+  if (parseStableVersion(value) === null) {
     fail(`${label} must be a stable semantic version`);
   }
 }

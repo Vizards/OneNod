@@ -4,6 +4,7 @@ import {
 } from "@onenod/protocol";
 
 import { GATEWAY_RELEASE_METADATA } from "./release-metadata.js";
+import type { GatewayReleaseChannel } from "../release.js";
 
 const VERSION_PATH = "/api/version";
 
@@ -22,7 +23,8 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === API_PATHS.systemHealth) {
-      const body: SystemHealthResponse = {
+      const body: SystemHealthResponse & { channel: GatewayReleaseChannel } = {
+        channel: GATEWAY_RELEASE_METADATA.releaseChannel,
         environment: env.APP_ENV,
         ok: true,
         service: "onenod-gateway",
@@ -49,6 +51,7 @@ function releaseMetadataResponse() {
           min: GATEWAY_RELEASE_METADATA.executorProtocolMin,
         },
         declared: true,
+        channel: GATEWAY_RELEASE_METADATA.releaseChannel,
         state_schema: GATEWAY_RELEASE_METADATA.executorStateSchema,
         version: releaseVersion,
       },
@@ -57,15 +60,18 @@ function releaseMetadataResponse() {
           max: GATEWAY_RELEASE_METADATA.requesterProtocolMax,
           min: GATEWAY_RELEASE_METADATA.requesterProtocolMin,
         },
+        channel: GATEWAY_RELEASE_METADATA.releaseChannel,
         state_schema: GATEWAY_RELEASE_METADATA.gatewayStateSchema,
         version: releaseVersion,
       },
       pwa: {
+        channel: GATEWAY_RELEASE_METADATA.pwaReleaseChannel,
         version: GATEWAY_RELEASE_METADATA.pwaReleaseVersion,
       },
     },
     ok: true,
     release_tag: GATEWAY_RELEASE_METADATA.releaseTag,
+    release_channel: GATEWAY_RELEASE_METADATA.releaseChannel,
     release_version: releaseVersion,
     service: "onenod-gateway",
     source_commit: GATEWAY_RELEASE_METADATA.sourceCommit,

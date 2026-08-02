@@ -14,6 +14,8 @@ import type {
   SystemHealthResponse,
 } from "@onenod/protocol";
 
+import type { GatewayReleaseChannel } from "../release";
+
 const CSRF_STORAGE_KEY = "onepassword-remote.csrf";
 
 export type ApprovalDecision = "approve" | "reject";
@@ -95,6 +97,10 @@ export interface RequesterSummary {
 export interface VerifyDecisionResponse {
   ok: true;
   status: string;
+}
+
+export interface GatewaySystemHealthResponse extends SystemHealthResponse {
+  channel: GatewayReleaseChannel;
 }
 
 export interface PaginatedRequestListResponse extends RequestListResponse {
@@ -572,7 +578,7 @@ export function verifyCredentialRevoke(
   );
 }
 
-export function getSystemHealth(): Promise<SystemHealthResponse> {
+export function getSystemHealth(): Promise<GatewaySystemHealthResponse> {
   return fetchJson("/api/health");
 }
 

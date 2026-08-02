@@ -2,16 +2,20 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { parseProductVersion } from "./release-version.mjs";
+
 const options = parseOptions(process.argv.slice(2));
 const releaseBytes = await readFile(options.release);
 const manifestBytes = await readFile(options.manifest);
 const release = parseRecord(releaseBytes, "previous GitHub Release");
 const manifest = parseRecord(manifestBytes, "previous release manifest");
 const expectedTag = `v${options.version}`;
+const expectedChannel = parseProductVersion(options.version).channel;
+const expectedPrerelease = expectedChannel !== "stable";
 
 if (
   release.draft !== false ||
-  release.prerelease !== false ||
+  release.prerelease !== expectedPrerelease ||
   release.immutable !== true ||
   release.tag_name !== expectedTag ||
   !Number.isSafeInteger(release.id) ||
@@ -19,7 +23,7 @@ if (
   typeof release.published_at !== "string" ||
   !Array.isArray(release.assets)
 ) {
-  fail("the preceding GitHub Release is not published, stable, and immutable");
+  fail("the preceding GitHub Release is not published, correctly classified, and immutable");
 }
 
 const manifestAssets = release.assets.filter(
@@ -43,7 +47,7 @@ if (
   manifest.schema_version !== 1 ||
   manifest.release_version !== options.version ||
   manifest.tag !== expectedTag ||
-  manifest.channel !== "stable" ||
+  manifest.channel !== expectedChannel ||
   manifest.source?.repository !== "Vizards/OneNod" ||
   manifest.source?.workflow !== ".github/workflows/release.yml" ||
   manifest.source?.commit !== options.commit
@@ -85,9 +89,7 @@ function parseOptions(args) {
   }
   if (
     !/^[0-9a-f]{40}$/u.test(values.commit) ||
-    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(
-      values.version,
-    ) ||
+    parseProductVersion(values.version) === null ||
     values.manifest === "" ||
     values.release === ""
   ) {

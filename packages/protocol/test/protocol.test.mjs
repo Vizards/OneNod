@@ -8,6 +8,7 @@ import {
   decodeBase64Url,
   encodeBase64Url,
   formatRequesterCanonicalString,
+  parseOneNodProductVersion,
   requesterPublicKeyFingerprint,
   sha256Base64Url,
 } from "../dist/index.js";
@@ -78,6 +79,32 @@ test("matches the standard SHA-256 abc vector", async () => {
     await sha256Base64Url("abc"),
     "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0",
   );
+});
+
+test("parses only stable, alpha.N, and beta.N OneNod product versions", () => {
+  assert.deepEqual(parseOneNodProductVersion("1.2.3"), {
+    channel: "stable",
+    version: "1.2.3",
+  });
+  assert.deepEqual(parseOneNodProductVersion("1.2.3-alpha.1"), {
+    channel: "alpha",
+    version: "1.2.3-alpha.1",
+  });
+  assert.deepEqual(parseOneNodProductVersion("1.2.3-beta.12"), {
+    channel: "beta",
+    version: "1.2.3-beta.12",
+  });
+  for (const value of [
+    "1.2.3-alpha.0",
+    "1.2.3-beta.01",
+    "1.2.3-rc.1",
+    "1.2.3+build",
+    "01.2.3",
+    "9007199254740992.0.0",
+    null,
+  ]) {
+    assert.equal(parseOneNodProductVersion(value), null);
+  }
 });
 
 test("matches the fixed canonical JSON and requester signing vector", async () => {
