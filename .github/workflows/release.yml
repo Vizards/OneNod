@@ -725,7 +725,7 @@ jobs:
           GITHUB_PRERELEASE: ${{ needs.prepare.outputs.github_prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
+          release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -F draft=false \
             -F prerelease="$GITHUB_PRERELEASE" \

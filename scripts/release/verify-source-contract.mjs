@@ -115,6 +115,10 @@ if (
   !publishJob.includes("needs.authorize.result == 'success'") ||
   !publishJob.includes("github.ref == 'refs/heads/main'") ||
   !publishJob.includes('run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"') ||
+  !publishJob.includes(
+    'gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId',
+  ) ||
+  publishJob.includes('releases/tags/$RELEASE_TAG" --jq .id') ||
   publishJob.includes("refs/tags/${{ needs.prepare.outputs.tag }}") ||
   publishJob.includes(".release-controller") ||
   (publishJob.match(
