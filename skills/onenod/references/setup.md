@@ -40,11 +40,19 @@ Before its production confirmation, the human must have:
 Workers Free is supported, but billing tier is not a security check. If
 Wrangler exposes multiple accounts, the human selects the dedicated account.
 
-Cloudflare OAuth and 1Password unlock begin the deployment ceremony. At that
-point, stop other same-user Agents and let the human own the terminal. The CLI
-shows one non-secret production plan and asks for one default-no deployment
-confirmation before creating Vaults, a Service Account, Workers, Durable
-Objects, or Worker Secrets.
+Wrangler account selection, browser OAuth when needed, and 1Password unlock
+begin the deployment ceremony. At that point, stop other same-user Agents and
+let the human own the terminal. The CLI shows one non-secret production plan
+and asks for one default-no deployment confirmation before creating Vaults, a
+Service Account, Workers, Durable Objects, or Worker Secrets.
+
+The CLI reuses an authenticated Wrangler profile when it already exposes the
+dedicated account. If multiple eligible accounts are available, the human
+selects the intended profile/account pair; a fresh browser OAuth remains an
+option. A profile created by the CLI is cleaned up automatically after an
+interrupted ceremony, while a reused human profile is never deleted on an
+error. After a successful deployment, the normal default-yes current-Mac
+revocation prompt covers every local profile that exposes the selected account.
 
 The Gateway and Executor prompts offer cryptographically randomized Worker
 names by default. Pressing Enter accepts those names. A Worker name explicitly

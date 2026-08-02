@@ -33,8 +33,9 @@ For migration, load the router plus only the applicable leaf:
 
 - Use the installed `may` requester for Agent work. `op` is reserved for a
   human-explicit 1Password administration or migration task.
-- Hand the terminal to the human from Cloudflare OAuth or 1Password unlock
-  through the CLI's current-Mac Cloudflare revocation check.
+- Hand the terminal to the human from Wrangler account selection, browser
+  OAuth when needed, or 1Password unlock through the CLI's current-Mac
+  Cloudflare revocation check.
 - Treat Passkeys, macOS security prompts, account selection, production
   deployment confirmation, revocation, and optional integration changes as
   human decisions.

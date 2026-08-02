@@ -112,6 +112,12 @@ type wranglerIdentity struct {
 	Accounts []activeWranglerAccount
 }
 
+type operatorWranglerSelection struct {
+	Account      activeWranglerAccount
+	CreatedByMay bool
+	Profile      string
+}
+
 type operatorTools struct {
 	Node        string
 	OnePassword string
@@ -218,14 +224,18 @@ func runBinaryFirstProductionDeployment(
 	if err != nil {
 		return err
 	}
-	profile, err := createTemporaryWranglerProfile(tools.Wrangler, console)
+	wranglerSelection, err := selectOrCreateWranglerProfile(
+		tools.Wrangler, "", deps.cloudflareTransport, console,
+	)
 	if err != nil {
 		return err
 	}
+	profile := wranglerSelection.Profile
+	account := wranglerSelection.Account
 	profileRevoked := false
 	profileRetainedByHuman := false
 	defer func() {
-		if !profileRevoked && !profileRetainedByHuman {
+		if wranglerSelection.CreatedByMay && !profileRevoked && !profileRetainedByHuman {
 			if bestEffortDeleteWranglerProfile(tools.Wrangler, profile) {
 				profileRevoked = true
 			} else {
@@ -233,21 +243,6 @@ func runBinaryFirstProductionDeployment(
 			}
 		}
 	}()
-	identity, err := inspectWranglerIdentity(
-		tools.Wrangler, profile, deps.cloudflareTransport,
-	)
-	if err != nil {
-		return err
-	}
-	account, err := selectWranglerAccount(identity, console)
-	if err != nil {
-		return err
-	}
-	if err := assertNoOtherWranglerProfileAccess(
-		tools.Wrangler, profile, account.ID, true, deps.cloudflareTransport,
-	); err != nil {
-		return err
-	}
 	token, err := readNamedWranglerOAuthToken(tools.Wrangler, profile)
 	if err != nil {
 		return err
@@ -273,7 +268,10 @@ func runBinaryFirstProductionDeployment(
 			return err
 		}
 	}
-	writeFirstDeploymentPlan(console.stdout, release, bundle.Artifact, account, identityTarget, onePasswordPlan, profile)
+	writeFirstDeploymentPlan(
+		console.stdout, release, bundle.Artifact, account, identityTarget,
+		onePasswordPlan, profile, wranglerSelection.CreatedByMay,
+	)
 	confirmed, err := promptYesNo(console.stdin, console.stdout, "Deploy this OneNod plan now?", false)
 	if err != nil {
 		return err
@@ -360,7 +358,7 @@ func runBinaryFirstProductionDeployment(
 		return fmt.Errorf("remote deployment completed and Cloudflare profile handling finished, but local installation failed: %w", localInstallErr)
 	}
 	if profileRevoked {
-		fmt.Fprintln(console.stdout, "OneNod first deployment is complete and this Mac's temporary Cloudflare profile was revoked.")
+		fmt.Fprintln(console.stdout, "OneNod first deployment is complete and this Mac's Cloudflare deployment authority was revoked.")
 	} else {
 		fmt.Fprintln(console.stdout, "OneNod first deployment is complete, but Cloudflare deployment authority remains on this Mac by explicit choice.")
 	}
@@ -611,6 +609,119 @@ func selectWranglerAccount(identity wranglerIdentity, console *operatorConsole) 
 	return identity.Accounts[selected-1], nil
 }
 
+func selectOrCreateWranglerProfile(
+	wrangler string,
+	requiredAccountID string,
+	base http.RoundTripper,
+	console *operatorConsole,
+) (operatorWranglerSelection, error) {
+	profiles, err := listWranglerProfiles(wrangler)
+	if err != nil {
+		return operatorWranglerSelection{}, err
+	}
+	var candidates []operatorWranglerSelection
+	for _, profile := range profiles {
+		accounts, authenticated, inspectErr := tryInspectWranglerProfileAccounts(
+			wrangler, profile, base,
+		)
+		if inspectErr != nil {
+			return operatorWranglerSelection{}, fmt.Errorf("cannot inspect authenticated Wrangler profile %q: %w", profile, inspectErr)
+		}
+		if !authenticated {
+			continue
+		}
+		for _, account := range accounts {
+			if requiredAccountID == "" || account.ID == requiredAccountID {
+				candidates = append(candidates, operatorWranglerSelection{
+					Account: account, Profile: profile,
+				})
+			}
+		}
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		if candidates[left].Profile != candidates[right].Profile {
+			return candidates[left].Profile < candidates[right].Profile
+		}
+		if candidates[left].Account.Name != candidates[right].Account.Name {
+			return candidates[left].Account.Name < candidates[right].Account.Name
+		}
+		return candidates[left].Account.ID < candidates[right].Account.ID
+	})
+	if len(candidates) == 1 {
+		selected := candidates[0]
+		fmt.Fprintf(
+			console.stdout,
+			"Using existing Wrangler profile %s for Cloudflare account %s (%s).\n",
+			selected.Profile, selected.Account.Name, selected.Account.ID,
+		)
+		return selected, nil
+	}
+	if len(candidates) > 1 {
+		fmt.Fprintln(console.stdout, "Authenticated Wrangler profiles expose multiple eligible Cloudflare accounts:")
+		for index, candidate := range candidates {
+			fmt.Fprintf(
+				console.stdout, "  %d. %s — %s (%s)\n",
+				index+1, candidate.Profile, candidate.Account.Name, candidate.Account.ID,
+			)
+		}
+		fmt.Fprintf(console.stdout, "  %d. Sign in to another Cloudflare account\n", len(candidates)+1)
+		value, readErr := console.readRequiredValue("Select the dedicated Cloudflare account number")
+		if readErr != nil {
+			return operatorWranglerSelection{}, readErr
+		}
+		var selected int
+		if _, scanErr := fmt.Sscanf(value, "%d", &selected); scanErr != nil ||
+			selected < 1 || selected > len(candidates)+1 || fmt.Sprintf("%d", selected) != value {
+			return operatorWranglerSelection{}, errors.New("Cloudflare account selection is invalid")
+		}
+		if selected <= len(candidates) {
+			return candidates[selected-1], nil
+		}
+	}
+	return createAndSelectTemporaryWranglerProfile(
+		wrangler, requiredAccountID, base, console,
+	)
+}
+
+func createAndSelectTemporaryWranglerProfile(
+	wrangler string,
+	requiredAccountID string,
+	base http.RoundTripper,
+	console *operatorConsole,
+) (selection operatorWranglerSelection, returnErr error) {
+	profile, err := createTemporaryWranglerProfile(wrangler, console)
+	if err != nil {
+		return operatorWranglerSelection{}, err
+	}
+	keepProfile := false
+	defer func() {
+		if returnErr != nil && !keepProfile && !bestEffortDeleteWranglerProfile(wrangler, profile) {
+			fmt.Fprintf(console.stderr, "SECURITY WARNING: cleanup of incomplete Cloudflare profile %s failed. Revoke it now with: wrangler auth delete %s\n", profile, profile)
+		}
+	}()
+	identity, err := inspectWranglerIdentity(wrangler, profile, base)
+	if err != nil {
+		return operatorWranglerSelection{}, err
+	}
+	var account activeWranglerAccount
+	if requiredAccountID == "" {
+		account, err = selectWranglerAccount(identity, console)
+	} else {
+		var found bool
+		account, found = accountByID(identity.Accounts, requiredAccountID)
+		if !found {
+			err = errors.New("new Wrangler profile does not expose the deployment receipt's dedicated Cloudflare account")
+		}
+	}
+	if err != nil {
+		return operatorWranglerSelection{}, err
+	}
+	keepProfile = true
+	return operatorWranglerSelection{
+		Account: account, CreatedByMay: true, Profile: profile,
+	}, nil
+}
+
 func readNamedWranglerOAuthToken(wrangler, profile string) ([]byte, error) {
 	output, err := runOperatorCapture(wrangler, []string{"auth", "token", "--profile", profile, "--json"}, "", nil, operatorCommandTimeout)
 	defer zeroBytes(output)
@@ -697,13 +808,18 @@ func writeFirstDeploymentPlan(
 	target productionTargetIdentity,
 	onePassword onePasswordProvisioningPlan,
 	profile string,
+	profileCreatedByMay bool,
 ) {
+	profileMode := "reused existing login"
+	if profileCreatedByMay {
+		profileMode = "created for this ceremony"
+	}
 	fmt.Fprintln(output, "\nOneNod first-deployment plan")
 	fmt.Fprintf(output, "  Verified release: %s (%s)\n", release.Manifest.ReleaseVersion, release.Manifest.Source.Commit)
 	fmt.Fprintf(output, "  Release channel: %s (artifact channel %s)\n",
 		selectedReleaseChannel(release), release.Manifest.Channel)
 	fmt.Fprintf(output, "  Deployment bundle: %s (%s)\n", artifact.Name, artifact.SHA256)
-	fmt.Fprintf(output, "  Temporary Wrangler profile: %s\n", profile)
+	fmt.Fprintf(output, "  Wrangler profile: %s (%s)\n", profile, profileMode)
 	fmt.Fprintf(output, "  Cloudflare account: %s (%s)\n", account.Name, account.ID)
 	fmt.Fprintf(output, "  Gateway: %s at %s\n", target.GatewayName, target.Origin)
 	fmt.Fprintf(output, "  Executor: %s (private)\n", target.ExecutorName)
@@ -712,7 +828,7 @@ func writeFirstDeploymentPlan(
 	fmt.Fprintf(output, "  Vaults to create: %s and %s (human-only recovery)\n", onePassword.AgentVaultName, onePassword.RecoveryVaultName)
 	fmt.Fprintf(output, "  Service Account: %s; read_items,write_items on %s only\n", onePassword.ServiceAccountName, onePassword.AgentVaultName)
 	fmt.Fprintln(output, "  Bootstrap: one-time URL fragment, removed from the Worker after the first Passkey is registered")
-	fmt.Fprintln(output, "  Final gate: revoke only this temporary Wrangler profile (default yes)")
+	fmt.Fprintln(output, "  Final gate: offer to revoke every local Wrangler profile for this account (default yes)")
 }
 
 func provisionFirstDeploymentOnePasswordBinary(
@@ -1178,56 +1294,74 @@ func completeBootstrapCeremony(
 
 func promptAndRevokeWranglerProfile(
 	wrangler string,
-	profile string,
+	usedProfile string,
 	accountID string,
 	base http.RoundTripper,
 	console *operatorConsole,
 ) (bool, error) {
+	profiles, err := wranglerProfilesForAccount(wrangler, accountID, base)
+	if err != nil {
+		return false, err
+	}
+	if len(profiles) == 0 {
+		fmt.Fprintln(console.stdout, "This Mac no longer has a Wrangler profile for the dedicated Cloudflare account.")
+		return true, nil
+	}
+	fmt.Fprintln(console.stdout, "Wrangler profiles on this Mac that expose the dedicated Cloudflare account:")
+	for _, profile := range profiles {
+		marker := ""
+		if profile == usedProfile {
+			marker = " (used for this operation)"
+		}
+		fmt.Fprintf(console.stdout, "  - %s%s\n", profile, marker)
+	}
 	revoke, err := console.confirmDefaultYes("Revoke this Mac's Cloudflare deployment authority now?")
 	if err != nil {
 		return false, err
 	}
 	if !revoke {
-		fmt.Fprintf(console.stderr, "Cloudflare profile %s was retained by explicit choice.\n", profile)
+		fmt.Fprintf(
+			console.stderr,
+			"Cloudflare deployment authority was retained by explicit choice in: %s.\n",
+			strings.Join(profiles, ", "),
+		)
 		return false, nil
 	}
-	if err := runOperatorCommand(wrangler, []string{"auth", "delete", profile}, "", nil, console, operatorCommandTimeout); err != nil {
-		return false, errors.New("delete temporary Wrangler profile failed")
+	for _, profile := range profiles {
+		if err := deleteWranglerProfileAndVerify(wrangler, profile, console); err != nil {
+			return false, err
+		}
 	}
-	output, err := runOperatorCapture(wrangler, []string{"auth", "token", "--profile", profile, "--json"}, "", nil, 30*time.Second)
-	defer zeroBytes(output)
-	if err == nil {
-		return false, errors.New("Wrangler profile still yields an OAuth token after deletion")
+	remaining, err := wranglerProfilesForAccount(wrangler, accountID, base)
+	if err != nil {
+		return false, fmt.Errorf("Wrangler profiles were deleted, but current-Mac Cloudflare revocation could not be proven: %w", err)
 	}
-	if err := assertNoOtherWranglerProfileAccess(
-		wrangler, profile, accountID, false, base,
-	); err != nil {
-		return false, fmt.Errorf("temporary profile was deleted, but current-Mac Cloudflare revocation could not be proven: %w", err)
+	if len(remaining) > 0 {
+		return false, fmt.Errorf(
+			"current-Mac Cloudflare revocation is incomplete; profiles still expose the dedicated account: %s",
+			strings.Join(remaining, ", "),
+		)
 	}
 	return true, nil
 }
 
-func assertNoOtherWranglerProfileAccess(
+func wranglerProfilesForAccount(
 	wrangler string,
-	temporaryProfile string,
 	accountID string,
-	requireTemporaryProfile bool,
 	base http.RoundTripper,
-) error {
+) ([]string, error) {
 	profiles, err := listWranglerProfiles(wrangler)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	temporaryMatches := 0
 	var matching []string
 	for _, profile := range profiles {
-		if profile == temporaryProfile {
-			temporaryMatches++
-			continue
+		accounts, authenticated, inspectErr := tryInspectWranglerProfileAccounts(wrangler, profile, base)
+		if inspectErr != nil {
+			return nil, fmt.Errorf("cannot safely inspect authenticated Wrangler profile %q: %w", profile, inspectErr)
 		}
-		accounts, err := inspectWranglerProfileAccounts(wrangler, profile, base)
-		if err != nil {
-			return fmt.Errorf("cannot safely inspect Wrangler profile %q; clean it up manually and retry", profile)
+		if !authenticated {
+			continue
 		}
 		for _, account := range accounts {
 			if account.ID == accountID {
@@ -1236,19 +1370,34 @@ func assertNoOtherWranglerProfileAccess(
 			}
 		}
 	}
-	if temporaryMatches > 1 {
-		return errors.New("Wrangler auth list returned the temporary profile more than once")
+	sort.Strings(matching)
+	return matching, nil
+}
+
+func deleteWranglerProfileAndVerify(
+	wrangler string,
+	profile string,
+	console *operatorConsole,
+) error {
+	output, deleteErr := runOperatorCapture(
+		wrangler, []string{"auth", "delete", profile}, "", nil, operatorCommandTimeout,
+	)
+	zeroBytes(output)
+	output, tokenErr := runOperatorCapture(
+		wrangler, []string{"auth", "token", "--profile", profile, "--json"}, "", nil, 30*time.Second,
+	)
+	zeroBytes(output)
+	if tokenErr == nil {
+		return fmt.Errorf("Wrangler profile %q still yields an OAuth token after deletion", profile)
 	}
-	if requireTemporaryProfile && temporaryMatches != 1 {
-		return errors.New("Wrangler auth list does not contain the temporary operator profile")
-	}
-	if len(matching) > 0 {
-		sort.Strings(matching)
-		return fmt.Errorf(
-			"other Wrangler profiles still expose the dedicated Cloudflare account: %s; delete those profiles manually and retry",
-			strings.Join(matching, ", "),
+	if deleteErr != nil {
+		fmt.Fprintf(
+			console.stderr,
+			"Wrangler reported an error while deleting %s, but token absence confirms this Mac no longer has that profile authority. Continuing without retry.\n",
+			profile,
 		)
 	}
+	fmt.Fprintf(console.stdout, "Revoked Wrangler profile %s from this Mac.\n", profile)
 	return nil
 }
 
@@ -1305,12 +1454,31 @@ func inspectWranglerProfileAccounts(
 	profile string,
 	base http.RoundTripper,
 ) ([]activeWranglerAccount, error) {
-	token, err := readNamedWranglerOAuthToken(wrangler, profile)
+	accounts, authenticated, err := tryInspectWranglerProfileAccounts(wrangler, profile, base)
 	if err != nil {
 		return nil, err
 	}
+	if !authenticated {
+		return nil, errors.New("Wrangler profile is not OAuth-authenticated")
+	}
+	return accounts, nil
+}
+
+func tryInspectWranglerProfileAccounts(
+	wrangler string,
+	profile string,
+	base http.RoundTripper,
+) ([]activeWranglerAccount, bool, error) {
+	token, err := readNamedWranglerOAuthToken(wrangler, profile)
+	if err != nil {
+		return nil, false, nil
+	}
 	defer zeroBytes(token)
-	return fetchCloudflareAccounts(base, token)
+	accounts, err := fetchCloudflareAccounts(base, token)
+	if err != nil {
+		return nil, true, err
+	}
+	return accounts, true, nil
 }
 
 func bestEffortDeleteWranglerProfile(wrangler, profile string) bool {
@@ -1623,14 +1791,18 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	console := &operatorConsole{stdin: deps.stdin, stdout: deps.stdout, stderr: deps.stderr}
-	profile, err := createTemporaryWranglerProfile(tools.Wrangler, console)
+	wranglerSelection, err := selectOrCreateWranglerProfile(
+		tools.Wrangler, receipt.AccountID, deps.cloudflareTransport, console,
+	)
 	if err != nil {
 		return err
 	}
+	profile := wranglerSelection.Profile
+	account := wranglerSelection.Account
 	profileRevoked := false
 	profileRetainedByHuman := false
 	defer func() {
-		if !profileRevoked && !profileRetainedByHuman {
+		if wranglerSelection.CreatedByMay && !profileRevoked && !profileRetainedByHuman {
 			if bestEffortDeleteWranglerProfile(tools.Wrangler, profile) {
 				profileRevoked = true
 			} else {
@@ -1638,21 +1810,6 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			}
 		}
 	}()
-	identity, err := inspectWranglerIdentity(
-		tools.Wrangler, profile, deps.cloudflareTransport,
-	)
-	if err != nil {
-		return err
-	}
-	account, found := accountByID(identity.Accounts, receipt.AccountID)
-	if !found {
-		return errors.New("temporary Wrangler profile does not expose the receipt's dedicated Cloudflare account")
-	}
-	if err := assertNoOtherWranglerProfileAccess(
-		tools.Wrangler, profile, account.ID, true, deps.cloudflareTransport,
-	); err != nil {
-		return err
-	}
 	token, err := readNamedWranglerOAuthToken(tools.Wrangler, profile)
 	if err != nil {
 		return err

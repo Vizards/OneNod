@@ -379,19 +379,39 @@ exit 0
 }
 
 func TestExplicitWranglerProfileRetentionSkipsDeletion(t *testing.T) {
+	deleteLog := filepath.Join(t.TempDir(), "deleted")
+	wrangler := writeWranglerFixture(t, `
+if [ "$1 $2" = "auth list" ]; then
+  printf '%s\n' '│ Profile │ Bound Directories │'
+  printf '%s\n' '│ password-gateway-release │ /tmp/project │'
+  exit 0
+fi
+if [ "$1 $2" = "auth token" ] && [ "$3 $4" = "--profile password-gateway-release" ]; then
+  printf '%s\n' '{"type":"oauth","token":"release-token"}'
+  exit 0
+fi
+if [ "$1 $2" = "auth delete" ]; then
+  printf '%s\n' "$3" >> "`+deleteLog+`"
+  exit 0
+fi
+exit 2
+`)
 	input := strings.NewReader("n\n")
 	console := operatorConsole{
 		stdin: input, stdout: io.Discard, stderr: io.Discard,
 	}
 	revoked, err := promptAndRevokeWranglerProfile(
-		"/does/not/exist",
-		"onenod-operator-test",
-		strings.Repeat("a", 32),
-		nil,
+		wrangler,
+		"password-gateway-release",
+		"0123456789abcdef0123456789abcdef",
+		dedicatedAccountTransport(t, "release-token"),
 		&console,
 	)
 	if err != nil || revoked {
 		t.Fatalf("explicit retention should succeed without deletion: revoked=%v err=%v", revoked, err)
+	}
+	if _, statErr := os.Stat(deleteLog); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("retained Wrangler profile was deleted")
 	}
 }
 
