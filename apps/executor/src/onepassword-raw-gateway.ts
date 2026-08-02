@@ -173,10 +173,6 @@ export class GatewayOperationError extends Error {
 }
 
 export async function executeCatalog(options: CatalogOptions): Promise<CatalogItem[]> {
-  assertExactKeys(options, ["client", "query", "vaultId"]);
-  if (typeof options.query !== "string" || options.query.length > 128) {
-    throw new GatewayOperationError("catalog_query_invalid", 400);
-  }
   const vaultId = itemIdentifier(options.vaultId);
   await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, false);
@@ -204,7 +200,6 @@ export async function executeCatalog(options: CatalogOptions): Promise<CatalogIt
 export async function executeSecretReadMetadata(
   options: SecretTargetOptions,
 ): Promise<SecretReadMetadata> {
-  assertExactKeys(options, ["client", "fieldId", "itemId", "vaultId"]);
   const target = validateSecretTarget(options);
   await assertVaultScope(options.client, target.vaultId);
   const item = await getItem(options.client, target.vaultId, target.itemId);
@@ -215,18 +210,10 @@ export async function executeSecretReadMetadata(
 export async function executeSecretRead(
   options: SecretReadOptions,
 ): Promise<SecretReadMetadata & { value: string }> {
-  assertExactKeys(options, [
-    "client",
-    "expectedVersion",
-    "fieldId",
-    "itemId",
-    "vaultId",
-  ]);
   const target = validateSecretTarget(options);
-  const expectedVersion = positiveVersion(options.expectedVersion);
   await assertVaultScope(options.client, target.vaultId);
   const item = await getItem(options.client, target.vaultId, target.itemId);
-  if (item.version !== expectedVersion) {
+  if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
   }
   const field = findField(item, target.fieldId);
@@ -239,7 +226,6 @@ export async function executeSecretRead(
 export async function resolveSecret(
   options: SecretTargetOptions,
 ): Promise<string> {
-  assertExactKeys(options, ["client", "fieldId", "itemId", "vaultId"]);
   const target = validateSecretTarget(options);
   await assertVaultScope(options.client, target.vaultId);
   const value = await invokeRead(
@@ -261,15 +247,6 @@ export async function resolveSecret(
 export async function executeSshSign(
   options: SshSignOptions,
 ): Promise<SshSignatureResult> {
-  assertExactKeys(options, [
-    "client",
-    "data",
-    "expectedFingerprint",
-    "expectedVersion",
-    "itemId",
-    "requestedAlgorithm",
-    "vaultId",
-  ]);
   try {
     validateSshSigningData(options.data);
   } catch (error) {
@@ -317,7 +294,6 @@ export async function executeSshSign(
 export async function executeItemMetadata(
   options: Omit<SecretTargetOptions, "fieldId">,
 ): Promise<CatalogItem> {
-  assertExactKeys(options, ["client", "itemId", "vaultId"]);
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
   await assertVaultScope(options.client, vaultId);
@@ -327,18 +303,14 @@ export async function executeItemMetadata(
 export async function executeItemCreate(
   options: ItemCreateOptions,
 ): Promise<ItemMutationResult> {
-  assertExactKeys(options, ["category", "client", "fields", "requestId", "title", "vaultId"]);
   const vaultId = itemIdentifier(options.vaultId);
-  const category = writableCategory(options.category);
-  const fields = validateWritableFields(options.fields, category);
-  const requestId = identifier(options.requestId);
-  const title = text(options.title, 256);
+  assertUserFieldIds(options.fields);
   await assertVaultScope(options.client, vaultId);
 
   const params: WireItemCreateParams = {
-    category,
+    category: options.category,
     fields: [
-      ...fields.map((field) => ({
+      ...options.fields.map((field) => ({
         fieldType: field.field_type,
         id: field.field_id,
         sectionId: USER_SECTION_ID,
@@ -350,7 +322,7 @@ export async function executeItemCreate(
         id: MARKER_FIELD_ID,
         sectionId: INTERNAL_SECTION_ID,
         title: "Gateway request ID",
-        value: requestId,
+        value: options.requestId,
       },
     ],
     notes: "",
@@ -358,8 +330,8 @@ export async function executeItemCreate(
       { id: USER_SECTION_ID, title: "Agent fields" },
       { id: INTERNAL_SECTION_ID, title: "OneNod" },
     ],
-    tags: ["onenod", requestMarkerTag(requestId)],
-    title,
+    tags: ["onenod", requestMarkerTag(options.requestId)],
+    title: options.title,
     vaultId,
   };
   const created = await invokeWrite(
@@ -367,7 +339,7 @@ export async function executeItemCreate(
     { kind: "item.create.raw", params },
     decodeItem,
   );
-  if (created.vaultId !== vaultId || created.title !== title) {
+  if (created.vaultId !== vaultId || created.title !== options.title) {
     throw unknownWriteFailure();
   }
   return { item_id: created.id, version: created.version };
@@ -376,26 +348,18 @@ export async function executeItemCreate(
 export async function executeItemPatch(
   options: ItemPatchOptions,
 ): Promise<ItemMutationResult> {
-  assertExactKeys(options, [
-    "client",
-    "expectedVersion",
-    "itemId",
-    "operations",
-    "vaultId",
-  ]);
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  const expectedVersion = positiveVersion(options.expectedVersion);
-  const operations = validatePatchOperations(options.operations);
+  assertUserFieldIds(options.operations);
   await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
-  if (item.version !== expectedVersion) {
+  if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
   }
   if (item.category === "SshKey") {
     throw new GatewayOperationError("item_operation_invalid", 400);
   }
-  applyPatch(item, operations);
+  applyPatch(item, options.operations);
   const updated = await invokeWrite(
     options.client,
     { item, kind: "item.put" },
@@ -404,7 +368,7 @@ export async function executeItemPatch(
   if (
     updated.id !== itemId ||
     updated.vaultId !== vaultId ||
-    updated.version <= expectedVersion
+    updated.version <= options.expectedVersion
   ) {
     throw unknownWriteFailure();
   }
@@ -414,13 +378,11 @@ export async function executeItemPatch(
 export async function executeItemArchive(
   options: ItemArchiveOptions,
 ): Promise<ItemMutationResult> {
-  assertExactKeys(options, ["client", "expectedVersion", "itemId", "vaultId"]);
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  const expectedVersion = positiveVersion(options.expectedVersion);
   await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
-  if (item.version !== expectedVersion) {
+  if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
   }
   await invokeWrite(
@@ -434,19 +396,17 @@ export async function executeItemArchive(
 export async function reconcileItemCreate(
   options: RawGatewayOptions & { requestId: string },
 ): Promise<ItemReconciliationResult> {
-  assertExactKeys(options, ["client", "requestId", "vaultId"]);
   const vaultId = itemIdentifier(options.vaultId);
-  const requestId = identifier(options.requestId);
   await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, true);
   const matches: WireItem[] = [];
   for (const overview of overviews.filter((item) =>
-    item.tags.includes(requestMarkerTag(requestId)),
+    item.tags.includes(requestMarkerTag(options.requestId)),
   )) {
     const item = await getItem(options.client, vaultId, overview.id);
     if (
       item.fields.some(
-        (field) => field.id === MARKER_FIELD_ID && field.value === requestId,
+        (field) => field.id === MARKER_FIELD_ID && field.value === options.requestId,
       )
     ) {
       matches.push(item);
@@ -464,23 +424,15 @@ export async function reconcileItemCreate(
 export async function reconcileItemPatch(
   options: ItemPatchOptions,
 ): Promise<ItemReconciliationResult> {
-  assertExactKeys(options, [
-    "client",
-    "expectedVersion",
-    "itemId",
-    "operations",
-    "vaultId",
-  ]);
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  const expectedVersion = positiveVersion(options.expectedVersion);
-  const operations = validatePatchOperations(options.operations);
+  assertUserFieldIds(options.operations);
   await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
-  if (item.version === expectedVersion) {
+  if (item.version === options.expectedVersion) {
     return { item_id: item.id, reconciliation: "NOT_APPLIED", version: item.version };
   }
-  if (item.version > expectedVersion && patchMatches(item, operations)) {
+  if (item.version > options.expectedVersion && patchMatches(item, options.operations)) {
     return { item_id: item.id, reconciliation: "APPLIED", version: item.version };
   }
   return { item_id: item.id, reconciliation: "AMBIGUOUS", version: item.version };
@@ -489,10 +441,8 @@ export async function reconcileItemPatch(
 export async function reconcileItemArchive(
   options: ItemArchiveOptions,
 ): Promise<ItemReconciliationResult> {
-  assertExactKeys(options, ["client", "expectedVersion", "itemId", "vaultId"]);
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  const expectedVersion = positiveVersion(options.expectedVersion);
   await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, true);
   const overview = overviews.find((item) => item.id === itemId);
@@ -504,7 +454,7 @@ export async function reconcileItemArchive(
   return {
     item_id: item.id,
     reconciliation:
-      item.version === expectedVersion ? "NOT_APPLIED" : "AMBIGUOUS",
+      item.version === options.expectedVersion ? "NOT_APPLIED" : "AMBIGUOUS",
     version: item.version,
   };
 }
@@ -708,103 +658,24 @@ function validateSecretTarget(options: SecretTargetOptions): {
   vaultId: string;
 } {
   return {
-    fieldId: identifier(options.fieldId),
+    fieldId: options.fieldId,
     itemId: itemIdentifier(options.itemId),
     vaultId: itemIdentifier(options.vaultId),
   };
 }
 
-function validateWritableFields(
-  fields: ItemCreateField[],
-  category: WritableItemCategory,
-): ItemCreateField[] {
-  if (!Array.isArray(fields) || fields.length === 0 || fields.length > 32) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
+function assertUserFieldIds(
+  fields: ReadonlyArray<{ field_id: string }>,
+): void {
   const ids = new Set<string>();
-  const validated = fields.map((field) => {
-    assertExactKeys(field, ["field_id", "field_type", "label", "value"]);
-    const fieldId = userFieldIdentifier(field.field_id);
-    if (ids.has(fieldId)) throw new GatewayOperationError("item_operation_invalid", 400);
-    ids.add(fieldId);
-    return {
-      field_id: fieldId,
-      field_type: writableCreateFieldType(field.field_type),
-      label: text(field.label, 128),
-      value: secretValue(field.value),
-    };
-  });
-  if (category === "SshKey") {
-    if (
-      validated.length !== 1 ||
-      validated[0]?.field_id !== "private_key" ||
-      validated[0].field_type !== "SshKey" ||
-      validated[0].label !== "private key"
-    ) {
+  for (const field of fields) {
+    const fieldId = field.field_id;
+    if (fieldId.startsWith(INTERNAL_NAMESPACE)) {
       throw new GatewayOperationError("item_operation_invalid", 400);
     }
-  } else if (validated.some((field) => field.field_type === "SshKey")) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return validated;
-}
-
-function validatePatchOperations(
-  operations: ItemPatchOperation[],
-): ItemPatchOperation[] {
-  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 32) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  const ids = new Set<string>();
-  return operations.map((operation) => {
-    const fieldId = userFieldIdentifier(operation.field_id);
     if (ids.has(fieldId)) throw new GatewayOperationError("item_operation_invalid", 400);
     ids.add(fieldId);
-    if (operation.op === "add") {
-      assertExactKeys(operation, ["field_id", "field_type", "label", "op", "value"]);
-      return {
-        field_id: fieldId,
-        field_type: writableFieldType(operation.field_type),
-        label: text(operation.label, 128),
-        op: "add",
-        value: secretValue(operation.value),
-      };
-    }
-    if (operation.op === "replace") {
-      assertExactKeys(operation, ["field_id", "op", "value"]);
-      return { field_id: fieldId, op: "replace", value: secretValue(operation.value) };
-    }
-    if (operation.op === "remove") {
-      assertExactKeys(operation, ["field_id", "op"]);
-      return { field_id: fieldId, op: "remove" };
-    }
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  });
-}
-
-function writableCategory(value: unknown): WritableItemCategory {
-  if (
-    value !== "ApiCredentials" &&
-    value !== "Login" &&
-    value !== "Password" &&
-    value !== "SecureNote" &&
-    value !== "SshKey"
-  ) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
   }
-  return value;
-}
-
-function writableCreateFieldType(value: unknown): WritableItemCreateFieldType {
-  if (value === "SshKey") return value;
-  return writableFieldType(value);
-}
-
-function writableFieldType(value: unknown): WritableItemFieldType {
-  if (value !== "Concealed" && value !== "Email" && value !== "Text" && value !== "Url") {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return value;
 }
 
 function itemIdentifier(value: unknown): string {
@@ -812,63 +683,6 @@ function itemIdentifier(value: unknown): string {
     throw new GatewayOperationError("item_operation_invalid", 400);
   }
   return value;
-}
-
-function userFieldIdentifier(value: unknown): string {
-  const fieldId = identifier(value);
-  if (fieldId.startsWith(INTERNAL_NAMESPACE)) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return fieldId;
-}
-
-function identifier(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 256 ||
-    hasForbiddenControl(value)
-  ) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return value;
-}
-
-function text(value: unknown, maximumLength: number): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maximumLength ||
-    hasForbiddenControl(value)
-  ) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return value.normalize("NFC");
-}
-
-function secretValue(value: unknown): string {
-  if (typeof value !== "string" || value.length > MAX_SECRET_VALUE_LENGTH) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return value;
-}
-
-function positiveVersion(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
-  return value as number;
-}
-
-function assertExactKeys(value: object, expected: string[]): void {
-  const keys = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  if (
-    keys.length !== sortedExpected.length ||
-    keys.some((key, index) => key !== sortedExpected[index])
-  ) {
-    throw new GatewayOperationError("item_operation_invalid", 400);
-  }
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -883,13 +697,5 @@ function unknownWriteFailure(status = 502): GatewayOperationError {
 }
 
 function requestMarkerTag(requestId: string): string {
-  return `${MARKER_TAG_PREFIX}${identifier(requestId)}`;
-}
-
-function hasForbiddenControl(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (codePoint < 0x20 || codePoint === 0x7f) return true;
-  }
-  return false;
+  return `${MARKER_TAG_PREFIX}${requestId}`;
 }

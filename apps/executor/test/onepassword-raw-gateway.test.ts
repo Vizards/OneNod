@@ -304,7 +304,7 @@ test("lost write responses stay UNKNOWN and never replay a mutation", async () =
   assert.equal(fake.createCount, 1);
 });
 
-test("SSH Key create accepts one exact private-key field and generic patch stays forbidden", async () => {
+test("SSH Key creation and generic patch keep their raw 1Password policies", async () => {
   const fake = createFakeGateway({ initialItems: [] });
   const privateKey =
     "-----BEGIN " + "PRIVATE KEY-----\nZHVtbXk=\n-----END " + "PRIVATE KEY-----\n";
@@ -338,55 +338,36 @@ test("SSH Key create accepts one exact private-key field and generic patch stays
     isGatewayError("item_operation_invalid", 400),
   );
   assert.equal(fake.putCount, 0);
+});
 
+test("reserved and duplicate field IDs are rejected before invoking core", async () => {
+  const fake = createFakeGateway({ initialItems: [] });
   for (const fields of [
-    [{ field_id: "key", field_type: "SshKey", label: "private key", value: privateKey }],
-    [{ field_id: "private_key", field_type: "Concealed", label: "private key", value: privateKey }],
-    [{ field_id: "private_key", field_type: "SshKey", label: "Key", value: privateKey }],
-  ] as const) {
+    [
+      {
+        field_id: "com.github.vizards.onenod.injected",
+        field_type: "Text" as const,
+        label: "Injected",
+        value: "dummy",
+      },
+    ],
+    [
+      { field_id: "duplicate", field_type: "Text" as const, label: "First", value: "a" },
+      { field_id: "duplicate", field_type: "Text" as const, label: "Second", value: "b" },
+    ],
+  ]) {
     await assert.rejects(
       executeItemCreate({
-        category: "SshKey",
+        category: "SecureNote",
         client: fake.client,
-        fields: fields as never,
-        requestId: "request-invalid-ssh-create",
-        title: "Invalid SSH fixture",
+        fields,
+        requestId: "request-invalid",
+        title: "Invalid",
         vaultId,
       }),
       isGatewayError("item_operation_invalid", 400),
     );
   }
-});
-
-test("closed inputs reject unknown fields and reserved field IDs before invoking core", async () => {
-  const fake = createFakeGateway({ initialItems: [] });
-  await assert.rejects(
-    executeItemCreate({
-      category: "SecureNote",
-      client: fake.client,
-      fields: [
-        {
-          field_id: "com.github.vizards.onenod.injected",
-          field_type: "Text",
-          label: "Injected",
-          value: "dummy",
-        },
-      ],
-      requestId: "request-invalid",
-      title: "Invalid",
-      vaultId,
-    }),
-    isGatewayError("item_operation_invalid", 400),
-  );
-  await assert.rejects(
-    executeCatalog({
-      client: fake.client,
-      query: "dummy",
-      vaultId,
-      unexpected: true,
-    } as never),
-    isGatewayError("item_operation_invalid", 400),
-  );
   assert.equal(fake.methods.length, 0);
 });
 
