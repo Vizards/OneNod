@@ -200,7 +200,7 @@ jobs:
             echo "| Source commit | \`$SOURCE_SHA\` |"
             echo "| Artifact predecessor | \`${PREDECESSOR:-none}\` |"
             echo
-            echo 'The source commit is the signed HEAD selected by the reviewed controller on `main`.'
+            echo 'The source commit is the signed HEAD selected by the reviewed controller on main.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   authorize:
