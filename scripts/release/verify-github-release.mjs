@@ -15,13 +15,13 @@ class RetryableGitHubError extends Error {
   }
 }
 
-const options = parseOptions(process.argv.slice(2));
-const token = process.env.GITHUB_TOKEN;
-if (typeof token !== "string" || token === "") fail("GITHUB_TOKEN is required");
 const contract = parseRecord(
   await readFile(resolve(import.meta.dirname, "release-contract.json"), "utf8"),
   "release contract",
 );
+const options = parseOptions(process.argv.slice(2), contract);
+const token = process.env.GITHUB_TOKEN;
+if (typeof token !== "string" || token === "") fail("GITHUB_TOKEN is required");
 if (!validateReleaseChannelContract(contract)) fail("release channel contract is invalid");
 const channelPolicy = releaseChannelPolicy(contract, options.version);
 if (channelPolicy === null || channelPolicy.channel !== options.channel) {
@@ -202,7 +202,7 @@ function parseRecord(value, label) {
   }
 }
 
-function parseOptions(args) {
+function parseOptions(args, releaseContract) {
   const values = {
     channel: "",
     commit: "",
@@ -243,7 +243,7 @@ function parseOptions(args) {
     }
   }
   if (
-    values.repository !== "Vizards/OneNod" ||
+    values.repository !== releaseContract.repository ||
     values.tag !== `v${values.version}` ||
     parseProductVersion(values.version)?.channel !== values.channel ||
     !/^[0-9a-f]{40}$/u.test(values.commit) ||

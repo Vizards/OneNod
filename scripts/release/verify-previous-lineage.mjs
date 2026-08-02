@@ -5,6 +5,10 @@ import { resolve } from "node:path";
 import { parseProductVersion } from "./release-version.mjs";
 
 const options = parseOptions(process.argv.slice(2));
+const contract = parseRecord(
+  await readFile(resolve(import.meta.dirname, "release-contract.json"), "utf8"),
+  "release contract",
+);
 const releaseBytes = await readFile(options.release);
 const manifestBytes = await readFile(options.manifest);
 const release = parseRecord(releaseBytes, "previous GitHub Release");
@@ -44,12 +48,12 @@ if (
 }
 
 if (
-  manifest.schema_version !== 1 ||
+  manifest.schema_version !== contract.schema_version ||
   manifest.release_version !== options.version ||
   manifest.tag !== expectedTag ||
   manifest.channel !== expectedChannel ||
-  manifest.source?.repository !== "Vizards/OneNod" ||
-  manifest.source?.workflow !== ".github/workflows/release.yml" ||
+  manifest.source?.repository !== contract.repository ||
+  manifest.source?.workflow !== contract.workflow ||
   manifest.source?.commit !== options.commit
 ) {
   fail("the preceding release manifest is not bound to its canonical tag commit");

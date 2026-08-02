@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 
 import { readArtifactArchive, readArtifactIdentity } from "./artifact-tar.mjs";
 import {
@@ -30,9 +31,9 @@ const channelPolicy = releaseChannelPolicy(releaseContract, options.version);
 if (channelPolicy === null) fail("release version has no channel policy");
 const manifestPath = resolve(options.directory, "release-manifest.json");
 const manifest = parseRecord(await readFile(manifestPath, "utf8"), "release manifest");
-validateManifest(manifest, options, channelPolicy);
+validateManifest(manifest, options, channelPolicy, releaseContract);
 
-const helperVersion = manifest.components.keychain_helper.version;
+const helperVersion = releaseContract.components.keychain_helper.version;
 const releaseArchives = [
   "onenod-darwin-arm64.tar.gz",
   "onenod-darwin-amd64.tar.gz",
@@ -217,22 +218,26 @@ process.stdout.write(
   })}\n`,
 );
 
-function validateManifest(value, values, policy) {
+function validateManifest(value, values, policy, contract) {
   if (
-    value.schema_version !== 1 ||
+    value.schema_version !== contract.schema_version ||
     value.release_version !== values.version ||
     value.channel !== policy.channel ||
     value.product_label !== policy.product_label ||
     value.tag !== `v${values.version}` ||
-    value.source?.repository !== "Vizards/OneNod" ||
-    value.source?.workflow !== ".github/workflows/release.yml" ||
+    value.source?.repository !== contract.repository ||
+    value.source?.workflow !== contract.workflow ||
     value.source?.commit !== values.commit ||
     value.support?.latest_only !== true ||
-    value.support?.minimum_safe_version !== value.upgrade?.minimum_safe_version ||
-    JSON.stringify(value.revoked_artifact_digests) !==
-      JSON.stringify(value.upgrade?.revoked_artifact_digests) ||
-    value.attestations?.repository !== "Vizards/OneNod" ||
-    value.attestations?.workflow !== ".github/workflows/release.yml" ||
+    value.support?.minimum_safe_version !==
+      contract.upgrade.minimum_safe_version ||
+    !isDeepStrictEqual(
+      value.revoked_artifact_digests,
+      contract.upgrade.revoked_artifact_digests,
+    ) ||
+    !isDeepStrictEqual(value.upgrade, contract.upgrade) ||
+    value.attestations?.repository !== contract.repository ||
+    value.attestations?.workflow !== contract.workflow ||
     !Array.isArray(value.artifacts)
   ) {
     fail("release manifest identity or support policy is invalid");
@@ -243,33 +248,28 @@ function validateManifest(value, values, policy) {
     }
   }
   if (
-    typeof value.components?.keychain_helper?.source_digest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/u.test(
-      value.components.keychain_helper.source_digest,
+    !isDeepStrictEqual(
+      value.components?.keychain_helper,
+      contract.components.keychain_helper,
     ) ||
-    !Number.isSafeInteger(
-      value.components.keychain_helper.helper_protocol?.min,
+    value.components?.may?.client_protocol !==
+      contract.components.may.client_protocol ||
+    !isDeepStrictEqual(
+      value.components?.gateway?.accepted_client_protocol,
+      contract.components.gateway.accepted_client_protocol,
     ) ||
-    !Number.isSafeInteger(
-      value.components.keychain_helper.helper_protocol?.max,
+    value.components?.gateway?.state_schema !==
+      contract.components.gateway.state_schema ||
+    !isDeepStrictEqual(
+      value.components?.executor?.accepted_gateway_protocol,
+      contract.components.executor.accepted_gateway_protocol,
     ) ||
-    value.components.keychain_helper.helper_protocol.min <= 0 ||
-    value.components.keychain_helper.helper_protocol.max <
-      value.components.keychain_helper.helper_protocol.min
+    value.components?.executor?.state_schema !==
+      contract.components.executor.state_schema
   ) {
-    fail("Keychain helper source identity is invalid");
+    fail("release component contract is invalid");
   }
-  if (
-    value.requirements?.macos?.minimum !== "15.0" ||
-    JSON.stringify(value.requirements?.macos?.architectures) !==
-      JSON.stringify(["arm64", "amd64"]) ||
-    value.requirements?.node?.minimum !== "22.12.0" ||
-    value.requirements?.node?.maximum_exclusive !== "23.0.0" ||
-    value.requirements?.wrangler?.minimum !== "4.116.0" ||
-    value.requirements?.wrangler?.maximum_exclusive !== "5.0.0" ||
-    value.requirements?.onepassword_cli?.minimum !== "2.34.0" ||
-    value.requirements?.onepassword_cli?.maximum_exclusive !== "3.0.0"
-  ) {
+  if (!isDeepStrictEqual(value.requirements, contract.requirements)) {
     fail("release compatibility requirements are invalid");
   }
 }

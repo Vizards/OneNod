@@ -302,7 +302,7 @@ test("release packager is deterministic and the verifier enforces the exact set"
     );
     assert.throws(
       () => verify(releaseDirectory, "assembled"),
-      /Keychain helper identity differs from the release manifest/u,
+      /release component contract is invalid/u,
     );
     await writeFile(manifestPath, originalManifest);
     await writeFile(checksumsPath, originalChecksums);
