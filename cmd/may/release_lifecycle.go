@@ -293,6 +293,14 @@ type deploymentBundleDescriptor struct {
 	TemplateTokens []string `json:"template_tokens"`
 }
 
+type deploymentReleaseMetadata struct {
+	ArtifactKind   string `json:"artifact_kind"`
+	Repository     string `json:"repository"`
+	ReleaseVersion string `json:"release_version"`
+	SchemaVersion  int    `json:"schema_version"`
+	SourceCommit   string `json:"source_commit"`
+}
+
 type stagedDeploymentBundle struct {
 	Artifact   releaseArtifact
 	Descriptor deploymentBundleDescriptor
@@ -1780,19 +1788,33 @@ func stageVerifiedDeploymentBundle(
 		return nil, err
 	}
 	bundleRoot := filepath.Join(root, "onenod-deployment")
-	var descriptor deploymentBundleDescriptor
-	if err := readStrictJSONFile(filepath.Join(bundleRoot, "deployment.json"), maxManifestBytes, &descriptor); err != nil {
+	descriptor, err := validateStagedDeploymentBundle(bundleRoot, release.Manifest)
+	if err != nil {
 		return nil, err
 	}
-	if descriptor.SchemaVersion != 1 || descriptor.ReleaseVersion != release.Manifest.ReleaseVersion ||
-		descriptor.SourceCommit != release.Manifest.Source.Commit ||
+	cleanup = false
+	return &stagedDeploymentBundle{
+		Artifact: artifact, Descriptor: descriptor, Root: bundleRoot, Stage: stage,
+	}, nil
+}
+
+func validateStagedDeploymentBundle(
+	bundleRoot string,
+	manifest releaseManifest,
+) (deploymentBundleDescriptor, error) {
+	var descriptor deploymentBundleDescriptor
+	if err := readStrictJSONFile(filepath.Join(bundleRoot, "deployment.json"), maxManifestBytes, &descriptor); err != nil {
+		return deploymentBundleDescriptor{}, err
+	}
+	if descriptor.SchemaVersion != 1 || descriptor.ReleaseVersion != manifest.ReleaseVersion ||
+		descriptor.SourceCommit != manifest.Source.Commit ||
 		descriptor.Gateway.Config != "gateway/wrangler.jsonc" ||
 		descriptor.Gateway.Entrypoint != "gateway/worker.mjs" ||
 		descriptor.Gateway.Assets != "gateway/assets" ||
 		descriptor.Executor.Config != "executor/wrangler.jsonc" ||
 		descriptor.Executor.Entrypoint != "executor/worker.mjs" ||
 		descriptor.Executor.Plugin != "executor/plugin.wasm" {
-		return nil, errors.New("deployment bundle descriptor does not match the verified release contract")
+		return deploymentBundleDescriptor{}, errors.New("deployment bundle descriptor does not match the verified release contract")
 	}
 	expectedTokens := []string{
 		"__ACCOUNT_ID__", "__ACCOUNT_SUBDOMAIN__", "__EXECUTOR_NAME__", "__GATEWAY_NAME__",
@@ -1803,26 +1825,19 @@ func stageVerifiedDeploymentBundle(
 	sort.Strings(expectedTokens)
 	sort.Strings(actualTokens)
 	if strings.Join(expectedTokens, "\n") != strings.Join(actualTokens, "\n") {
-		return nil, errors.New("deployment bundle template token contract is incomplete")
+		return deploymentBundleDescriptor{}, errors.New("deployment bundle template token contract is incomplete")
 	}
-	var releaseFile struct {
-		Repository     string `json:"repository"`
-		ReleaseVersion string `json:"release_version"`
-		SchemaVersion  int    `json:"schema_version"`
-		SourceCommit   string `json:"source_commit"`
-	}
+	var releaseFile deploymentReleaseMetadata
 	if err := readStrictJSONFile(filepath.Join(bundleRoot, "RELEASE.json"), maxManifestBytes, &releaseFile); err != nil {
-		return nil, err
+		return deploymentBundleDescriptor{}, err
 	}
-	if releaseFile.SchemaVersion != 1 || releaseFile.Repository != officialRepository ||
-		releaseFile.ReleaseVersion != release.Manifest.ReleaseVersion ||
-		releaseFile.SourceCommit != release.Manifest.Source.Commit {
-		return nil, errors.New("deployment bundle RELEASE.json does not match the verified manifest")
+	if releaseFile.SchemaVersion != 1 || releaseFile.ArtifactKind != "deployment" ||
+		releaseFile.Repository != officialRepository ||
+		releaseFile.ReleaseVersion != manifest.ReleaseVersion ||
+		releaseFile.SourceCommit != manifest.Source.Commit {
+		return deploymentBundleDescriptor{}, errors.New("deployment bundle RELEASE.json does not match the verified manifest")
 	}
-	cleanup = false
-	return &stagedDeploymentBundle{
-		Artifact: artifact, Descriptor: descriptor, Root: bundleRoot, Stage: stage,
-	}, nil
+	return descriptor, nil
 }
 
 func extractDeploymentBundleArchive(archivePath, destination string) error {
@@ -2331,7 +2346,7 @@ func runDevVerifyRelease(args []string, deps dependencies) error {
 			"sha256:"+hex.EncodeToString(digest[:]) != artifact.SHA256 {
 			return fmt.Errorf("release artifact %q does not match its manifest entry", artifact.Name)
 		}
-		if err := verifyReleaseArtifactInstallability(artifact, path); err != nil {
+		if err := verifyReleaseArtifactInstallability(manifest, artifact, path); err != nil {
 			return fmt.Errorf("release artifact %q cannot be consumed by may: %w", artifact.Name, err)
 		}
 	}
@@ -2365,7 +2380,11 @@ func runDevVerifyRelease(args []string, deps dependencies) error {
 	return nil
 }
 
-func verifyReleaseArtifactInstallability(artifact releaseArtifact, path string) error {
+func verifyReleaseArtifactInstallability(
+	manifest releaseManifest,
+	artifact releaseArtifact,
+	path string,
+) error {
 	if artifact.Kind != "local" && artifact.Kind != "keychain_helper" &&
 		artifact.Kind != "deployment" && artifact.Kind != "skill" {
 		return nil
@@ -2385,7 +2404,13 @@ func verifyReleaseArtifactInstallability(artifact releaseArtifact, path string) 
 			"onenod-keychain-helper/bin/onenod-keychain-helper": 0o700,
 		})
 	case "deployment":
-		return extractDeploymentBundleArchive(path, destination)
+		if err := extractDeploymentBundleArchive(path, destination); err != nil {
+			return err
+		}
+		_, err := validateStagedDeploymentBundle(
+			filepath.Join(destination, "onenod-deployment"), manifest,
+		)
+		return err
 	case "skill":
 		return extractSkillArchive(path, destination)
 	default:
