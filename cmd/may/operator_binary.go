@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -588,7 +589,7 @@ func inspectWranglerIdentity(wrangler, profile string) (wranglerIdentity, error)
 		return wranglerIdentity{}, errors.New("Wrangler must use an OAuth named profile with at least one account")
 	}
 	for _, required := range []string{"account:read", "workers_scripts:write"} {
-		if !stringSliceContains(raw.TokenPermissions, required) {
+		if !slices.Contains(raw.TokenPermissions, required) {
 			return wranglerIdentity{}, fmt.Errorf("Wrangler OAuth is missing required permission %s", required)
 		}
 	}
@@ -1971,15 +1972,6 @@ func agentServiceAccountCreateArguments(account, name, agentVaultID string) []st
 		"--vault", agentVaultID + ":read_items,write_items",
 		"--raw", "--account", account,
 	}
-}
-
-func stringSliceContains(values []string, expected string) bool {
-	for _, value := range values {
-		if value == expected {
-			return true
-		}
-	}
-	return false
 }
 
 func fetchCloudflareAccountSubdomain(base http.RoundTripper, accountID string, oauthToken []byte) (string, error) {

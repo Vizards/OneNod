@@ -129,32 +129,15 @@ export class ApiError extends Error {
 export async function getHumanState(): Promise<HumanState> {
   const response = await fetchJson<unknown>("/v1/human/state");
   const record = asRecord(response);
-  const session = isRecord(record.session) ? record.session : undefined;
-  const bootstrapRequestId = readString(
-    record,
-    "bootstrap_request_id",
-    "bootstrapRequestId",
-  );
+  const bootstrapRequestId = readString(record, "bootstrap_request_id");
+  const currentDeviceId = readString(record, "current_device_id");
 
   return {
-    authenticated:
-      readBoolean(record, "authenticated") ??
-      readBoolean(session, "authenticated") ??
-      false,
+    authenticated: readBoolean(record, "authenticated") ?? false,
     ...(bootstrapRequestId ? { bootstrapRequestId } : {}),
-    initialized:
-      readBoolean(record, "initialized", "has_human_credential") ??
-      false,
-    ...(readString(record, "current_device_id", "currentDeviceId")
-      ? {
-          currentDeviceId: readString(
-            record,
-            "current_device_id",
-            "currentDeviceId",
-          )!,
-        }
-      : {}),
-    deviceTrusted: readBoolean(record, "device_trusted", "deviceTrusted") ?? false,
+    initialized: readBoolean(record, "initialized") ?? false,
+    ...(currentDeviceId ? { currentDeviceId } : {}),
+    deviceTrusted: readBoolean(record, "device_trusted") ?? false,
     locked: readBoolean(record, "locked") ?? false,
   };
 }
@@ -613,8 +596,8 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = isRecord(body) ? body : undefined;
-    const code = readString(errorBody, "code", "error_code");
-    const requestId = readString(errorBody, "request_id", "requestId");
+    const code = readString(errorBody, "code");
+    const requestId = readString(errorBody, "request_id");
     const message =
       readString(errorBody, "message") ??
       defaultErrorMessage(response.status, code);
@@ -631,11 +614,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 function persistCsrfToken(response: Response, body: unknown): void {
   const bodyRecord = isRecord(body) ? body : undefined;
-  const session = bodyRecord && isRecord(bodyRecord.session) ? bodyRecord.session : undefined;
   const token =
     response.headers.get("x-csrf-token") ??
-    readString(bodyRecord, "csrf_token", "csrfToken") ??
-    readString(session, "csrf_token", "csrfToken");
+    readString(bodyRecord, "csrf_token");
 
   if (!token) return;
 
@@ -687,20 +668,20 @@ function normalizeRequestSummary(value: unknown): RequestSummary {
       application: readRequiredString(client, "application"),
       source,
     },
-    createdAt: readRequiredString(record, "created_at", "createdAt"),
-    expiresAt: readRequiredString(record, "expires_at", "expiresAt"),
-    requestId: readRequiredString(record, "request_id", "requestId"),
-    requesterName: readRequiredString(record, "requester_name", "requesterName"),
+    createdAt: readRequiredString(record, "created_at"),
+    expiresAt: readRequiredString(record, "expires_at"),
+    requestId: readRequiredString(record, "request_id"),
+    requesterName: readRequiredString(record, "requester_name"),
     status: readRequiredString(record, "status") as ApprovalStatus,
-    targetLabel: readRequiredString(record, "target_label", "targetLabel"),
-    verifiedVersion: readRequiredNumber(record, "verified_version", "verifiedVersion"),
+    targetLabel: readRequiredString(record, "target_label"),
+    verifiedVersion: readRequiredNumber(record, "verified_version"),
   };
 }
 
 function readAuthorizationScopeKind(
   value: Record<string, unknown>,
 ): "application" | "terminal-session" {
-  const kind = readRequiredString(value, "scope_kind", "scopeKind");
+  const kind = readRequiredString(value, "scope_kind");
   if (kind !== "application" && kind !== "terminal-session") {
     throw new Error("The server returned an unknown SSH authorization scope.");
   }
@@ -709,7 +690,7 @@ function readAuthorizationScopeKind(
 
 function normalizeRequestDetail(value: unknown): RequestDetail {
   const record = asRecord(value);
-  const factsValue = record.verified_facts ?? record.verifiedFacts;
+  const factsValue = record.verified_facts;
   const facts = Array.isArray(factsValue) ? factsValue : [];
 
   return {
@@ -753,44 +734,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readRequiredString(
   record: Record<string, unknown>,
-  ...keys: string[]
+  key: string,
 ): string {
-  const value = readString(record, ...keys);
-  if (value === undefined) throw new Error(`Server response is missing field: ${keys[0]}`);
+  const value = readString(record, key);
+  if (value === undefined) throw new Error(`Server response is missing field: ${key}`);
   return value;
 }
 
 function readRequiredNumber(
   record: Record<string, unknown>,
-  ...keys: string[]
+  key: string,
 ): number {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  throw new Error(`Server response is missing numeric field: ${keys[0]}`);
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw new Error(`Server response is missing numeric field: ${key}`);
 }
 
 function readString(
   record: Record<string, unknown> | undefined,
-  ...keys: string[]
+  key: string,
 ): string | undefined {
   if (!record) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string") return value;
-  }
-  return undefined;
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function readBoolean(
   record: Record<string, unknown> | undefined,
-  ...keys: string[]
+  key: string,
 ): boolean | undefined {
   if (!record) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "boolean") return value;
-  }
-  return undefined;
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
 }

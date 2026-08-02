@@ -1,3 +1,5 @@
+import { decodeBase64Url } from "@onenod/protocol";
+
 export type BootstrapFragment =
   | { status: "invalid" }
   | { status: "missing" }
@@ -55,12 +57,5 @@ export function consumeBootstrapFragment(
 }
 
 function decodeUtf8Base64Url(value: string): string {
-  if (!value || !/^[A-Za-z0-9_-]+$/u.test(value) || value.length % 4 === 1) {
-    throw new TypeError("bootstrap_fragment_invalid");
-  }
-  const standard = value.replace(/-/gu, "+").replace(/_/gu, "/");
-  const padded = standard.padEnd(Math.ceil(standard.length / 4) * 4, "=");
-  const decoded = atob(padded);
-  const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return new TextDecoder("utf-8", { fatal: true }).decode(decodeBase64Url(value));
 }

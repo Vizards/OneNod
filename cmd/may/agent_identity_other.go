@@ -4,10 +4,6 @@ package main
 
 import "net"
 
-func detectLocalClient(_ net.Conn) clientObservation {
-	return detectLocalClientFromPID(0)
-}
-
 func detectLocalClientContext(_ net.Conn) localClientContext {
 	return unknownLocalClientContext()
 }

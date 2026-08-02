@@ -116,6 +116,9 @@ func newProductionInitializationMaterial(
 	provisioning onePasswordProvisioning,
 	identity productionTargetIdentity,
 ) (*productionInitializationMaterial, error) {
+	if err := validateProductionInitializationInputs(provisioning, identity); err != nil {
+		return nil, err
+	}
 	executorAuthToken, err := randomBase64URL(32)
 	if err != nil {
 		return nil, errors.New("generate executor authentication token failed")
@@ -136,7 +139,7 @@ func newProductionInitializationMaterial(
 	if err != nil {
 		return nil, errors.New("generate initialization ID failed")
 	}
-	material := &productionInitializationMaterial{
+	return &productionInitializationMaterial{
 		AccountID:                      identity.AccountID,
 		AccountSubdomain:               identity.AccountSubdomain,
 		AgentVaultID:                   provisioning.AgentVault.ID,
@@ -156,11 +159,7 @@ func newProductionInitializationMaterial(
 		ReleaseStage:                   "production",
 		RPID:                           identity.RPID,
 		VAPID:                          vapid,
-	}
-	if err := validateProductionInitializationMaterial(material); err != nil {
-		return nil, err
-	}
-	return material, nil
+	}, nil
 }
 
 func validateProductionTargetIdentity(
@@ -367,45 +366,23 @@ func concealedRecoveryField(id string, label string, value string) map[string]an
 	}
 }
 
-func validateProductionInitializationMaterial(
-	material *productionInitializationMaterial,
+func validateProductionInitializationInputs(
+	provisioning onePasswordProvisioning,
+	identity productionTargetIdentity,
 ) error {
-	if material == nil ||
-		material.ReleaseStage != "production" ||
-		material.InitializationID == "" ||
-		material.RecoveryVault == "" ||
-		material.AgentVaultName != defaultAgentVaultName ||
-		!onePasswordVaultIDPattern.MatchString(material.AgentVaultID) ||
-		!onePasswordVaultIDPattern.MatchString(material.RecoveryVault) ||
-		material.OnePasswordServiceAccountName == "" ||
-		material.OnePasswordServiceAccountItem == "" ||
-		!onePasswordAccountPattern.MatchString(material.OnePasswordAccount) ||
-		!validServiceAccountToken(material.OnePasswordServiceAccountToken) {
+	if provisioning.AgentVault.Name != defaultAgentVaultName ||
+		!onePasswordVaultIDPattern.MatchString(provisioning.AgentVault.ID) ||
+		!onePasswordVaultIDPattern.MatchString(provisioning.RecoveryVault.ID) ||
+		provisioning.ServiceAccountName == "" ||
+		provisioning.ServiceAccountTokenItem == "" ||
+		!onePasswordAccountPattern.MatchString(provisioning.Account) ||
+		!validServiceAccountToken(provisioning.ServiceAccountToken) {
 		return errors.New("invalid production initialization material")
 	}
-	validatedIdentity, err := validateProductionTargetIdentity(productionTargetIdentity{
-		AccountID:        material.AccountID,
-		AccountSubdomain: material.AccountSubdomain,
-		ExecutorName:     material.ExecutorName,
-		GatewayName:      material.GatewayName,
-		Origin:           material.Origin,
-		RPID:             material.RPID,
-	})
-	if err != nil || validatedIdentity.Origin != material.Origin {
+	if _, err := validateProductionTargetIdentity(identity); err != nil {
 		return errors.New("invalid production target identity")
 	}
-	for _, value := range []string{
-		material.BootstrapToken,
-		material.ExecutorAuthToken,
-		material.GatewayMasterKey,
-	} {
-		decoded, err := base64.RawURLEncoding.DecodeString(value)
-		if err != nil || len(decoded) != 32 {
-			return errors.New("invalid generated production secret")
-		}
-		zeroBytes(decoded)
-	}
-	return validateVapidCredential(&material.VAPID)
+	return nil
 }
 
 func validServiceAccountToken(value string) bool {

@@ -32,7 +32,7 @@ export interface PushDeliveryResult {
 export function validatePushSubscription(value: unknown): StoredPushSubscription {
   if (!isRecord(value)) throw new Error("push_subscription_invalid");
   const endpoint = value.endpoint;
-  const expirationValue = value.expirationTime ?? value.expiration_time ?? null;
+  const expirationValue = value.expirationTime ?? null;
   const keys = value.keys;
   if (typeof endpoint !== "string" || endpoint.length > 2_048) {
     throw new Error("push_endpoint_invalid");

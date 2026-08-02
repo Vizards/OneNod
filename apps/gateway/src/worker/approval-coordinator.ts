@@ -26,6 +26,8 @@ import {
   type SshSignCreateRequest,
 } from "@onenod/protocol";
 
+import { ownedBytes } from "../shared/owned-bytes.js";
+
 import {
   sanitizeCatalogEnvelope,
   sanitizeGatewayError,
@@ -6459,12 +6461,6 @@ function randomToken(bytes: number): string {
 
 async function bootstrapRequestIdForToken(token: string): Promise<string> {
   return (await sha256Base64Url(token)).slice(0, 22);
-}
-
-function ownedBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
-  const copy = new Uint8Array(value.byteLength);
-  copy.set(value);
-  return copy;
 }
 
 function readCookie(header: string | null, name: string): string | undefined {

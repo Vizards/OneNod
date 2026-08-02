@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"math/big"
 )
 
 type vapidCredential struct {
@@ -45,30 +44,6 @@ func newVapidCredential() (vapidCredential, error) {
 		PublicKey:  base64.RawURLEncoding.EncodeToString(publicBytes),
 		Version:    1,
 	}, nil
-}
-
-func validateVapidCredential(credential *vapidCredential) error {
-	if credential == nil || credential.Version != 1 {
-		return errors.New("invalid version")
-	}
-	privateBytes, err := base64.RawURLEncoding.DecodeString(credential.PrivateKey)
-	if err != nil || len(privateBytes) != 32 {
-		return errors.New("invalid private key")
-	}
-	defer zeroBytes(privateBytes)
-	publicBytes, err := base64.RawURLEncoding.DecodeString(credential.PublicKey)
-	if err != nil || len(publicBytes) != 65 {
-		return errors.New("invalid public key")
-	}
-	x, y := elliptic.Unmarshal(elliptic.P256(), publicBytes)
-	if x == nil || y == nil {
-		return errors.New("invalid public point")
-	}
-	derivedX, derivedY := elliptic.P256().ScalarBaseMult(privateBytes)
-	if derivedX.Cmp(x) != 0 || derivedY.Cmp(y) != 0 || new(big.Int).SetBytes(privateBytes).Sign() == 0 {
-		return errors.New("public key mismatch")
-	}
-	return nil
 }
 
 func zeroBytes(value []byte) {

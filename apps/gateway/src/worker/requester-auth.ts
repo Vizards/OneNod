@@ -4,6 +4,8 @@ import {
   decodeBase64Url,
 } from "@onenod/protocol";
 
+import { ownedBytes } from "../shared/owned-bytes.js";
+
 export interface RequesterIdentity {
   deviceId: string;
   displayName: string;
@@ -120,10 +122,4 @@ export async function authenticateRequester(input: {
     throw new RequesterAuthenticationError("request_replayed");
   }
   return identity;
-}
-
-function ownedBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
-  const copy = new Uint8Array(value.byteLength);
-  copy.set(value);
-  return copy;
 }

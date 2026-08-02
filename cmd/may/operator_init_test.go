@@ -39,9 +39,6 @@ func TestProductionInitializationGeneratesClosedDistinctMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateProductionInitializationMaterial(material); err != nil {
-		t.Fatal(err)
-	}
 	if material.ExecutorAuthToken == material.GatewayMasterKey || material.ExecutorAuthToken == material.BootstrapToken || material.GatewayMasterKey == material.BootstrapToken {
 		t.Fatal("independent initialization secrets collided")
 	}

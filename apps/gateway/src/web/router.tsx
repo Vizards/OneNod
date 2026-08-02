@@ -21,7 +21,9 @@ import type {
   RequestSummary,
   SshAuthorizationDuration,
 } from "@onenod/protocol";
+import { decodeBase64Url } from "@onenod/protocol";
 
+import { ownedBytes } from "../shared/owned-bytes";
 import {
   ApiError,
   authorizeCredentialRegistration,
@@ -1319,7 +1321,7 @@ function ManagementPage() {
       const subscription =
         existing ??
         (await registration.pushManager.subscribe({
-          applicationServerKey: decodeBase64Url(push.data.public_key),
+          applicationServerKey: ownedBytes(decodeBase64Url(push.data.public_key)),
           userVisibleOnly: true,
         }));
       await putPushSubscription(subscription.toJSON());
@@ -2087,17 +2089,6 @@ async function performHumanLogin(): Promise<{
       )
     : undefined;
   return verifyHumanSession(challenge.challenge_id, response, signature);
-}
-
-function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
-  const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
 
 function environmentCopy(value: string): string {

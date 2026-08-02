@@ -17,10 +17,6 @@ import (
 
 const maximumProcessAncestryDepth = 16
 
-func detectLocalClient(connection net.Conn) clientObservation {
-	return detectLocalClientContext(connection).Observation
-}
-
 func detectLocalClientContext(connection net.Conn) localClientContext {
 	pid, err := unixPeerPID(connection)
 	if err != nil {
