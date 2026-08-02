@@ -3379,9 +3379,22 @@ func activateVerifiedLocalRelease(
 			return err
 		}
 		activated, err := inspectInstalledKeychainHelper()
-		if err != nil || activated.Version != helperVersion ||
-			!protocolContains(release.Manifest.Components.KeychainHelper.HelperProtocol, activated.Protocol) {
-			return errors.New("activated Keychain helper failed version/protocol verification")
+		if err != nil {
+			return fmt.Errorf("activated Keychain helper inspection failed: %w", err)
+		}
+		if activated.Version != helperVersion {
+			return fmt.Errorf(
+				"activated Keychain helper version mismatch: expected %s, got %s",
+				helperVersion, activated.Version,
+			)
+		}
+		if !protocolContains(release.Manifest.Components.KeychainHelper.HelperProtocol, activated.Protocol) {
+			return fmt.Errorf(
+				"activated Keychain helper protocol %d is outside the verified Release range %d-%d",
+				activated.Protocol,
+				release.Manifest.Components.KeychainHelper.HelperProtocol.Minimum,
+				release.Manifest.Components.KeychainHelper.HelperProtocol.Maximum,
+			)
 		}
 		helperProtocol = activated.Protocol
 	}

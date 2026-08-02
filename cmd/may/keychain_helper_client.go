@@ -42,6 +42,7 @@ type keychainHelperResponse struct {
 	OK        bool   `json:"ok"`
 	Protocol  int    `json:"protocol,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	Source    string `json:"source_commit,omitempty"`
 	Version   string `json:"version,omitempty"`
 }
 
