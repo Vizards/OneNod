@@ -489,6 +489,87 @@ func TestPrereleaseResolverSkipsHistoricalGitHubMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestPrereleaseDiscoveryPaginatesPastAnIncompatibleFirstPage(t *testing.T) {
+	requestedPages := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/releases" || request.URL.Query().Get("per_page") != "100" {
+			http.NotFound(response, request)
+			return
+		}
+		page := request.URL.Query().Get("page")
+		requestedPages = append(requestedPages, page)
+		response.Header().Set("content-type", "application/json")
+		switch page {
+		case "1":
+			releases := make([]githubReleaseMetadata, 100)
+			for index := range releases {
+				releases[index] = githubReleaseMetadata{
+					Immutable:  true,
+					Prerelease: true,
+					Tag:        "v0.0.3-alpha.1",
+				}
+			}
+			_ = json.NewEncoder(response).Encode(releases)
+		case "2":
+			_ = json.NewEncoder(response).Encode([]githubReleaseMetadata{{
+				Immutable: true,
+				Tag:       "v0.0.2",
+			}})
+		default:
+			_ = json.NewEncoder(response).Encode([]githubReleaseMetadata{})
+		}
+	}))
+	defer server.Close()
+
+	source := &githubReleaseSource{
+		client: server.Client(), releasesURL: server.URL + "/releases?per_page=100",
+	}
+	selected, err := source.discoverLatestReleaseMetadata(
+		context.Background(), releaseChannelBeta,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Tag != "v0.0.2" {
+		t.Fatalf("paginated beta discovery selected %q", selected.Tag)
+	}
+	if strings.Join(requestedPages, ",") != "1,2" {
+		t.Fatalf("release discovery requested pages %q", requestedPages)
+	}
+}
+
+func TestPrereleaseDiscoveryStopsAtFirstCompatiblePage(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Query().Get("page") != "1" {
+			http.Error(response, "unexpected release page", http.StatusInternalServerError)
+			return
+		}
+		releases := make([]githubReleaseMetadata, 100)
+		for index := range releases {
+			releases[index] = githubReleaseMetadata{
+				Immutable:  true,
+				Prerelease: true,
+				Tag:        "v0.0.2-beta.1",
+			}
+		}
+		response.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(response).Encode(releases)
+	}))
+	defer server.Close()
+
+	source := &githubReleaseSource{
+		client: server.Client(), releasesURL: server.URL + "/releases",
+	}
+	selected, err := source.discoverLatestReleaseMetadata(
+		context.Background(), releaseChannelBeta,
+	)
+	if err != nil || selected.Tag != "v0.0.2-beta.1" || requests != 1 {
+		t.Fatalf("first compatible release page was not terminal: %+v, requests=%d, err=%v", selected, requests, err)
+	}
+}
+
 func TestExactResolverUsesTagEndpointAndFullManifestValidation(t *testing.T) {
 	const version = "0.0.2-alpha.7"
 	manifest, assets := canonicalManifestFixture(version)

@@ -57,6 +57,7 @@ const (
 	mayClientProtocol         = 1
 	maxManifestBytes          = 1 << 20
 	maxReleaseListBytes       = 4 << 20
+	maxReleaseDiscoveryPages  = 100
 	maxReleaseArtifactBytes   = 256 << 20
 	maxAttestationBytes       = 32 << 20
 	releaseRequestTimeout     = 30 * time.Second
@@ -379,26 +380,64 @@ func (source *githubReleaseSource) Latest(
 	if !validReleaseChannel(channel) {
 		return nil, errors.New("release channel is invalid")
 	}
-	var release githubReleaseMetadata
-	if channel == releaseChannelStable {
-		if err := source.readJSON(ctx, source.latestURL, maxManifestBytes, "application/vnd.github+json", &release); err != nil {
-			return nil, fmt.Errorf("discover latest stable OneNod release: %w", err)
-		}
-	} else {
-		if source.releasesURL == "" {
-			return nil, errors.New("release source cannot discover prerelease channels")
-		}
-		var releases []githubReleaseMetadata
-		if err := source.readJSON(ctx, source.releasesURL, maxReleaseListBytes, "application/vnd.github+json", &releases); err != nil {
-			return nil, fmt.Errorf("discover OneNod %s channel: %w", channel, err)
-		}
-		var selectErr error
-		release, selectErr = selectLatestReleaseMetadata(releases, channel)
-		if selectErr != nil {
-			return nil, selectErr
-		}
+	release, err := source.discoverLatestReleaseMetadata(ctx, channel)
+	if err != nil {
+		return nil, err
 	}
 	return source.verifyReleaseMetadata(ctx, release, channel, "")
+}
+
+func (source *githubReleaseSource) discoverLatestReleaseMetadata(
+	ctx context.Context,
+	channel releaseChannel,
+) (githubReleaseMetadata, error) {
+	if channel == releaseChannelStable {
+		var release githubReleaseMetadata
+		if err := source.readJSON(ctx, source.latestURL, maxManifestBytes, "application/vnd.github+json", &release); err != nil {
+			return githubReleaseMetadata{}, fmt.Errorf("discover latest stable OneNod release: %w", err)
+		}
+		return release, nil
+	}
+	if source.releasesURL == "" {
+		return githubReleaseMetadata{}, errors.New("release source cannot discover prerelease channels")
+	}
+
+	for page := 1; page <= maxReleaseDiscoveryPages; page++ {
+		address, err := releaseDiscoveryPageURL(source.releasesURL, page)
+		if err != nil {
+			return githubReleaseMetadata{}, err
+		}
+		var releases []githubReleaseMetadata
+		if err := source.readJSON(ctx, address, maxReleaseListBytes, "application/vnd.github+json", &releases); err != nil {
+			return githubReleaseMetadata{}, fmt.Errorf("discover OneNod %s channel: %w", channel, err)
+		}
+		if len(releases) > 100 {
+			return githubReleaseMetadata{}, errors.New("GitHub release discovery returned an oversized page")
+		}
+		candidate, candidateVersion := latestAcceptedReleaseMetadata(releases, channel)
+		if candidateVersion != "" {
+			return candidate, nil
+		}
+		if len(releases) < 100 {
+			return githubReleaseMetadata{}, fmt.Errorf(
+				"no published immutable OneNod release is available for the %s channel",
+				channel,
+			)
+		}
+	}
+	return githubReleaseMetadata{}, errors.New("GitHub release discovery exceeded its page limit")
+}
+
+func releaseDiscoveryPageURL(address string, page int) (string, error) {
+	parsed, err := url.Parse(address)
+	if err != nil || page <= 0 {
+		return "", errors.New("release discovery address is invalid")
+	}
+	query := parsed.Query()
+	query.Set("page", strconv.Itoa(page))
+	query.Set("per_page", "100")
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func (source *githubReleaseSource) Exact(
@@ -531,6 +570,20 @@ func selectLatestReleaseMetadata(
 	if !validReleaseChannel(channel) {
 		return githubReleaseMetadata{}, errors.New("release channel is invalid")
 	}
+	selected, selectedVersion := latestAcceptedReleaseMetadata(releases, channel)
+	if selectedVersion == "" {
+		return githubReleaseMetadata{}, fmt.Errorf(
+			"no published immutable OneNod release is available for the %s channel",
+			channel,
+		)
+	}
+	return selected, nil
+}
+
+func latestAcceptedReleaseMetadata(
+	releases []githubReleaseMetadata,
+	channel releaseChannel,
+) (githubReleaseMetadata, string) {
 	var selected githubReleaseMetadata
 	selectedVersion := ""
 	for _, candidate := range releases {
@@ -546,13 +599,7 @@ func selectLatestReleaseMetadata(
 			selectedVersion = version
 		}
 	}
-	if selectedVersion == "" {
-		return githubReleaseMetadata{}, fmt.Errorf(
-			"no published immutable OneNod release is available for the %s channel",
-			channel,
-		)
-	}
-	return selected, nil
+	return selected, selectedVersion
 }
 
 func requireOfficialRepositoryID() error {

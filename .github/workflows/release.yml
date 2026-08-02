@@ -113,6 +113,11 @@ jobs:
           --source-sha "$SOURCE_SHA_INPUT"
           --version-input "$VERSION_INPUT"
           --output "$GITHUB_OUTPUT"
+      - name: Verify the exact selected source contract
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+        run: node scripts/release/verify-source-contract.mjs --source-sha "$SOURCE_SHA"
       - name: Require a public repository eligible for attestations
         if: steps.release.outputs.should_release == 'true'
         env:
@@ -213,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
-      name: ${{ github.event_name == 'workflow_dispatch' && format('release-{0}', inputs.intent) || 'release-stable' }}
+      name: release-${{ needs.prepare.outputs.channel }}
     permissions:
       contents: write
     steps:
