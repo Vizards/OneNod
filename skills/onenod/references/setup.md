@@ -46,6 +46,11 @@ shows one non-secret production plan and asks for one default-no deployment
 confirmation before creating Vaults, a Service Account, Workers, Durable
 Objects, or Worker Secrets.
 
+The Gateway and Executor prompts offer cryptographically randomized Worker
+names by default. Pressing Enter accepts those names. A Worker name explicitly
+typed by the human is the complete final name and receives no automatic suffix.
+The human should inspect the derived public `workers.dev` Origin in the plan.
+
 The bootstrap URL carries a one-time secret in its fragment. The CLI opens it
 directly rather than using the clipboard; the PWA removes the fragment before
 its first request. After initial Passkey registration, the CLI removes the

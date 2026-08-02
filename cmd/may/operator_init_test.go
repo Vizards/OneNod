@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,7 +18,7 @@ const testOnePasswordAccount = "my.1password.com"
 func testProductionIdentity() productionTargetIdentity {
 	return productionTargetIdentity{
 		AccountID: testCloudflareAccountID, AccountSubdomain: "human-vault",
-		ExecutorName: defaultExecutorWorkerName, GatewayName: defaultGatewayWorkerName,
+		ExecutorName: defaultExecutorWorkerBaseName, GatewayName: defaultGatewayWorkerBaseName,
 		Origin: "https://onenod.human-vault.workers.dev", RPID: "onenod.human-vault.workers.dev",
 	}
 }
@@ -83,13 +84,71 @@ func TestServiceAccountCreationIsAgentOnlyRawAndExplicitAccount(t *testing.T) {
 
 func TestBinaryTargetDerivesWorkersDevOriginWithoutSubdomainPrompt(t *testing.T) {
 	input := strings.NewReader("\n\n")
+	var prompts strings.Builder
+	console := operatorConsole{stdin: input, stdout: io.Discard, stderr: &prompts}
+	identity, err := readBinaryProductionTargetIdentity(testCloudflareAccountID, "human-vault", &console)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayPrefix := defaultGatewayWorkerBaseName + "-"
+	executorPrefix := defaultExecutorWorkerBaseName + "-"
+	if !strings.HasPrefix(identity.GatewayName, gatewayPrefix) ||
+		!strings.HasPrefix(identity.ExecutorName, executorPrefix) {
+		t.Fatalf("random defaults were not applied: %+v", identity)
+	}
+	gatewayID := strings.TrimPrefix(identity.GatewayName, gatewayPrefix)
+	executorID := strings.TrimPrefix(identity.ExecutorName, executorPrefix)
+	if gatewayID != executorID || len(gatewayID) != 8 ||
+		strings.Trim(gatewayID, "abcdefghijklmnopqrstuvwxyz234567") != "" {
+		t.Fatalf("defaults do not share a valid deployment ID: %+v", identity)
+	}
+	expectedOrigin := "https://" + identity.GatewayName + ".human-vault.workers.dev"
+	if identity.Origin != expectedOrigin || identity.RPID != strings.TrimPrefix(expectedOrigin, "https://") {
+		t.Fatalf("%+v", identity)
+	}
+	if !strings.Contains(prompts.String(), "["+identity.GatewayName+"]") ||
+		!strings.Contains(prompts.String(), "["+identity.ExecutorName+"]") {
+		t.Fatalf("random defaults were not displayed: %s", prompts.String())
+	}
+}
+
+func TestBinaryTargetUsesExplicitWorkerNamesWithoutSuffix(t *testing.T) {
+	input := strings.NewReader("my-gateway\nprivate-executor\n")
 	console := operatorConsole{stdin: input, stdout: io.Discard, stderr: io.Discard}
 	identity, err := readBinaryProductionTargetIdentity(testCloudflareAccountID, "human-vault", &console)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.Origin != "https://onenod.human-vault.workers.dev" || identity.RPID != "onenod.human-vault.workers.dev" {
-		t.Fatalf("%+v", identity)
+	if identity.GatewayName != "my-gateway" || identity.ExecutorName != "private-executor" ||
+		identity.Origin != "https://my-gateway.human-vault.workers.dev" {
+		t.Fatalf("explicit Worker names were rewritten: %+v", identity)
+	}
+}
+
+func TestBinaryTargetAllowsOneExplicitNameAndOneRandomDefault(t *testing.T) {
+	input := strings.NewReader("my-gateway\n\n")
+	console := operatorConsole{stdin: input, stdout: io.Discard, stderr: io.Discard}
+	identity, err := readBinaryProductionTargetIdentity(testCloudflareAccountID, "human-vault", &console)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.GatewayName != "my-gateway" ||
+		!strings.HasPrefix(identity.ExecutorName, defaultExecutorWorkerBaseName+"-") ||
+		identity.Origin != "https://my-gateway.human-vault.workers.dev" {
+		t.Fatalf("mixed explicit/default Worker names were not preserved: %+v", identity)
+	}
+}
+
+func TestDeploymentIDUsesExactLowercaseBase32Encoding(t *testing.T) {
+	id, err := deploymentIDFromReader(bytes.NewReader([]byte{0, 1, 2, 3, 4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "aaaqeaye" {
+		t.Fatalf("unexpected deployment ID %q", id)
+	}
+	if _, err := deploymentIDFromReader(strings.NewReader("short"[:4])); err == nil {
+		t.Fatal("short random input was accepted")
 	}
 }
 

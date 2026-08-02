@@ -629,11 +629,21 @@ func readNamedWranglerOAuthToken(wrangler, profile string) ([]byte, error) {
 
 func readBinaryProductionTargetIdentity(accountID, accountSubdomain string, console *operatorConsole) (productionTargetIdentity, error) {
 	fmt.Fprintf(console.stdout, "Cloudflare workers.dev account subdomain: %s (automatically discovered)\n", accountSubdomain)
-	gateway, err := console.readValue("Public Gateway Worker name", defaultGatewayWorkerName)
+	deploymentID, err := newDeploymentID()
+	if err != nil {
+		return productionTargetIdentity{}, errors.New("generate Cloudflare deployment ID failed")
+	}
+	gateway, err := console.readValue(
+		"Public Gateway Worker name",
+		defaultGatewayWorkerBaseName+"-"+deploymentID,
+	)
 	if err != nil {
 		return productionTargetIdentity{}, err
 	}
-	executor, err := console.readValue("Private Executor Worker name", defaultExecutorWorkerName)
+	executor, err := console.readValue(
+		"Private Executor Worker name",
+		defaultExecutorWorkerBaseName+"-"+deploymentID,
+	)
 	if err != nil {
 		return productionTargetIdentity{}, err
 	}

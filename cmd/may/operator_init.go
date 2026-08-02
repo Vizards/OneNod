@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,10 +16,11 @@ import (
 
 const (
 	defaultAgentVaultName         = "Agent"
-	defaultExecutorWorkerName     = "onenod-executor"
-	defaultGatewayWorkerName      = "onenod"
+	defaultExecutorWorkerBaseName = "onenod-executor"
+	defaultGatewayWorkerBaseName  = "onenod"
 	defaultRecoveryVaultName      = "OneNod Recovery"
 	defaultServiceAccountName     = "onenod-executor"
+	deploymentIDBytes             = 5
 	productionInitializationTag   = "onenod-production"
 	productionInitializationTitle = "OneNod production recovery"
 	serviceAccountTokenItemTitle  = "OneNod Executor Service Account"
@@ -211,6 +213,19 @@ func randomBase64URL(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func newDeploymentID() (string, error) {
+	return deploymentIDFromReader(rand.Reader)
+}
+
+func deploymentIDFromReader(source io.Reader) (string, error) {
+	value := make([]byte, deploymentIDBytes)
+	defer zeroBytes(value)
+	if _, err := io.ReadFull(source, value); err != nil {
+		return "", err
+	}
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(value)), nil
 }
 
 func serviceAccountTokenItemTemplate(
