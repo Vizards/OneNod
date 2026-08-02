@@ -94,16 +94,11 @@ func (credential *requesterCredential) validatePublic() error {
 }
 
 type keychainBackend interface {
-	Delete(account string, service string) error
 	Load(account string, service string) ([]byte, bool, error)
 	Save(account string, service string, data []byte) error
 }
 
 type unavailableKeychainBackend struct{}
-
-func (unavailableKeychainBackend) Delete(string, string) error {
-	return errors.New("requester Keychain access requires the installed OneNod Keychain helper")
-}
 
 func (unavailableKeychainBackend) Load(string, string) ([]byte, bool, error) {
 	return nil, false, errors.New("requester Keychain access requires the installed OneNod Keychain helper")

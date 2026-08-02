@@ -519,13 +519,6 @@ type recordingKeychainBackend struct {
 	loadErr error
 }
 
-func (backend *recordingKeychainBackend) Delete(account string, service string) error {
-	backend.account = account
-	backend.service = service
-	backend.saved = nil
-	return nil
-}
-
 func (backend *recordingKeychainBackend) Save(account string, service string, data []byte) error {
 	backend.account = account
 	backend.service = service
