@@ -2038,12 +2038,34 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if err != nil {
 		return err
 	}
-	transaction, transactionPath, err := newOperatorUpdateTransaction(receipt, release, bundle.Artifact, executorBefore, gatewayBefore)
+	transaction, transactionPath, resuming, err := recoverOrCreateOperatorUpdateTransaction(
+		receipt, release, bundle.Artifact, executorBefore, gatewayBefore,
+	)
 	if err != nil {
 		return err
 	}
-	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
-		return err
+	if !resuming {
+		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+			return err
+		}
+	}
+	if resuming {
+		if err := inspectWorkerVersionBindings(
+			tools.Wrangler, profile, filepath.Dir(bundleExecutorConfig(bundle)), bundleExecutorConfig(bundle),
+			receipt.ExecutorWorker, transaction.ExecutorAfter,
+			[]string{"EXECUTOR_AUTH_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN"},
+		); err != nil {
+			return fmt.Errorf("cannot reconcile the recorded Executor version before resuming: %w", err)
+		}
+		if transaction.GatewayAfter != "" {
+			if err := inspectWorkerVersionBindings(
+				tools.Wrangler, profile, filepath.Dir(bundleGatewayConfig(bundle)), bundleGatewayConfig(bundle),
+				receipt.GatewayWorker, transaction.GatewayAfter,
+				[]string{"EXECUTOR_AUTH_TOKEN", "GATEWAY_MASTER_KEY", "VAPID_PRIVATE_KEY"},
+			); err != nil {
+				return fmt.Errorf("cannot reconcile the recorded Gateway version before resuming: %w", err)
+			}
+		}
 	}
 	fmt.Fprintln(console.stdout, "\nOneNod operator update plan")
 	fmt.Fprintf(console.stdout, "  Cloudflare account: %s (%s)\n", account.Name, account.ID)
@@ -2054,19 +2076,31 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	fmt.Fprintf(console.stdout, "  Executor baseline: %s\n  Gateway baseline: %s\n", executorBefore, gatewayBefore)
 	fmt.Fprintf(console.stdout, "  Bundle: %s (%s)\n", bundle.Artifact.Name, bundle.Artifact.SHA256)
 	fmt.Fprintf(console.stdout, "  Promotion order: %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+	if resuming {
+		fmt.Fprintf(console.stdout, "  Resume transaction: %s (%s)\n", transaction.ID, transaction.Phase)
+		fmt.Fprintf(console.stdout, "  Reuse verified Executor version: %s\n", transaction.ExecutorAfter)
+		if transaction.GatewayAfter == "" {
+			fmt.Fprintln(console.stdout, "  Gateway retry: prior upload produced no version; upload once after confirmation")
+		} else {
+			fmt.Fprintf(console.stdout, "  Reuse verified Gateway version: %s\n", transaction.GatewayAfter)
+		}
+	}
 	writeKeychainHelperUpdatePlan(console.stdout, helperPlan)
 	confirmed, err := promptYesNo(console.stdin, console.stdout, "Deploy this OneNod update now?", false)
 	if err != nil || !confirmed {
-		transaction.Outcome = "not_confirmed"
-		transaction.Phase = "planned"
-		_ = writeAtomicPrivateJSON(transactionPath, transaction)
+		if !resuming {
+			transaction.Outcome = "not_confirmed"
+			transaction.Phase = "planned"
+			_ = writeAtomicPrivateJSON(transactionPath, transaction)
+		}
 		if err != nil {
 			return err
 		}
 		return errors.New("operator update was not confirmed; production traffic was unchanged")
 	}
 	executorAfter, gatewayAfter, deployErr := deployVerifiedUpdate(
-		tools.Wrangler, profile, bundle, release, receipt, executorBefore, gatewayBefore, console, transaction, transactionPath,
+		tools.Wrangler, profile, bundle, release, receipt, executorBefore, gatewayBefore,
+		console, transaction, transactionPath, resuming,
 	)
 	if deployErr != nil {
 		return deployErr
@@ -2185,6 +2219,82 @@ func newOperatorUpdateTransaction(
 	return transaction, filepath.Join(directory, id+".json"), nil
 }
 
+func recoverOrCreateOperatorUpdateTransaction(
+	receipt *operatorDeploymentReceipt,
+	release *verifiedRelease,
+	artifact releaseArtifact,
+	executorBefore, gatewayBefore string,
+) (*operatorUpdateTransaction, string, bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", false, err
+	}
+	directory := filepath.Join(home, userAgentDirectoryName, "update", "transactions")
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		transaction, path, createErr := newOperatorUpdateTransaction(
+			receipt, release, artifact, executorBefore, gatewayBefore,
+		)
+		return transaction, path, false, createErr
+	}
+	if err != nil {
+		return nil, "", false, errors.New("inspect operator update transactions failed")
+	}
+	var matched *operatorUpdateTransaction
+	var matchedPath string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		var transaction operatorUpdateTransaction
+		if err := readStrictPrivateJSON(path, &transaction); err != nil {
+			return nil, "", false, fmt.Errorf("read operator update transaction %s failed", entry.Name())
+		}
+		if transaction.AccountID != receipt.AccountID ||
+			transaction.ReleaseFrom != receipt.ReleaseVersion ||
+			transaction.ReleaseTo != release.Manifest.ReleaseVersion ||
+			transaction.DeploymentArtifact != artifact.Name ||
+			transaction.DeploymentArtifactSHA != artifact.SHA256 ||
+			transaction.Outcome != "remote_needs_attention" {
+			continue
+		}
+		if transaction.SchemaVersion != operatorTransactionSchema ||
+			!uuidPattern.MatchString(transaction.ID) || entry.Name() != transaction.ID+".json" {
+			return nil, "", false, errors.New("recoverable operator update transaction identity is invalid")
+		}
+		if transaction.Phase != "gateway_upload_unknown" {
+			return nil, "", false, fmt.Errorf(
+				"operator update transaction %s requires manual reconciliation at phase %s",
+				transaction.ID, transaction.Phase,
+			)
+		}
+		if transaction.ExecutorBefore != executorBefore || transaction.GatewayBefore != gatewayBefore {
+			return nil, "", false, fmt.Errorf(
+				"operator update transaction %s cannot resume because Cloudflare traffic changed",
+				transaction.ID,
+			)
+		}
+		if !uuidPattern.MatchString(transaction.ExecutorAfter) ||
+			(transaction.GatewayAfter != "" && !uuidPattern.MatchString(transaction.GatewayAfter)) {
+			return nil, "", false, errors.New("recoverable operator update transaction has invalid uploaded versions")
+		}
+		if matched != nil {
+			return nil, "", false, errors.New("multiple recoverable operator update transactions match the selected Release")
+		}
+		copy := transaction
+		matched = &copy
+		matchedPath = path
+	}
+	if matched != nil {
+		return matched, matchedPath, true, nil
+	}
+	transaction, path, createErr := newOperatorUpdateTransaction(
+		receipt, release, artifact, executorBefore, gatewayBefore,
+	)
+	return transaction, path, false, createErr
+}
+
 func deployVerifiedUpdate(
 	wrangler, profile string,
 	bundle *stagedDeploymentBundle,
@@ -2194,12 +2304,26 @@ func deployVerifiedUpdate(
 	console *operatorConsole,
 	transaction *operatorUpdateTransaction,
 	transactionPath string,
+	resuming bool,
 ) (string, string, error) {
 	executorConfig := bundleExecutorConfig(bundle)
 	gatewayConfig := bundleGatewayConfig(bundle)
-	executorAfter, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
-		receipt.ExecutorWorker, "OneNod "+release.Manifest.ReleaseVersion+" executor", console)
+	knownExecutor := ""
+	knownGateway := ""
+	if resuming {
+		knownExecutor = transaction.ExecutorAfter
+		knownGateway = transaction.GatewayAfter
+	}
+	executorAfter, err := uploadOrReuseWorkerVersion(
+		wrangler, profile, filepath.Dir(executorConfig), executorConfig,
+		receipt.ExecutorWorker, knownExecutor,
+		"OneNod "+release.Manifest.ReleaseVersion+" executor", console,
+		[]string{"EXECUTOR_AUTH_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN"},
+	)
 	if err != nil {
+		if knownExecutor != "" {
+			return "", "", err
+		}
 		var unknown *remoteOutcomeUnknownError
 		if errors.As(err, &unknown) && uuidPattern.MatchString(unknown.ObservedVersion) {
 			transaction.ExecutorAfter = unknown.ObservedVersion
@@ -2207,26 +2331,25 @@ func deployVerifiedUpdate(
 		markOperatorUpdateNeedsAttention(transaction, transactionPath, "executor_upload_unknown")
 		return "", "", err
 	}
-	if err := inspectWorkerVersionBindings(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
-		receipt.ExecutorWorker, executorAfter, []string{"EXECUTOR_AUTH_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN"}); err != nil {
-		return "", "", err
-	}
 	transaction.ExecutorAfter = executorAfter
 	transaction.Phase = "executor_uploaded"
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	_ = writeAtomicPrivateJSON(transactionPath, transaction)
-	gatewayAfter, err := uploadWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
-		receipt.GatewayWorker, "OneNod "+release.Manifest.ReleaseVersion+" gateway", console)
+	gatewayAfter, err := uploadOrReuseWorkerVersion(
+		wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
+		receipt.GatewayWorker, knownGateway,
+		"OneNod "+release.Manifest.ReleaseVersion+" gateway", console,
+		[]string{"EXECUTOR_AUTH_TOKEN", "GATEWAY_MASTER_KEY", "VAPID_PRIVATE_KEY"},
+	)
 	if err != nil {
+		if knownGateway != "" {
+			return "", "", err
+		}
 		var unknown *remoteOutcomeUnknownError
 		if errors.As(err, &unknown) && uuidPattern.MatchString(unknown.ObservedVersion) {
 			transaction.GatewayAfter = unknown.ObservedVersion
 		}
 		markOperatorUpdateNeedsAttention(transaction, transactionPath, "gateway_upload_unknown")
-		return "", "", err
-	}
-	if err := inspectWorkerVersionBindings(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
-		receipt.GatewayWorker, gatewayAfter, []string{"EXECUTOR_AUTH_TOKEN", "GATEWAY_MASTER_KEY", "VAPID_PRIVATE_KEY"}); err != nil {
 		return "", "", err
 	}
 	transaction.GatewayAfter = gatewayAfter
@@ -2271,6 +2394,34 @@ func deployVerifiedUpdate(
 		return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
 	}
 	return executorAfter, gatewayAfter, nil
+}
+
+func uploadOrReuseWorkerVersion(
+	wrangler, profile, cwd, config, worker, knownVersion, message string,
+	console *operatorConsole,
+	requiredSecrets []string,
+) (string, error) {
+	version := knownVersion
+	if version == "" {
+		var err error
+		version, err = uploadWorkerVersion(
+			wrangler, profile, cwd, config, worker, message, console,
+		)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		fmt.Fprintf(console.stdout, "Reusing previously uploaded %s version %s after read-only reconciliation.\n", worker, version)
+	}
+	if !uuidPattern.MatchString(version) {
+		return "", fmt.Errorf("Worker %s version identity is invalid", worker)
+	}
+	if err := inspectWorkerVersionBindings(
+		wrangler, profile, cwd, config, worker, version, requiredSecrets,
+	); err != nil {
+		return "", err
+	}
+	return version, nil
 }
 
 func markOperatorUpdateNeedsAttention(
