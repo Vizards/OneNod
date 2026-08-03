@@ -26,6 +26,14 @@ import {
   type SshSignCreateRequest,
 } from "@onenod/protocol";
 
+import {
+  DEFAULT_PASSKEY_LABEL,
+  LEGACY_DEFAULT_PASSKEY_LABEL,
+  PASSKEY_RP_NAME,
+  PASSKEY_USER_DISPLAY_NAME,
+  PASSKEY_USER_HANDLE,
+  PASSKEY_USER_NAME,
+} from "../passkey-identity.js";
 import { ownedBytes } from "../shared/owned-bytes.js";
 
 import {
@@ -113,7 +121,6 @@ declare const EXECUTOR_FETCH_TIMEOUT_MS: number;
 declare const RECONCILIATION_IMMEDIATE_ENABLED: boolean;
 declare const RECONCILIATION_RETRY_DELAY_MS: number;
 
-const RP_NAME = "OneNod";
 const SESSION_COOKIE = "__Host-approval_session";
 const BOOTSTRAP_SESSION_COOKIE = "__Host-bootstrap_session";
 const BOOTSTRAP_SESSION_TTL_MS = 10 * 60_000;
@@ -1051,7 +1058,7 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       throw new GatewayHttpError("bootstrap_not_armed", 403);
     }
     const body = await readJsonObject<HumanBootstrapRequest>(request);
-    const label = safeText(body.label, 80, "Mac passkey");
+    const label = safeText(body.label, 80, DEFAULT_PASSKEY_LABEL);
     const credentials = this.listHumanCredentials();
     const options = await generateRegistrationOptions({
       attestationType: "none",
@@ -1064,12 +1071,12 @@ export class ApprovalCoordinator extends DurableObject<Env> {
         transports: parseTransports(credential.transports),
       })),
       rpID: this.env.RP_ID,
-      rpName: RP_NAME,
+      rpName: PASSKEY_RP_NAME,
       supportedAlgorithmIDs: [-7],
       timeout: 60_000,
-      userDisplayName: label,
-      userID: new TextEncoder().encode("onenod-approver"),
-      userName: "approver",
+      userDisplayName: PASSKEY_USER_DISPLAY_NAME,
+      userID: new TextEncoder().encode(PASSKEY_USER_HANDLE),
+      userName: PASSKEY_USER_NAME,
     });
     const challengeId = this.storeChallenge({
       challenge: options.challenge,
@@ -1128,7 +1135,7 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       throw new GatewayHttpError("webauthn_verification_failed", 401);
     }
     const info = verification.registrationInfo;
-    const label = safeText(payload.label, 80, "Mac passkey");
+    const label = safeText(payload.label, 80, DEFAULT_PASSKEY_LABEL);
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       const bootstrapClaim = this.rows<{ singleton: number }>(
@@ -1637,12 +1644,12 @@ export class ApprovalCoordinator extends DurableObject<Env> {
         transports: parseTransports(credential.transports),
       })),
       rpID: this.env.RP_ID,
-      rpName: RP_NAME,
+      rpName: PASSKEY_RP_NAME,
       supportedAlgorithmIDs: [-7],
       timeout: 60_000,
-      userDisplayName: label,
-      userID: new TextEncoder().encode("onenod-approver"),
-      userName: "approver",
+      userDisplayName: PASSKEY_USER_DISPLAY_NAME,
+      userID: new TextEncoder().encode(PASSKEY_USER_HANDLE),
+      userName: PASSKEY_USER_NAME,
     });
     const registrationChallengeId = this.storeChallenge({
       challenge: options.challenge,
@@ -5815,6 +5822,32 @@ export class ApprovalCoordinator extends DurableObject<Env> {
        VALUES (1, ?)`,
       Date.now(),
     );
+    this.migrateLegacyDefaultPasskeyLabel();
+  }
+
+  private migrateLegacyDefaultPasskeyLabel(): void {
+    const migrated = this.first<{ version: number }>(
+      `SELECT version FROM gateway_schema_migrations WHERE version = 2`,
+    );
+    if (migrated) return;
+
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `UPDATE human_credentials SET label = ?
+         WHERE id = (
+           SELECT id FROM human_credentials
+           WHERE label = ? AND revoked_at IS NULL
+           ORDER BY created_at ASC LIMIT 1
+         )`,
+        DEFAULT_PASSKEY_LABEL,
+        LEGACY_DEFAULT_PASSKEY_LABEL,
+      );
+      this.sql.exec(
+        `INSERT INTO gateway_schema_migrations (version, applied_at)
+         VALUES (2, ?)`,
+        Date.now(),
+      );
+    });
   }
 
   private migrateRequestClientObservation(): void {

@@ -23,6 +23,7 @@ import type {
 } from "@onenod/protocol";
 import { decodeBase64Url } from "@onenod/protocol";
 
+import { passkeyPortabilityLabel } from "../passkey-identity";
 import { ownedBytes } from "../shared/owned-bytes";
 import {
   ApiError,
@@ -498,7 +499,7 @@ function RefreshPageButton() {
 }
 
 function BootstrapPage() {
-  usePageTitle("Initialize approver · OneNod");
+  usePageTitle("Initialize OneNod owner · OneNod");
   const queryClient = useQueryClient();
   const bootstrapToken = useRef<string | undefined>(
     bootstrapFragmentState.value.status === "ready"
@@ -528,7 +529,7 @@ function BootstrapPage() {
   });
 
   return (
-    <HumanGateCard eyebrow="Secure bootstrap" title="Register the first approval passkey">
+    <HumanGateCard eyebrow="Secure bootstrap" title="Register the primary passkey">
       <p className="text-sm leading-6 text-secondary">
         This is the one-time initialization for this approval gateway.
         WebAuthn and your chosen passkey provider create the credential; the private key stays
@@ -1722,16 +1723,21 @@ function CredentialsSection({ credentials }: { credentials: HumanCredentialSumma
   });
   return (
     <section className="mt-10" aria-labelledby="credentials-title">
-      <h2 id="credentials-title" className="text-base font-medium">Human passkey credentials</h2>
+      <h2 id="credentials-title" className="text-base font-medium">Owner passkeys</h2>
       <p className="mt-2 text-sm leading-5 text-secondary">
-        One synced passkey can serve multiple devices. Adding a passkey here creates a separate WebAuthn credential for recovery or isolation.
+        Passkeys verify the OneNod owner. A synced passkey can serve multiple devices;
+        PWA installations are registered and revoked separately below.
+      </p>
+      <p className="mt-2 text-xs leading-5 text-secondary">
+        The label is stored by OneNod for management only. The passkey account is
+        always OneNod owner.
       </p>
       <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <input
           value={label}
           maxLength={80}
           onChange={(event) => setLabel(event.target.value)}
-          placeholder="New credential name"
+          placeholder="Passkey label (for example, 1Password)"
           className="h-11 min-w-0 flex-1 rounded-control border border-subtle bg-background px-3 text-sm"
         />
         <button
@@ -1765,6 +1771,10 @@ function HumanCredentialCard({
   credential: HumanCredentialSummary;
 }) {
   const queryClient = useQueryClient();
+  const portability = passkeyPortabilityLabel(
+    credential.deviceType,
+    credential.backedUp,
+  );
   const revoke = useMutation({
     mutationFn: async () => {
       const challenge = await beginCredentialRevoke(credential.id);
@@ -1783,13 +1793,12 @@ function HumanCredentialCard({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-medium">{credential.label}</h3>
-          {credential.current ? <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">Current credential</span> : null}
-          {credential.backedUp ? <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">Synced</span> : null}
+          {credential.current ? <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">Current passkey</span> : null}
+          <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">{portability}</span>
         </div>
         <p className="mt-2 text-xs text-secondary">
-          {credential.deviceType} · last used {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
+          Added {formatDateTime(credential.createdAt)} · last used {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
         </p>
-        <p className="mt-2 max-w-full break-all font-mono text-[11px] text-secondary">{credential.id}</p>
       </div>
       <button
         type="button"
@@ -1797,7 +1806,7 @@ function HumanCredentialCard({
         onClick={() => revoke.mutate()}
         className="h-10 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:w-auto"
       >
-        {revoke.isPending ? "Verifying…" : "Revoke credential"}
+        {revoke.isPending ? "Verifying…" : "Revoke passkey"}
       </button>
       {revoke.isError ? <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact /> : null}
     </li>

@@ -15,6 +15,7 @@ import type {
 } from "@onenod/protocol";
 
 import type { GatewayReleaseChannel } from "../release";
+import { DEFAULT_PASSKEY_LABEL } from "../passkey-identity";
 
 const CSRF_STORAGE_KEY = "onepassword-remote.csrf";
 
@@ -143,7 +144,7 @@ export async function getHumanState(): Promise<HumanState> {
 }
 
 export function beginBootstrapRegistration(
-  label = "Mac passkey",
+  label = DEFAULT_PASSKEY_LABEL,
 ): Promise<WebAuthnOptionsEnvelope<PublicKeyCredentialCreationOptionsJSON>> {
   return postJson("/v1/bootstrap/registration/options", { label });
 }
