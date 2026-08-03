@@ -465,6 +465,21 @@ func (console *operatorConsole) confirmDefaultYes(prompt string) (bool, error) {
 	}
 }
 
+func (console *operatorConsole) confirmDefaultNo(prompt string) (bool, error) {
+	value, err := console.readLine(prompt + " [y/N]: ")
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "y", "yes":
+		return true, nil
+	case "", "n", "no":
+		return false, nil
+	default:
+		return false, errors.New("enter y or n")
+	}
+}
+
 func operatorEnvironment(overrides map[string]string) []string {
 	blocked := map[string]bool{
 		"CURL_CA_BUNDLE":               true,

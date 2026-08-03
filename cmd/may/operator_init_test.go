@@ -406,6 +406,7 @@ exit 2
 		"0123456789abcdef0123456789abcdef",
 		dedicatedAccountTransport(t, "release-token"),
 		&console,
+		true,
 	)
 	if err != nil || revoked {
 		t.Fatalf("explicit retention should succeed without deletion: revoked=%v err=%v", revoked, err)

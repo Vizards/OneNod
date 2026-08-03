@@ -15,6 +15,22 @@ The initializer may use an unlocked human `op` session to create `Agent`,
 token is passed directly to the Executor Worker Secret and recovery record; it
 is not an Agent credential.
 
+## Keep direct 1Password administration explicit
+
+OneNod does not depend on a second 1Password Skill. For normal Agent work,
+never substitute `op` when `may` is missing, denied, locked, or unhealthy.
+
+Use `op` directly only after the human explicitly requests an administrative or
+migration action. Confirm the intended 1Password sign-in address, run from the
+human's local graphical Mac session, set `OP_BIOMETRIC_UNLOCK_ENABLED=true`, and
+pass the confirmed address through `--account`. Ask when the account is
+ambiguous. An empty or locked `op` session reached over SSH is not evidence that
+the desktop app has no accounts.
+
+Keep direct administration metadata-only unless the reviewed OneNod ceremony
+itself needs to provision a Service Account. Never reveal, export, or relay a
+credential value through Agent-visible output.
+
 ## Trust flow
 
 ```text

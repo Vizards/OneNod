@@ -9,6 +9,21 @@ is the bootstrap location for a separately distributed copy of this Skill.
 After obtaining the first `may` binary, let the binary own artifact
 verification, installation, and update mechanics.
 
+## Bootstrap the first `may`
+
+When `may` is not installed, obtain the macOS archive for the detected machine
+architecture from the canonical GitHub Release selected by the human. Stable is
+the default; use an exact prerelease only when the human deliberately requests
+that channel or version. Extract it in a private temporary directory, inspect
+`may version`, and use that binary to start `may install` for an existing
+Gateway or `may operator init` for a new deployment. Do not require Go, a
+repository clone, private project documents, or another Skill.
+
+The bootstrap download establishes the first executable trust root from the
+human-selected canonical Release. Once running, `may` verifies the attributed
+Release set before installing or deploying it; do not replace that path with a
+locally built binary or an unverified third-party package.
+
 Stable is the default release channel. A human who is deliberately testing a
 candidate may select `beta` or `alpha` through the CLI's `--channel` option.
 That selection is a risk ceiling: `beta` may consume beta or stable Releases,
@@ -71,7 +86,13 @@ half-created deployment.
 
 At the end, accept the CLI's default-yes offer to revoke the temporary
 Cloudflare authority on this Mac unless the human deliberately retains it. A
-skip is allowed but leaves the deployment authority retained.
+skip is allowed but leaves the deployment authority retained. The Gateway can
+be tested in that state, but the production-credential migration gate remains
+unmet until the current Mac no longer has deployment authority for the
+dedicated account. Run `may operator revoke-cloudflare` later to inspect the
+receipt-bound account, show every matching local profile, and remove them only
+after a default-no human confirmation; the command does not modify remote
+Workers, Durable Objects, traffic, or 1Password data.
 
 ## Install and enroll requester Macs
 

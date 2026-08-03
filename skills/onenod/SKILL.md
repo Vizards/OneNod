@@ -10,6 +10,11 @@ Use the installed `may` binary's help for flags, argument shapes, detected
 state, and version-specific recovery instructions. Stable command-family names
 are included here so an Agent can choose the correct entry point.
 
+Treat this Skill as the complete OneNod lifecycle entry point. Do not require a
+project checkout, private maintainer documentation, or another 1Password Skill.
+Before `may` exists, use the bootstrap guidance in the Setup reference; after
+installation, let `may` own executable plans and version-specific mechanics.
+
 ## Route the task
 
 Load one primary reference:
@@ -32,7 +37,8 @@ For migration, load the router plus only the applicable leaf:
 ## Non-negotiable boundaries
 
 - Use the installed `may` requester for Agent work. `op` is reserved for a
-  human-explicit 1Password administration or migration task.
+  human-explicit 1Password administration or migration task described by this
+  Skill; never route normal Agent access through `op` or another Skill.
 - Hand the terminal to the human from Wrangler account selection, browser
   OAuth when needed, or 1Password unlock through the CLI's current-Mac
   Cloudflare revocation check.

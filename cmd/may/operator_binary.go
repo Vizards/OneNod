@@ -28,6 +28,7 @@ const (
 	operatorTransactionSchema    = 1
 	operatorCommandTimeout       = 5 * time.Minute
 	initializerReexecIdentity    = "ONENOD_INIT_REEXEC_IDENTITY"
+	operatorUsage                = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator revoke-cloudflare"
 )
 
 var workerVersionIDPattern = regexp.MustCompile(`(?i)Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
@@ -340,7 +341,7 @@ func runBinaryFirstProductionDeployment(
 		localInstallErr = installVerifiedRelease(ctx, release, material.Origin, deps, true)
 	}
 	profileRevoked, err = promptAndRevokeWranglerProfile(
-		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console,
+		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console, true,
 	)
 	profileRetainedByHuman = err == nil && !profileRevoked
 	receipt.CloudflareProfileRevoked = profileRevoked
@@ -1422,6 +1423,7 @@ func promptAndRevokeWranglerProfile(
 	accountID string,
 	base http.RoundTripper,
 	console *operatorConsole,
+	defaultYes bool,
 ) (bool, error) {
 	profiles, err := wranglerProfilesForAccount(wrangler, accountID, base)
 	if err != nil {
@@ -1439,7 +1441,12 @@ func promptAndRevokeWranglerProfile(
 		}
 		fmt.Fprintf(console.stdout, "  - %s%s\n", profile, marker)
 	}
-	revoke, err := console.confirmDefaultYes("Revoke this Mac's Cloudflare deployment authority now?")
+	var revoke bool
+	if defaultYes {
+		revoke, err = console.confirmDefaultYes("Revoke this Mac's Cloudflare deployment authority now?")
+	} else {
+		revoke, err = console.confirmDefaultNo("Revoke this Mac's Cloudflare deployment authority now?")
+	}
 	if err != nil {
 		return false, err
 	}
@@ -1467,6 +1474,77 @@ func promptAndRevokeWranglerProfile(
 		)
 	}
 	return true, nil
+}
+
+func runOperatorRevokeCloudflare(args []string, deps dependencies) error {
+	flags := flag.NewFlagSet("operator revoke-cloudflare", flag.ContinueOnError)
+	flags.SetOutput(deps.stderr)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: may operator revoke-cloudflare")
+	}
+	if err := assertNoCloudflareCredentialEnvironment(); err != nil {
+		return err
+	}
+	receipt, err := readOperatorDeploymentReceipt()
+	if err != nil {
+		return err
+	}
+	wrangler, err := checkWranglerRevocationTool()
+	if err != nil {
+		return err
+	}
+	console := &operatorConsole{stdin: deps.stdin, stdout: deps.stdout, stderr: deps.stderr}
+	fmt.Fprintln(console.stdout, "OneNod current-Mac Cloudflare revocation plan")
+	fmt.Fprintf(console.stdout, "  Dedicated account: %s\n", receipt.AccountID)
+	fmt.Fprintf(console.stdout, "  Deployment Origin: %s\n", receipt.Origin)
+	fmt.Fprintln(console.stdout, "  Action: remove every local Wrangler profile that currently exposes this account")
+	fmt.Fprintln(console.stdout, "  Remote Workers, Durable Objects, traffic, and 1Password data are unchanged")
+
+	revoked, err := promptAndRevokeWranglerProfile(
+		wrangler,
+		receipt.CloudflareProfile,
+		receipt.AccountID,
+		deps.cloudflareTransport,
+		console,
+		false,
+	)
+	if err != nil {
+		return err
+	}
+	receipt.CloudflareProfileRevoked = revoked
+	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := writeOperatorDeploymentReceipt(*receipt); err != nil {
+		return fmt.Errorf("Cloudflare authority handling finished, but the operator receipt could not be updated: %w", err)
+	}
+	if !revoked {
+		return errors.New("Cloudflare revocation was not confirmed; current-Mac deployment authority remains")
+	}
+	fmt.Fprintln(console.stdout, "OneNod verified that this Mac has no Wrangler profile for the dedicated Cloudflare account.")
+	return nil
+}
+
+func checkWranglerRevocationTool() (string, error) {
+	path, err := exec.LookPath("wrangler")
+	if err != nil {
+		return "", errors.New("required external tool wrangler is not installed")
+	}
+	for _, arguments := range [][]string{
+		{"auth", "delete", "--help"},
+		{"auth", "list", "--help"},
+		{"auth", "token", "--help"},
+	} {
+		command := exec.Command(path, arguments...)
+		command.Env = operatorEnvironment(nil)
+		command.Stdout = io.Discard
+		command.Stderr = io.Discard
+		if err := command.Run(); err != nil {
+			return "", fmt.Errorf("wrangler lacks required capability %s", strings.Join(arguments, " "))
+		}
+	}
+	return path, nil
 }
 
 func wranglerProfilesForAccount(
@@ -1999,7 +2077,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	transaction.Outcome = "remote_complete"
 	_ = writeAtomicPrivateJSON(transactionPath, transaction)
 	profileRevoked, err = promptAndRevokeWranglerProfile(
-		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console,
+		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console, true,
 	)
 	profileRetainedByHuman = err == nil && !profileRevoked
 	transaction.ProfileRevoked = profileRevoked
@@ -2375,7 +2453,7 @@ func assertNoCloudflareCredentialEnvironment() error {
 		"CF_API_TOKEN", "CF_API_KEY", "CF_EMAIL",
 	} {
 		if os.Getenv(name) != "" {
-			return fmt.Errorf("unset %s before operator deployment; OneNod requires a temporary named Wrangler OAuth profile", name)
+			return fmt.Errorf("unset %s before an operator Cloudflare action; OneNod manages only named Wrangler OAuth profiles", name)
 		}
 	}
 	return nil

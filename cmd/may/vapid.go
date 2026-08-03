@@ -28,7 +28,10 @@ func runOperator(args []string, deps dependencies) error {
 	if len(args) >= 1 && args[0] == "update" {
 		return runBinaryOperatorUpdate(args[1:], deps)
 	}
-	return errors.New("usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
+	if len(args) >= 1 && args[0] == "revoke-cloudflare" {
+		return runOperatorRevokeCloudflare(args[1:], deps)
+	}
+	return errors.New(operatorUsage)
 }
 
 func newVapidCredential() (vapidCredential, error) {

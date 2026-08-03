@@ -358,6 +358,7 @@ exit 2
 		"0123456789abcdef0123456789abcdef",
 		transport,
 		&operatorConsole{stdin: strings.NewReader("y\n"), stdout: &output, stderr: io.Discard},
+		true,
 	)
 	if err != nil || !revoked {
 		t.Fatalf("dedicated-account profiles were not revoked: revoked=%v err=%v", revoked, err)
