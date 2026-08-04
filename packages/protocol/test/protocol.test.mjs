@@ -41,6 +41,9 @@ test("rejects values outside the supported canonical JSON domain", () => {
     Number.NaN,
     Number.POSITIVE_INFINITY,
     Number.NEGATIVE_INFINITY,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1,
     1n,
     Symbol("not-json"),
     () => undefined,
@@ -55,6 +58,8 @@ test("rejects values outside the supported canonical JSON domain", () => {
   const cyclic = {};
   cyclic.self = cyclic;
   assert.throws(() => canonicalizeJson(cyclic), TypeError);
+  assert.equal(canonicalizeJson(Number.MAX_SAFE_INTEGER), "9007199254740991");
+  assert.equal(canonicalizeJson(Number.MIN_SAFE_INTEGER), "-9007199254740991");
 });
 
 test("base64url round-trips bytes and rejects padded or non-canonical input", () => {

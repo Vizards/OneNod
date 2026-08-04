@@ -655,6 +655,32 @@ func TestOfficialSourceSecurityDoesNotDependOnDiscoveryURL(t *testing.T) {
 	}
 }
 
+func TestGitHubHTTPStatusExplainsRateLimitResetWithoutMisclassifyingOther403s(t *testing.T) {
+	rateLimited := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header: http.Header{
+			"X-Ratelimit-Limit":     []string{"60"},
+			"X-Ratelimit-Remaining": []string{"0"},
+			"X-Ratelimit-Reset":     []string{"1893456000"},
+		},
+	}
+	err := githubHTTPStatusError("release endpoint", rateLimited)
+	for _, expected := range []string{"rate limit", "remaining 0", "limit 60", "2030-01-01T00:00:00Z"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("rate-limit diagnostic omitted %q: %v", expected, err)
+		}
+	}
+
+	permissionDenied := githubHTTPStatusError("release endpoint", &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     make(http.Header),
+	})
+	if strings.Contains(permissionDenied.Error(), "rate limit") ||
+		permissionDenied.Error() != "GitHub release endpoint returned HTTP 403" {
+		t.Fatalf("ordinary HTTP 403 was misclassified: %v", permissionDenied)
+	}
+}
+
 func TestReceiptChannelBackwardCompatibilityAndRiskBinding(t *testing.T) {
 	channel, err := normalizedReceiptChannel("", "0.0.1")
 	if err != nil || channel != releaseChannelStable {

@@ -485,6 +485,15 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       }
     } catch (error) {
       if (error instanceof GatewayHttpError) {
+        if (error.status >= 500) {
+          console.error(
+            JSON.stringify({
+              code: error.code,
+              event: "approval_coordinator_http_error",
+              status: error.status,
+            }),
+          );
+        }
         return errorResponse(error.code, error.status);
       }
       if (error instanceof RequesterAuthenticationError) {

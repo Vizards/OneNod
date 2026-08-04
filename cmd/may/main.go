@@ -57,6 +57,10 @@ func main() {
 }
 
 func runCLI(args []string, deps dependencies) error {
+	if help, ok := requestedHelp(args); ok {
+		fmt.Fprintln(deps.stderr, help)
+		return nil
+	}
 	global := flag.NewFlagSet("may", flag.ContinueOnError)
 	global.SetOutput(deps.stderr)
 	config := cliConfig{}
@@ -83,6 +87,9 @@ func runCLI(args []string, deps dependencies) error {
 		fmt.Fprintln(deps.stderr, usageText)
 	}
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if config.pollInterval <= 0 || config.timeout <= 0 {
@@ -331,7 +338,7 @@ func defaultRequesterDisplayName() string {
 
 func runCatalog(args []string, config cliConfig, deps dependencies) error {
 	if len(args) < 2 || args[0] != "search" {
-		return errors.New("usage: may [global flags] catalog search <query>")
+		return errors.New(catalogSearchUsage)
 	}
 	query := strings.TrimSpace(strings.Join(args[1:], " "))
 	if query == "" {
@@ -872,3 +879,102 @@ strict per-user ~/.onenod/env, in that order.
 Global flags must appear before the command.`
 
 const secretReadUsage = "usage: may [global flags] secret read --item <id> --field <id> [--expected-version n] [--raw]"
+const catalogSearchUsage = "usage: may [global flags] catalog search <query>"
+
+func requestedHelp(args []string) (string, bool) {
+	helpRequested := false
+	for _, argument := range args {
+		if argument == "-h" || argument == "--help" {
+			helpRequested = true
+			break
+		}
+	}
+	if !helpRequested {
+		for index := 0; index < len(args); index++ {
+			argument := args[index]
+			switch argument {
+			case "-origin", "--origin", "-poll-interval", "--poll-interval", "-timeout", "--timeout":
+				index++
+				continue
+			}
+			if strings.HasPrefix(argument, "-origin=") || strings.HasPrefix(argument, "--origin=") ||
+				strings.HasPrefix(argument, "-poll-interval=") || strings.HasPrefix(argument, "--poll-interval=") ||
+				strings.HasPrefix(argument, "-timeout=") || strings.HasPrefix(argument, "--timeout=") {
+				continue
+			}
+			helpRequested = argument == "help"
+			break
+		}
+	}
+	if !helpRequested {
+		return "", false
+	}
+
+	command := make([]string, 0, 3)
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "help" || argument == "-h" || argument == "--help" {
+			continue
+		}
+		if len(command) == 0 {
+			switch argument {
+			case "-origin", "--origin", "-poll-interval", "--poll-interval", "-timeout", "--timeout":
+				index++
+				continue
+			}
+			if strings.HasPrefix(argument, "-origin=") || strings.HasPrefix(argument, "--origin=") ||
+				strings.HasPrefix(argument, "-poll-interval=") || strings.HasPrefix(argument, "--poll-interval=") ||
+				strings.HasPrefix(argument, "-timeout=") || strings.HasPrefix(argument, "--timeout=") {
+				continue
+			}
+		}
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		command = append(command, argument)
+		if len(command) == 3 {
+			break
+		}
+	}
+
+	for length := len(command); length > 0; length-- {
+		if help, exists := commandHelp[strings.Join(command[:length], " ")]; exists {
+			return help, true
+		}
+	}
+	return usageText, true
+}
+
+var commandHelp = map[string]string{
+	"agent":                         "usage: may [global flags] agent <serve|status|refresh>",
+	"catalog":                       catalogSearchUsage,
+	"catalog search":                catalogSearchUsage,
+	"configure":                     "usage: may configure <ssh|git-signing> <status|apply|restore>",
+	"configure git-signing":         "usage: may configure git-signing <status|apply|restore> [--signing-key key-or-path]",
+	"configure git-signing apply":   "usage: may configure git-signing apply --signing-key <key-or-path>",
+	"configure git-signing restore": "usage: may configure git-signing restore",
+	"configure git-signing status":  "usage: may configure git-signing status",
+	"configure ssh":                 "usage: may configure ssh <status|apply|restore>",
+	"dev":                           "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
+	"dev verify-release":            "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
+	"enroll":                        "usage: may [global flags] enroll [--name \"MacBook\"] [--new-identity]",
+	"install":                       "usage: may install --origin https://<worker>.<account>.workers.dev [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"item":                          "usage: may [global flags] item <create|patch|archive> ...",
+	"item archive":                  itemArchiveUsage,
+	"item create":                   itemCreateUsage,
+	"item patch":                    itemPatchUsage,
+	"operator":                      operatorUsage,
+	"operator init":                 "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"operator revoke-cloudflare":    "usage: may operator revoke-cloudflare",
+	"operator update":               "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"preflight":                     "usage: may [global flags] preflight",
+	"read":                          "usage: may [global flags] read [--no-newline] op://Agent/<item>/<field>",
+	"secret":                        secretReadUsage,
+	"secret read":                   secretReadUsage,
+	"ssh":                           sshPublicKeyExportUsage,
+	"ssh public-key":                sshPublicKeyExportUsage,
+	"ssh public-key export":         sshPublicKeyExportUsage,
+	"update":                        "usage: may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"update check":                  "usage: may update check [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--json]",
+	"version":                       "usage: may version [--json]",
+}

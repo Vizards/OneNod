@@ -78,5 +78,9 @@ requires a registered Passkey.
 One verified Release installs the CLI, SSH Agent, signing adapter, managed
 Skill, and independently versioned Keychain helper under `~/.onenod`. The
 stable SSH socket is `~/.onenod/agent.sock`. The Origin file is parsed as data,
-not sourced as shell. Use `may version`, `may preflight`, and `may agent status`
-for installed-state questions; obtain their current syntax from `may help`.
+not sourced as shell. The canonical executable remains
+`~/.onenod/bin/may`; installation normally exposes the short `may` command
+through the user-level `~/.local/bin` path after a new login shell. Use `may
+version`, `may preflight`, and `may agent status` for installed-state questions;
+obtain their current syntax from command-specific `--help`, which must not need
+an Origin, requester credential, or network.

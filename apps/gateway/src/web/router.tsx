@@ -76,6 +76,7 @@ import {
   suggestedDeviceDetails,
 } from "./device-identity";
 import { consumeBootstrapFragment } from "./bootstrap-fragment";
+import { readyPushServiceWorker, settlePushStep } from "./push-registration";
 import { PWA_RELEASE_METADATA } from "./release-metadata";
 
 const statusCopy: Record<ApprovalStatus, string> = {
@@ -754,7 +755,7 @@ function RequestsPage() {
         <EmptyQueue />
       ) : null}
       {pendingRequests.length ? (
-        <ul className="grid gap-3">
+        <ul className="mx-auto grid max-w-[760px] gap-3">
           {pendingRequests.map((request) => (
             <RequestCard key={request.requestId} request={request} />
           ))}
@@ -949,7 +950,7 @@ function RequestCard({ request }: { request: RequestSummary }) {
       tabIndex={-1}
       className="scroll-mt-24 rounded-dialog border border-subtle bg-surface p-5 outline-none transition-[border-color,box-shadow] target:border-focus target:shadow-[0_0_0_1px_var(--color-focus)] sm:p-6"
     >
-      <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(380px,420px)] md:items-end">
+      <div className="flex min-w-0 flex-col gap-5">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold leading-7 tracking-[-0.02em] [overflow-wrap:anywhere]">
             {approvalQuestion(request)}
@@ -1056,7 +1057,7 @@ function ApprovalControls({
     request.action === "ssh.sign" && Boolean(request.authorizationSession);
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid w-full grid-cols-2 gap-3 sm:ml-auto sm:max-w-[420px]">
       <button
         type="button"
         aria-label={`Deny ${request.targetLabel}`}
@@ -1315,21 +1316,41 @@ function ManagementPage() {
       if (!push.data?.configured || !push.data.public_key) {
         throw new Error("The server has no VAPID key configured.");
       }
-      const permission = await Notification.requestPermission();
+      const permission = await settlePushStep(
+        Notification.requestPermission(),
+        60_000,
+        "Notification permission was not completed. Check the browser prompt and try again.",
+      );
       if (permission !== "granted") throw new Error("System notification permission was not granted.");
-      const registration = await navigator.serviceWorker.ready;
-      const existing = await registration.pushManager.getSubscription();
+      const registration = await readyPushServiceWorker();
+      const existing = await settlePushStep(
+        registration.pushManager.getSubscription(),
+        undefined,
+        "Checking the existing notification subscription took too long. Reload the page and try again.",
+      );
       const subscription =
         existing ??
-        (await registration.pushManager.subscribe({
-          applicationServerKey: ownedBytes(decodeBase64Url(push.data.public_key)),
-          userVisibleOnly: true,
-        }));
-      await putPushSubscription(subscription.toJSON());
-      await Promise.all([
+        (await settlePushStep(
+          registration.pushManager.subscribe({
+            applicationServerKey: ownedBytes(decodeBase64Url(push.data.public_key)),
+            userVisibleOnly: true,
+          }),
+          undefined,
+          "Creating the notification subscription took too long. Reload the page and try again.",
+        ));
+      await settlePushStep(
+        putPushSubscription(subscription.toJSON()),
+        undefined,
+        "Saving the notification subscription took too long. Reload the page and try again.",
+      );
+      queryClient.setQueryData(["push-config"], {
+        ...push.data,
+        enabled: true,
+      });
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["push-config"] }),
         queryClient.invalidateQueries({ queryKey: ["management"] }),
-      ]);
+      ]).catch(() => undefined);
     } catch (error) {
       setPushError(error);
     } finally {
@@ -1341,14 +1362,32 @@ function ManagementPage() {
     setPushPending(true);
     setPushError(undefined);
     try {
-      await deletePushSubscription();
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription();
-      await subscription?.unsubscribe();
-      await Promise.all([
+      await settlePushStep(
+        deletePushSubscription(),
+        undefined,
+        "Disabling the server subscription took too long. Reload the page and try again.",
+      );
+      queryClient.setQueryData(["push-config"], {
+        ...push.data,
+        enabled: false,
+      });
+      const registration = await readyPushServiceWorker();
+      const subscription = await settlePushStep(
+        registration.pushManager.getSubscription(),
+        undefined,
+        "Checking the local notification subscription took too long. Reload the page and try again.",
+      );
+      if (subscription) {
+        await settlePushStep(
+          subscription.unsubscribe(),
+          undefined,
+          "Removing the local notification subscription took too long. Reload the page and try again.",
+        );
+      }
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["push-config"] }),
         queryClient.invalidateQueries({ queryKey: ["management"] }),
-      ]);
+      ]).catch(() => undefined);
     } catch (error) {
       setPushError(error);
     } finally {

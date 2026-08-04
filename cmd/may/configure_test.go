@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +33,39 @@ func TestSSHConfigurationDetectsIdentityAgentConflicts(t *testing.T) {
 	if len(settings) != 2 || settings[0].Line != 1 || settings[0].Scope != "global defaults" ||
 		settings[1].Line != 3 || settings[1].Scope != "Host github.com" {
 		t.Fatalf("IdentityAgent settings were not reported with their scopes: %#v", settings)
+	}
+}
+
+func TestSSHConfigurationReportsHostSelectorsWithoutGuessingMappings(t *testing.T) {
+	content := []byte(strings.Join([]string{
+		"Include ~/.ssh/conf.d/*",
+		"Host github.com",
+		"  IdentityFile ~/.1p-agent/ssh/github.pub",
+		"Host server.example",
+		"  IdentityFile ~/.ssh/server.pub",
+		"# IdentityFile ~/.1password/ignored.pub",
+	}, "\n"))
+	settings := inspectSSHIdentityFileSettings(content)
+	if len(settings) != 2 || settings[0].Line != 3 || !settings[0].LegacyLooking ||
+		settings[1].Line != 5 || settings[1].LegacyLooking {
+		t.Fatalf("unexpected IdentityFile inventory: %#v", settings)
+	}
+	includes := inspectSSHIncludeSettings(content)
+	if len(includes) != 1 || includes[0].Line != 1 {
+		t.Fatalf("unexpected Include inventory: %#v", includes)
+	}
+	var output strings.Builder
+	writeSSHSelectorAdvisory(&output, settings, includes)
+	for _, expected := range []string{
+		"legacy-looking path",
+		"included files require separate review",
+		"does not rewrite IdentityFile or IdentitiesOnly",
+		"may ssh public-key export",
+		"never guess",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("selector advisory omitted %q:\n%s", expected, output.String())
+		}
 	}
 }
 
@@ -128,7 +162,7 @@ func TestSSHConfigurationShowsAndConfirmsEffectiveIdentityAgentOverride(t *testi
 		t.Fatal(err)
 	}
 	path := filepath.Join(sshDirectory, "config")
-	original := []byte("Host *\n  IdentityAgent ~/.1password/agent.sock\nHost github.com\n  User git\n")
+	original := []byte("Host *\n  IdentityAgent ~/.1password/agent.sock\nHost github.com\n  User git\n  IdentityFile ~/.1p-agent/ssh/github.pub\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +176,7 @@ func TestSSHConfigurationShowsAndConfirmsEffectiveIdentityAgentOverride(t *testi
 	}
 	if !strings.Contains(deniedOutput.String(), "IdentityAgent ~/.1password/agent.sock") ||
 		!strings.Contains(deniedOutput.String(), "~/.onenod/agent.sock") ||
+		!strings.Contains(deniedOutput.String(), "legacy-looking path") ||
 		!strings.Contains(deniedOutput.String(), "[y/N]") {
 		t.Fatalf("current setting and default-no decision were not displayed:\n%s", deniedOutput.String())
 	}
@@ -305,6 +340,45 @@ func TestGitSigningConfigurationRefusesConcurrentEditAfterConfirmation(t *testin
 	values, readErr := gitGlobalValues("gpg.format")
 	if readErr != nil || len(values) != 1 || values[0] != "changed-during-review" {
 		t.Fatalf("concurrent Git edit was overwritten: %#v %v", values, readErr)
+	}
+}
+
+func TestGitSigningStatusReportsEffectiveRepositoryOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := setGitGlobalValue("gpg.ssh.program", filepath.Join(home, ".onenod", "bin", "may-ssh-sign")); err != nil {
+		t.Fatal(err)
+	}
+	repository := t.TempDir()
+	command := exec.Command("git", "init", "--quiet", repository)
+	command.Env = operatorEnvironment(nil)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("initialize test repository: %v: %s", err, output)
+	}
+	command = exec.Command("git", "-C", repository, "config", "--local", "gpg.ssh.program", "/legacy/ssh-sign")
+	command.Env = operatorEnvironment(nil)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("configure test repository: %v: %s", err, output)
+	}
+	t.Chdir(repository)
+
+	var output strings.Builder
+	if err := runConfigureGitSigning(
+		[]string{"status"},
+		dependencies{stdin: strings.NewReader(""), stdout: &output, stderr: io.Discard},
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Global Git signing configuration managed by OneNod:",
+		filepath.Join(home, ".onenod", "bin", "may-ssh-sign"),
+		"Effective Git signing configuration in the current directory:",
+		"/legacy/ssh-sign (scope: local)",
+		"OneNod reports but does not modify these scopes",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("Git signing status omitted %q:\n%s", expected, output.String())
+		}
 	}
 }
 

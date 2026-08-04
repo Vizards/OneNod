@@ -210,6 +210,28 @@ test("release packager is deterministic and the verifier enforces the exact set"
     );
     assert.equal(deploymentDescriptor.gateway.template, undefined);
     assert.equal(deploymentDescriptor.executor.template, undefined);
+    for (const worker of ["gateway", "executor"]) {
+      const config = JSON.parse(
+        execFileSync(
+          "tar",
+          [
+            "-xOzf",
+            join(releaseDirectory, `onenod-deployment-${version}.tar.gz`),
+            `onenod-deployment/${worker}/wrangler.jsonc`,
+          ],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.deepEqual(config.observability, {
+        enabled: true,
+        head_sampling_rate: 1,
+        logs: {
+          enabled: true,
+          invocation_logs: true,
+          persist: true,
+        },
+      });
+    }
     packageArtifact("skill", [
       "--version",
       version,

@@ -28,7 +28,26 @@ type priorGitValue struct {
 	Value   string `json:"value,omitempty"`
 }
 
+type scopedGitValue struct {
+	Present bool
+	Scope   string
+	Value   string
+}
+
 type sshIdentityAgentSetting struct {
+	Directive string
+	Line      int
+	Scope     string
+}
+
+type sshIdentityFileSetting struct {
+	Directive     string
+	LegacyLooking bool
+	Line          int
+	Scope         string
+}
+
+type sshIncludeSetting struct {
 	Directive string
 	Line      int
 	Scope     string
@@ -75,6 +94,8 @@ func runConfigureSSH(args []string, deps dependencies) error {
 		return err
 	}
 	managed, altered := inspectManagedSSHBlock(content, block)
+	identityFiles := inspectSSHIdentityFileSettings(content)
+	includes := inspectSSHIncludeSettings(content)
 	switch args[0] {
 	case "status":
 		status := "not_configured"
@@ -90,6 +111,7 @@ func runConfigureSSH(args []string, deps dependencies) error {
 		if status == "conflict" {
 			writeSSHIdentityAgentSettings(deps.stdout, inspectSSHIdentityAgentSettings(content))
 		}
+		writeSSHSelectorAdvisory(deps.stdout, identityFiles, includes)
 		return nil
 	case "apply":
 		if managed {
@@ -115,6 +137,7 @@ func runConfigureSSH(args []string, deps dependencies) error {
 		if len(identityAgentSettings) > 0 {
 			fmt.Fprintln(deps.stdout, "Existing directives remain unchanged underneath and become effective again after restore.")
 		}
+		writeSSHSelectorAdvisory(deps.stdout, identityFiles, includes)
 		confirmed, err := promptYesNo(
 			deps.stdin,
 			deps.stdout,
@@ -205,6 +228,7 @@ func runConfigureGitSigning(args []string, deps dependencies) error {
 		if len(args) != 1 {
 			return errors.New("usage: may configure git-signing status")
 		}
+		fmt.Fprintln(deps.stdout, "Global Git signing configuration managed by OneNod:")
 		for _, key := range keys {
 			values, err := gitGlobalValues(key)
 			if err != nil {
@@ -216,9 +240,9 @@ func runConfigureGitSigning(args []string, deps dependencies) error {
 			} else if len(values) > 1 {
 				value = "<multiple values; needs attention>"
 			}
-			fmt.Fprintf(deps.stdout, "%s = %s\n", key, value)
+			fmt.Fprintf(deps.stdout, "  %s = %s\n", key, value)
 		}
-		return nil
+		return writeEffectiveGitSigningStatus(deps.stdout, keys)
 	case "apply":
 		flags := flag.NewFlagSet("configure git-signing apply", flag.ContinueOnError)
 		flags.SetOutput(deps.stderr)
@@ -251,7 +275,7 @@ func runConfigureGitSigning(args []string, deps dependencies) error {
 			}
 			if allApplied {
 				fmt.Fprintln(deps.stdout, "OneNod Git SSH-signing configuration is already applied.")
-				return nil
+				return writeEffectiveGitSigningStatus(deps.stdout, keys)
 			}
 			return errors.New("recorded OneNod Git configuration was modified; restore or resolve it before applying again")
 		}
@@ -279,6 +303,9 @@ func runConfigureGitSigning(args []string, deps dependencies) error {
 			fmt.Fprintf(deps.stdout, "  %s:\n    current:  %s\n    proposed: %q\n", key, current, desired[key])
 		}
 		fmt.Fprintln(deps.stdout, "Traditional GPG/OpenPGP configuration is not managed separately; gpg.format changes only if this plan is accepted.")
+		if err := writeEffectiveGitSigningStatus(deps.stdout, keys); err != nil {
+			return err
+		}
 		confirmed, err := promptYesNo(
 			deps.stdin,
 			deps.stdout,
@@ -421,6 +448,59 @@ func inspectSSHIdentityAgentSettings(content []byte) []sshIdentityAgentSetting {
 	return settings
 }
 
+func inspectSSHIdentityFileSettings(content []byte) []sshIdentityFileSetting {
+	settings := []sshIdentityFileSetting{}
+	scope := "global defaults"
+	for index, raw := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch {
+		case strings.EqualFold(fields[0], "Host"), strings.EqualFold(fields[0], "Match"):
+			scope = line
+		case strings.EqualFold(fields[0], "IdentityFile"):
+			lower := strings.ToLower(strings.Join(fields[1:], " "))
+			settings = append(settings, sshIdentityFileSetting{
+				Directive: line,
+				LegacyLooking: strings.Contains(lower, ".1p-agent") ||
+					strings.Contains(lower, ".1password") ||
+					strings.Contains(lower, "approvalctl"),
+				Line: index + 1, Scope: scope,
+			})
+		}
+	}
+	return settings
+}
+
+func inspectSSHIncludeSettings(content []byte) []sshIncludeSetting {
+	settings := []sshIncludeSetting{}
+	scope := "global defaults"
+	for index, raw := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch {
+		case strings.EqualFold(fields[0], "Host"), strings.EqualFold(fields[0], "Match"):
+			scope = line
+		case strings.EqualFold(fields[0], "Include"):
+			settings = append(settings, sshIncludeSetting{
+				Directive: line, Line: index + 1, Scope: scope,
+			})
+		}
+	}
+	return settings
+}
+
 func writeSSHIdentityAgentSettings(output io.Writer, settings []sshIdentityAgentSetting) {
 	fmt.Fprintln(output, "Current IdentityAgent directives in ~/.ssh/config:")
 	for _, setting := range settings {
@@ -432,6 +512,41 @@ func writeSSHIdentityAgentSettings(output io.Writer, settings []sshIdentityAgent
 			setting.Directive,
 		)
 	}
+}
+
+func writeSSHSelectorAdvisory(
+	output io.Writer,
+	identityFiles []sshIdentityFileSetting,
+	includes []sshIncludeSetting,
+) {
+	if len(identityFiles) == 0 && len(includes) == 0 {
+		return
+	}
+	fmt.Fprintln(output, "Host public-key selector review (not modified by OneNod):")
+	for _, setting := range identityFiles {
+		marker := ""
+		if setting.LegacyLooking {
+			marker = " [legacy-looking path; migrate before removing the old file]"
+		}
+		fmt.Fprintf(
+			output,
+			"  line %d under %q: %q%s\n",
+			setting.Line,
+			setting.Scope,
+			setting.Directive,
+			marker,
+		)
+	}
+	for _, setting := range includes {
+		fmt.Fprintf(
+			output,
+			"  line %d under %q: %q [included files require separate review]\n",
+			setting.Line,
+			setting.Scope,
+			setting.Directive,
+		)
+	}
+	fmt.Fprintln(output, "  IdentityAgent cutover does not rewrite IdentityFile or IdentitiesOnly. Use `may ssh public-key export` after matching each intended Agent item by public fingerprint; never guess a Host-to-item mapping.")
 }
 
 func managedSSHBlockTakesPrecedence(content []byte, block string) bool {
@@ -503,6 +618,51 @@ func gitGlobalValues(key string) ([]string, error) {
 		return []string{""}, nil
 	}
 	return strings.Split(trimmed, "\n"), nil
+}
+
+func gitEffectiveValue(key string) (scopedGitValue, error) {
+	command := exec.Command("git", "config", "--null", "--show-scope", "--get", key)
+	command.Env = operatorEnvironment(nil)
+	output, err := command.Output()
+	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+		return scopedGitValue{}, nil
+	}
+	if err != nil {
+		return scopedGitValue{}, fmt.Errorf("read effective Git key %s failed", key)
+	}
+	fields := bytes.Split(output, []byte{0})
+	if len(fields) == 3 && len(fields[2]) == 0 {
+		fields = fields[:2]
+	}
+	if len(fields) != 2 || len(fields[0]) == 0 {
+		return scopedGitValue{}, fmt.Errorf("read effective Git key %s returned an unexpected response", key)
+	}
+	return scopedGitValue{
+		Present: true,
+		Scope:   string(fields[0]),
+		Value:   string(fields[1]),
+	}, nil
+}
+
+func writeEffectiveGitSigningStatus(output io.Writer, keys []string) error {
+	fmt.Fprintln(output, "Effective Git signing configuration in the current directory:")
+	nonGlobal := false
+	for _, key := range keys {
+		value, err := gitEffectiveValue(key)
+		if err != nil {
+			return err
+		}
+		if !value.Present {
+			fmt.Fprintf(output, "  %s = <unset>\n", key)
+			continue
+		}
+		fmt.Fprintf(output, "  %s = %s (scope: %s)\n", key, value.Value, value.Scope)
+		nonGlobal = nonGlobal || value.Scope != "global"
+	}
+	if nonGlobal {
+		fmt.Fprintln(output, "OneNod changes only global values. Local, worktree, or command values can override them; system values may remain effective when a global value is unset. OneNod reports but does not modify these scopes.")
+	}
+	return nil
 }
 
 func setGitGlobalValue(key, value string) error {

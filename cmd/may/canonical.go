@@ -14,6 +14,7 @@ import (
 )
 
 const requesterProtocol = "onenod-request-v1"
+const maximumCanonicalInteger = int64(1<<53 - 1)
 
 type signatureInput struct {
 	Audience  string
@@ -75,15 +76,13 @@ func validateCanonicalJSONNumbers(value any) error {
 
 func validateCanonicalInteger(value string) error {
 	if strings.ContainsAny(value, ".eE") {
-		return errors.New("request bodies may only contain integer JSON numbers")
+		return errors.New("request bodies may only contain safe integer JSON numbers")
 	}
-	if _, err := strconv.ParseInt(value, 10, 64); err == nil {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err == nil && parsed >= -maximumCanonicalInteger && parsed <= maximumCanonicalInteger {
 		return nil
 	}
-	if _, err := strconv.ParseUint(value, 10, 64); err == nil {
-		return nil
-	}
-	return fmt.Errorf("invalid integer JSON number %q", value)
+	return fmt.Errorf("JSON integer %q is outside the interoperable safe-integer domain", value)
 }
 
 func canonicalSignatureString(input signatureInput) (string, error) {

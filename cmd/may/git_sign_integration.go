@@ -22,7 +22,7 @@ func runGitSignAdapter(args []string, deps dependencies) error {
 	command.Stdout = deps.stdout
 	command.Stderr = deps.stderr
 	if err := command.Run(); err != nil {
-		return errors.New("system ssh-keygen command failed")
+		return errors.New("system ssh-keygen command failed; inspect ~/.onenod/logs/ssh-agent.error.log for the OneNod request stage, request ID, and safe cause")
 	}
 	return nil
 }

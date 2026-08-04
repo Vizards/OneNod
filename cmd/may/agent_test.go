@@ -327,7 +327,7 @@ func TestUpstreamAgentServerPreservesReadOnlyBoundaryAndConnectionCache(t *testi
 	})
 	keys, err := client.List()
 	if err != nil || len(keys) != 1 || !bytes.Equal(keys[0].Blob, identity.keyBlob) ||
-		keys[0].Comment != "may:"+identity.catalog.Title {
+		keys[0].Comment != "may:"+identity.catalog.Metadata.Fingerprint {
 		t.Fatalf("unexpected upstream identity list: %+v, %v", keys, err)
 	}
 	if loads != 1 {
@@ -406,6 +406,7 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 		keyBlob: keyBlob,
 	}
 	responseSignature := append([]byte(nil), signature.Blob...)
+	consumeFailure := false
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/v1/requests":
@@ -424,6 +425,9 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 				`{"expires_at":"2099-01-01T00:00:00Z","poll_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","request_id":"request-ssh-1","status":"approved"}`,
 			), nil
 		case "/v1/requests/request-ssh-1/consume":
+			if consumeFailure {
+				return jsonHTTPResponse(http.StatusInternalServerError, `{"code":"internal_error","error":"internal_error","ok":false}`), nil
+			}
 			response := sshSignConsumeResponse{
 				Algorithm:     signature.Format,
 				Fingerprint:   identity.catalog.Metadata.Fingerprint,
@@ -476,6 +480,13 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	if _, err := connection.Sign(signer.PublicKey(), data); err == nil ||
 		!strings.Contains(err.Error(), "did not verify") {
 		t.Fatalf("tampered gateway signature returned %v", err)
+	}
+
+	consumeFailure = true
+	if _, err := connection.Sign(signer.PublicKey(), data); err == nil ||
+		!strings.Contains(err.Error(), "consume SSH request request-ssh-1 failed") ||
+		!strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("consume failure omitted its safe request stage: %v", err)
 	}
 }
 
@@ -804,6 +815,23 @@ func TestSSHIdentityCacheIsPublicMetadataOnlyAndStrictlyPrivate(t *testing.T) {
 	if err != nil || len(identities) != 1 || !bytes.Equal(identities[0].keyBlob, keyBlob) {
 		t.Fatalf("unexpected cached identities: %+v %v", identities, err)
 	}
+	encoded, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("Cached key")) || bytes.Contains(bytes.ToLower(encoded), []byte("title")) {
+		t.Fatalf("private item title was persisted in the SSH inventory cache: %s", encoded)
+	}
+	if stale, err := sshIdentityCacheIsStale(cachePath, time.Now()); err != nil || stale {
+		t.Fatalf("new cache was not fresh: stale=%t err=%v", stale, err)
+	}
+	old := time.Now().Add(-sshIdentityCacheTTL - time.Second)
+	if err := os.Chtimes(cachePath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := sshIdentityCacheIsStale(cachePath, time.Now()); err != nil || !stale {
+		t.Fatalf("expired cache was not stale: stale=%t err=%v", stale, err)
+	}
 	if err := os.Chmod(cachePath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +841,7 @@ func TestSSHIdentityCacheIsPublicMetadataOnlyAndStrictlyPrivate(t *testing.T) {
 	if err := os.Chmod(cachePath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := os.ReadFile(cachePath)
+	encoded, err = os.ReadFile(cachePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,6 +857,99 @@ func TestSSHIdentityCacheIsPublicMetadataOnlyAndStrictlyPrivate(t *testing.T) {
 	}
 	if _, err := readSSHIdentityCache(symlinkPath); err == nil {
 		t.Fatal("symlinked SSH identity cache was accepted")
+	}
+}
+
+func TestLegacySSHIdentityCacheIsMigratedWithoutPersistingTitles(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBlob := signer.PublicKey().Marshal()
+	legacy := legacySSHIdentityCache{
+		Version: sshIdentityCacheLegacyVersion,
+		Identities: []sshCatalogIdentity{{
+			ItemID: "item-legacy-1",
+			Metadata: catalogSSHMetadata{
+				Algorithm: signer.PublicKey().Type(), Fingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+				PublicKey:     strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))),
+				PublicKeyBlob: base64URL(keyBlob),
+			},
+			Title: "Legacy private title", Version: 3,
+		}},
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "ssh", "identities.json")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := readSSHIdentityCache(cachePath)
+	if err != nil || len(identities) != 1 || identities[0].catalog.Title != "" {
+		t.Fatalf("legacy cache was not safely consumable during migration: %+v %v", identities, err)
+	}
+	migrated, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(migrated, []byte("Legacy private title")) ||
+		!bytes.Contains(migrated, []byte(`"version":2`)) {
+		t.Fatalf("legacy cache was not rewritten to title-free schema v2: %s", migrated)
+	}
+}
+
+func TestSSHIdentityLoaderRefreshesByTTLAndServesVerifiedStaleCacheOnFailure(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBlob := signer.PublicKey().Marshal()
+	cachePath := filepath.Join(t.TempDir(), "ssh", "identities.json")
+	if err := writeSSHIdentityCache(cachePath, []sshCatalogIdentity{{
+		ItemID: "item-ttl-1",
+		Metadata: catalogSSHMetadata{
+			Algorithm: signer.PublicKey().Type(), Fingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+			PublicKey:     strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))),
+			PublicKeyBlob: base64URL(keyBlob),
+		},
+		Version: 4,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &recordingKeychainBackend{loadErr: errors.New("catalog unavailable")}
+	var diagnostics strings.Builder
+	loader := newSSHIdentityLoader(cachePath, cliConfig{
+		origin: "https://onenod.example.workers.dev",
+	}, dependencies{
+		keychain: keychainStore{backend: backend}, stderr: &diagnostics,
+	})
+	identities, err := loader()
+	if err != nil || len(identities) != 1 || backend.account != "" {
+		t.Fatalf("fresh cache unnecessarily refreshed: identities=%d account=%q err=%v", len(identities), backend.account, err)
+	}
+	old := time.Now().Add(-sshIdentityCacheTTL - time.Second)
+	if err := os.Chtimes(cachePath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	identities, err = loader()
+	if err != nil || len(identities) != 1 {
+		t.Fatalf("verified stale cache was not served: identities=%d err=%v", len(identities), err)
+	}
+	if backend.account == "" || !strings.Contains(diagnostics.String(), "serving the last verified cache") {
+		t.Fatalf("stale refresh was not attempted and diagnosed: account=%q diagnostics=%q", backend.account, diagnostics.String())
 	}
 }
 

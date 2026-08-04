@@ -989,7 +989,7 @@ func (source *githubReleaseSource) readBytes(
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub release endpoint returned HTTP %d", response.StatusCode)
+		return nil, githubHTTPStatusError("release endpoint", response)
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil || int64(len(encoded)) > limit {
@@ -1039,7 +1039,7 @@ func (source *githubReleaseSource) Download(
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("release artifact endpoint returned HTTP %d", response.StatusCode)
+		return githubHTTPStatusError("release artifact endpoint", response)
 	}
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -1062,6 +1062,36 @@ func (source *githubReleaseSource) Download(
 	// release-manifest.json subject. Each downloaded byte stream is checked
 	// against the manifest's exact immutable asset name, size, and SHA-256.
 	return nil
+}
+
+func githubHTTPStatusError(endpoint string, response *http.Response) error {
+	if response == nil {
+		return fmt.Errorf("GitHub %s returned no response", endpoint)
+	}
+	remaining := strings.TrimSpace(response.Header.Get("X-RateLimit-Remaining"))
+	reset := strings.TrimSpace(response.Header.Get("X-RateLimit-Reset"))
+	if remaining == "0" || ((response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests) && reset != "") {
+		resetDescription := "at an unknown time"
+		if seconds, err := strconv.ParseInt(reset, 10, 64); err == nil && seconds > 0 {
+			resetDescription = time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+		}
+		limit := strings.TrimSpace(response.Header.Get("X-RateLimit-Limit"))
+		limitDescription := ""
+		if limit != "" {
+			limitDescription = "; limit " + limit
+		}
+		return fmt.Errorf(
+			"GitHub %s hit the API rate limit (HTTP %d; remaining 0%s; resets %s); retry after the reset time",
+			endpoint, response.StatusCode, limitDescription, resetDescription,
+		)
+	}
+	if retryAfter := strings.TrimSpace(response.Header.Get("Retry-After")); response.StatusCode == http.StatusTooManyRequests && retryAfter != "" {
+		return fmt.Errorf(
+			"GitHub %s returned HTTP %d; retry after %s",
+			endpoint, response.StatusCode, retryAfter,
+		)
+	}
+	return fmt.Errorf("GitHub %s returned HTTP %d", endpoint, response.StatusCode)
 }
 
 func validateReleaseManifest(
@@ -3398,6 +3428,12 @@ func activateVerifiedLocalRelease(
 		}
 		helperProtocol = activated.Protocol
 	}
+	commandPlan, err := planCommandDiscovery(
+		home, filepath.Join(root, "bin", "may"), deps,
+	)
+	if err != nil {
+		return err
+	}
 	managedLinks := []string{
 		filepath.Join(root, "bin", "may"),
 		filepath.Join(root, "bin", gitSignAdapterBinaryName),
@@ -3417,6 +3453,7 @@ func activateVerifiedLocalRelease(
 	}
 	promotionStarted := true
 	agentActivationStarted := false
+	var commandTransaction *commandDiscoveryTransaction
 	var discoveryTransaction *skillDiscoveryTransaction
 	defer func() {
 		if returnErr == nil || !promotionStarted {
@@ -3430,6 +3467,9 @@ func activateVerifiedLocalRelease(
 			if rollbackErr != nil {
 				rollbackErrors = append(rollbackErrors, errors.New("stop partially activated SSH Agent failed"))
 			}
+		}
+		if rollbackErr := commandTransaction.rollback(); rollbackErr != nil {
+			rollbackErrors = append(rollbackErrors, rollbackErr)
 		}
 		if rollbackErr := restoreManagedSymlinks(previousLinks); rollbackErr != nil {
 			rollbackErrors = append(rollbackErrors, rollbackErr)
@@ -3465,6 +3505,10 @@ func activateVerifiedLocalRelease(
 	}
 	if err := replaceStableSymlink(filepath.Join(root, "skill"),
 		filepath.Join("skill-versions", release.Manifest.ReleaseVersion, "onenod")); err != nil {
+		return err
+	}
+	commandTransaction, err = commandPlan.apply()
+	if err != nil {
 		return err
 	}
 	discovery, discoveryTransaction, err := installSkillDiscoveryLinks(
@@ -3548,6 +3592,15 @@ func activateVerifiedLocalRelease(
 	promotionStarted = false
 	fmt.Fprintf(deps.stdout, "Installed OneNod %s for %s.\n", release.Manifest.ReleaseVersion, origin)
 	fmt.Fprintf(deps.stdout, "Requester CLI: %s\n", plan.binaryPath)
+	if commandPlan.manageLink {
+		if pathContainsDirectory(os.Getenv("PATH"), filepath.Dir(commandPlan.linkPath)) {
+			fmt.Fprintln(deps.stdout, "Short command on the current PATH: may")
+		} else if commandPlan.writeProfile {
+			fmt.Fprintln(deps.stdout, "Short command in new zsh login sessions: may")
+		} else {
+			fmt.Fprintln(deps.stdout, "Shell PATH unchanged; use ~/.onenod/bin/may until ~/.local/bin is added to PATH.")
+		}
+	}
 	fmt.Fprintf(deps.stdout, "Keychain helper %s (protocol %d) remains independently versioned.\n", helperVersion, helperProtocol)
 	if previous == nil {
 		fmt.Fprintln(deps.stdout, "OpenSSH and Git signing configuration were not changed.")

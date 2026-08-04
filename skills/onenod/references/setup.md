@@ -79,6 +79,13 @@ directly rather than using the clipboard; the PWA removes the fragment before
 its first request. After initial Passkey registration, the CLI removes the
 bootstrap Worker Secret.
 
+Before opening that URL, the CLI waits for the public workers.dev route to
+report the exact deployed OneNod release. After the browser opens, leave the
+operator terminal running: it polls the authoritative owner state and removes
+the bootstrap Secret automatically, so the human does not return to press
+Enter. A readiness or owner-registration timeout retains the Secret and stops;
+it never redeploys or guesses that a page transition means success.
+
 `OneNod Recovery` is human-only and stores the deployment record and material
 needed for manual reconstruction. The Executor Service Account must not access
 it. The first release does not attempt automatic rescue of an unknown
@@ -94,6 +101,10 @@ receipt-bound account, show every matching local profile, and remove them only
 after a default-no human confirmation; the command does not modify remote
 Workers, Durable Objects, traffic, or 1Password data.
 
+The current-Mac Cloudflare decision completes before the CLI offers local
+runtime installation. A revocation error stops there; OneNod does not install a
+requester first and then imply that deployment authority was removed.
+
 ## Install and enroll requester Macs
 
 For each macOS user that will request operations:
@@ -106,6 +117,13 @@ For each macOS user that will request operations:
 Use command-specific help for arguments. An additional Mac needs neither
 Wrangler nor operator receipts. Installation and enrollment are separate so a
 runtime can be prepared without creating requester authority.
+
+Installation always places the verified CLI at `~/.onenod/bin/may` and creates
+the user-level `~/.local/bin/may` link when that path is not occupied by
+unrelated content. If `~/.local/bin` is not already on `PATH`, the CLI shows one
+bounded `~/.zprofile` block and asks whether to add it. A decline does not fail
+installation; use the absolute path until the human changes shell discovery.
+Open a new login shell before diagnosing a newly added short command.
 
 To add an approver browser or Home Screen PWA, open the public Origin and
 authenticate with any registered Passkey. Another live PWA is not required.
@@ -120,6 +138,19 @@ Each apply flow shows current and proposed settings and asks a default-no
 question. OneNod records only settings it owns and restores them only while
 unchanged. Git integration uses SSH signatures; it does not take over
 traditional GPG/OpenPGP signing.
+
+Git apply owns only the four global Git values shown in its plan. Repository,
+worktree, command, or system-scoped values are never rewritten. Run
+`may configure git-signing status` inside the repository that will be used for
+acceptance and review the reported effective scope; an intentional higher-scope
+override must be resolved separately before treating the cutover as complete.
+
+The global `IdentityAgent` cutover does not rewrite per-Host `IdentityFile` or
+`IdentitiesOnly` selectors. `may configure ssh status` reports selectors found
+in the main config and flags legacy-looking paths; `Include` files still need
+separate review. For a Host that should select an `Agent` key, match the item by
+public fingerprint, export its public key with `may ssh public-key export`, and
+edit only that exact Host mapping. Never infer a mapping from an item title.
 
 ## Repeat by scope
 

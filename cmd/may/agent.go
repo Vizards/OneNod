@@ -34,8 +34,12 @@ const (
 	// Agent extension names are opaque SSH strings. Tie this private protocol
 	// identifier to the canonical repository path rather than claiming an
 	// unowned DNS namespace.
-	versionExtensionName    = "version@github.com/Vizards/OneNod"
-	sshIdentityCacheVersion = 1
+	versionExtensionName             = "version@github.com/Vizards/OneNod"
+	sshIdentityCacheVersion          = 2
+	sshIdentityCacheLegacyVersion    = 1
+	sshIdentityCacheTTL              = 5 * time.Minute
+	sshIdentityRefreshRetryInterval  = time.Minute
+	sshIdentityRefreshRequestTimeout = 15 * time.Second
 )
 
 var errReadOnlySSHAgent = errors.New("may SSH agent is read-only")
@@ -120,6 +124,20 @@ type sshSignConsumeResponse struct {
 }
 
 type sshIdentityCache struct {
+	Identities []cachedSSHIdentity `json:"identities"`
+	Version    int                 `json:"version"`
+}
+
+type cachedSSHIdentity struct {
+	Algorithm     string `json:"algorithm"`
+	Fingerprint   string `json:"fingerprint"`
+	ItemID        string `json:"item_id"`
+	PublicKey     string `json:"public_key"`
+	PublicKeyBlob string `json:"public_key_blob"`
+	Version       int64  `json:"version"`
+}
+
+type legacySSHIdentityCache struct {
 	Identities []sshCatalogIdentity `json:"identities"`
 	Version    int                  `json:"version"`
 }
@@ -201,27 +219,24 @@ func runAgentServe(config cliConfig, deps dependencies) error {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
-	var cacheMutex sync.Mutex
 	_, sessionKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return errors.New("generate SSH Agent session key failed")
 	}
+	loadIdentities := newSSHIdentityLoader(cachePath, config, deps)
 	agent := approvalAgent{
-		config:  config,
-		context: ctx,
-		deps:    deps,
-		loadIdentities: func() ([]servedSSHIdentity, error) {
-			cacheMutex.Lock()
-			defer cacheMutex.Unlock()
-			identities, err := readSSHIdentityCache(cachePath)
-			if errors.Is(err, os.ErrNotExist) {
-				return refreshSSHIdentityCache(config, deps)
-			}
-			return identities, err
-		},
-		resolveClient: detectLocalClientContext,
-		sessionKey:    sessionKey,
+		config:         config,
+		context:        ctx,
+		deps:           deps,
+		loadIdentities: loadIdentities,
+		resolveClient:  detectLocalClientContext,
+		sessionKey:     sessionKey,
 	}
+	go func() {
+		if _, err := loadIdentities(); err != nil {
+			fmt.Fprintf(deps.stderr, "OneNod SSH inventory startup refresh is unavailable: %v\n", err)
+		}
+	}()
 	fmt.Fprintf(deps.stderr, "Approval SSH agent is listening on %s. SSH authorization sessions remain memory-only and fail closed on restart.\n", socketPath)
 	return agent.serveListener(ctx, listener)
 }
@@ -243,13 +258,27 @@ func runAgentStatus(deps dependencies) error {
 	}
 	if cacheErr == nil {
 		result["identities"] = len(identities)
+		if stale, err := sshIdentityCacheIsStale(sshIdentityCachePath(), time.Now()); err == nil && stale {
+			result["inventory_cache"] = "stale"
+		} else {
+			result["inventory_cache"] = "fresh"
+		}
 	} else {
 		result["identities"] = 0
+		result["inventory_cache"] = "unavailable"
 	}
 	return writeSafeJSON(deps.stdout, result)
 }
 
 func refreshSSHIdentityCache(
+	config cliConfig,
+	deps dependencies,
+) ([]servedSSHIdentity, error) {
+	return refreshSSHIdentityCacheAt(sshIdentityCachePath(), config, deps)
+}
+
+func refreshSSHIdentityCacheAt(
+	cachePath string,
 	config cliConfig,
 	deps dependencies,
 ) ([]servedSSHIdentity, error) {
@@ -261,7 +290,7 @@ func refreshSSHIdentityCache(
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sshIdentityRefreshRequestTimeout)
 	defer cancel()
 	response, err := searchCatalog(ctx, client, "")
 	if err != nil {
@@ -280,10 +309,46 @@ func refreshSSHIdentityCache(
 	if err != nil {
 		return nil, err
 	}
-	if err := writeSSHIdentityCache(sshIdentityCachePath(), catalogIdentities); err != nil {
+	if err := writeSSHIdentityCache(cachePath, catalogIdentities); err != nil {
 		return nil, err
 	}
 	return identities, nil
+}
+
+func newSSHIdentityLoader(
+	cachePath string,
+	config cliConfig,
+	deps dependencies,
+) func() ([]servedSSHIdentity, error) {
+	var mutex sync.Mutex
+	var lastRefreshAttempt time.Time
+	return func() ([]servedSSHIdentity, error) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		identities, err := readSSHIdentityCache(cachePath)
+		if errors.Is(err, os.ErrNotExist) {
+			lastRefreshAttempt = time.Now()
+			return refreshSSHIdentityCacheAt(cachePath, config, deps)
+		}
+		if err != nil {
+			return nil, err
+		}
+		stale, err := sshIdentityCacheIsStale(cachePath, time.Now())
+		if err != nil {
+			fmt.Fprintf(deps.stderr, "OneNod could not inspect SSH inventory freshness; serving the last verified cache: %v\n", err)
+			return identities, nil
+		}
+		if !stale || (!lastRefreshAttempt.IsZero() && time.Since(lastRefreshAttempt) < sshIdentityRefreshRetryInterval) {
+			return identities, nil
+		}
+		lastRefreshAttempt = time.Now()
+		refreshed, refreshErr := refreshSSHIdentityCacheAt(cachePath, config, deps)
+		if refreshErr != nil {
+			fmt.Fprintf(deps.stderr, "OneNod SSH inventory refresh failed; serving the last verified cache: %v\n", refreshErr)
+			return identities, nil
+		}
+		return refreshed, nil
+	}
 }
 
 func validateServedSSHIdentities(
@@ -334,8 +399,16 @@ func writeSSHIdentityCache(path string, identities []sshCatalogIdentity) error {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		return errors.New("secure SSH identity cache directory failed")
 	}
+	cached := make([]cachedSSHIdentity, 0, len(identities))
+	for _, identity := range identities {
+		cached = append(cached, cachedSSHIdentity{
+			Algorithm: identity.Metadata.Algorithm, Fingerprint: identity.Metadata.Fingerprint,
+			ItemID: identity.ItemID, PublicKey: identity.Metadata.PublicKey,
+			PublicKeyBlob: identity.Metadata.PublicKeyBlob, Version: identity.Version,
+		})
+	}
 	encoded, err := json.Marshal(sshIdentityCache{
-		Identities: identities,
+		Identities: cached,
 		Version:    sshIdentityCacheVersion,
 	})
 	if err != nil {
@@ -400,17 +473,71 @@ func readSSHIdentityCache(path string) ([]servedSSHIdentity, error) {
 	if err != nil || len(encoded) == 0 || len(encoded) > 512*1024 {
 		return nil, errors.New("read SSH identity cache failed")
 	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if json.Unmarshal(encoded, &header) != nil {
+		return nil, errors.New("SSH identity cache is invalid")
+	}
+	if header.Version == sshIdentityCacheLegacyVersion {
+		var legacy legacySSHIdentityCache
+		if err := decodeStrictSSHIdentityCache(encoded, &legacy); err != nil || legacy.Version != sshIdentityCacheLegacyVersion {
+			return nil, errors.New("SSH identity cache is invalid")
+		}
+		if _, err := validateServedSSHIdentities(legacy.Identities); err != nil {
+			return nil, err
+		}
+		stripped := make([]sshCatalogIdentity, 0, len(legacy.Identities))
+		for _, identity := range legacy.Identities {
+			identity.Title = ""
+			stripped = append(stripped, identity)
+		}
+		if err := writeSSHIdentityCache(path, stripped); err != nil {
+			return nil, errors.New("migrate legacy SSH identity cache failed")
+		}
+		return validateServedSSHIdentities(stripped)
+	}
 	var cache sshIdentityCache
+	if err := decodeStrictSSHIdentityCache(encoded, &cache); err != nil || cache.Version != sshIdentityCacheVersion {
+		return nil, errors.New("SSH identity cache is invalid")
+	}
+	catalog := make([]sshCatalogIdentity, 0, len(cache.Identities))
+	for _, identity := range cache.Identities {
+		catalog = append(catalog, sshCatalogIdentity{
+			ItemID: identity.ItemID,
+			Metadata: catalogSSHMetadata{
+				Algorithm: identity.Algorithm, Fingerprint: identity.Fingerprint,
+				PublicKey: identity.PublicKey, PublicKeyBlob: identity.PublicKeyBlob,
+			},
+			Version: identity.Version,
+		})
+	}
+	return validateServedSSHIdentities(catalog)
+}
+
+func decodeStrictSSHIdentityCache(encoded []byte, result any) error {
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cache); err != nil || cache.Version != sshIdentityCacheVersion {
-		return nil, errors.New("SSH identity cache is invalid")
+	if err := decoder.Decode(result); err != nil {
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("SSH identity cache is invalid")
+		return errors.New("trailing SSH identity cache data")
 	}
-	return validateServedSSHIdentities(cache.Identities)
+	return nil
+}
+
+func sshIdentityCacheIsStale(path string, now time.Time) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return false, errors.New("SSH identity cache is unsafe")
+	}
+	age := now.Sub(info.ModTime())
+	return age < 0 || age >= sshIdentityCacheTTL, nil
 }
 
 func listenApprovalAgent(path string) (net.Listener, error) {
@@ -514,7 +641,7 @@ func (connection *approvalAgentConnection) List() ([]*sshagent.Key, error) {
 		keys = append(keys, &sshagent.Key{
 			Format:  identity.catalog.Metadata.Algorithm,
 			Blob:    append([]byte(nil), identity.keyBlob...),
-			Comment: "may:" + identity.catalog.Title,
+			Comment: "may:" + identity.catalog.Metadata.Fingerprint,
 		})
 	}
 	return keys, nil
@@ -794,7 +921,7 @@ func requestSshSignature(
 	err = client.doJSON(createContext, http.MethodPost, "/v1/requests", request, &created)
 	cancelCreate()
 	if err != nil {
-		return sshSignConsumeResponse{}, err
+		return sshSignConsumeResponse{}, fmt.Errorf("create SSH approval request failed: %w", err)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
 		return sshSignConsumeResponse{}, errors.New("gateway returned an invalid SSH approval response")
@@ -804,7 +931,11 @@ func requestSshSignature(
 		fmt.Fprintf(deps.stderr, "SSH sign request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContextFrom(ctx, created.ExpiresAt, config.timeout)
 		if contextError != nil {
-			return sshSignConsumeResponse{}, contextError
+			return sshSignConsumeResponse{}, fmt.Errorf(
+				"prepare SSH request %s approval wait failed: %w",
+				created.RequestID,
+				contextError,
+			)
 		}
 		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
 			var current requestStatusResponse
@@ -819,11 +950,19 @@ func requestSshSignature(
 		})
 		cancelPoll()
 		if err != nil {
-			return sshSignConsumeResponse{}, err
+			return sshSignConsumeResponse{}, fmt.Errorf(
+				"poll SSH request %s status failed: %w",
+				created.RequestID,
+				err,
+			)
 		}
 	}
 	if !isAuthorizedStatus(status) {
-		return sshSignConsumeResponse{}, fmt.Errorf("SSH request reached unexpected status %q", status)
+		return sshSignConsumeResponse{}, fmt.Errorf(
+			"SSH request %s reached unexpected status %q",
+			created.RequestID,
+			status,
+		)
 	}
 	var consumed sshSignConsumeResponse
 	consumeContext, cancelConsume := context.WithTimeout(ctx, gatewayRequestTimeout)
@@ -836,7 +975,11 @@ func requestSshSignature(
 	)
 	cancelConsume()
 	if err != nil {
-		return sshSignConsumeResponse{}, err
+		return sshSignConsumeResponse{}, fmt.Errorf(
+			"consume SSH request %s failed: %w",
+			created.RequestID,
+			err,
+		)
 	}
 	if !consumed.OK || consumed.RequestID != created.RequestID ||
 		normalizeStatus(consumed.Status) != "consumed" ||
@@ -845,7 +988,10 @@ func requestSshSignature(
 		consumed.Fingerprint != identity.catalog.Metadata.Fingerprint ||
 		consumed.Algorithm != algorithm ||
 		consumed.PublicKeyBlob != identity.catalog.Metadata.PublicKeyBlob {
-		return sshSignConsumeResponse{}, errors.New("gateway returned a mismatched SSH signature response")
+		return sshSignConsumeResponse{}, fmt.Errorf(
+			"gateway returned a mismatched SSH signature response for request %s",
+			created.RequestID,
+		)
 	}
 	return consumed, nil
 }

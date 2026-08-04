@@ -21,14 +21,19 @@ import (
 )
 
 const (
-	cloudflareAccountPageSize    = 50
-	maxCloudflareAccountPages    = 100
-	maxCloudflareAccountResponse = 256 * 1024
-	operatorReceiptSchema        = 1
-	operatorTransactionSchema    = 1
-	operatorCommandTimeout       = 5 * time.Minute
-	initializerReexecIdentity    = "ONENOD_INIT_REEXEC_IDENTITY"
-	operatorUsage                = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator revoke-cloudflare"
+	cloudflareAccountPageSize     = 50
+	maxCloudflareAccountPages     = 100
+	maxCloudflareAccountResponse  = 256 * 1024
+	operatorReceiptSchema         = 1
+	operatorTransactionSchema     = 1
+	operatorCommandTimeout        = 5 * time.Minute
+	operatorInitializationTimeout = 45 * time.Minute
+	gatewayReadinessTimeout       = 2 * time.Minute
+	gatewayReadinessPollInterval  = 2 * time.Second
+	bootstrapCompletionTimeout    = 30 * time.Minute
+	bootstrapPollInterval         = 2 * time.Second
+	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
+	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator revoke-cloudflare"
 )
 
 var workerVersionIDPattern = regexp.MustCompile(`(?i)Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
@@ -172,7 +177,7 @@ func runBinaryFirstProductionDeployment(
 	if err := assertNoCloudflareCredentialEnvironment(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), operatorInitializationTimeout)
 	defer cancel()
 	release, err := resolveSelectedRelease(ctx, releaseSourceFor(deps), selection)
 	if err != nil {
@@ -309,6 +314,14 @@ func runBinaryFirstProductionDeployment(
 		return fmt.Errorf("Cloudflare deployment stopped in a partial state; exact cleanup targets are Executor %s and Gateway %s in account %s: %w",
 			material.ExecutorName, material.GatewayName, material.AccountID, err)
 	}
+	fmt.Fprintln(console.stdout, "Waiting for the public Gateway route to report the exact deployed release before opening the one-time bootstrap URL.")
+	if err := waitForGatewayReadiness(
+		ctx, deps.httpClient, material.Origin, release.Manifest.ReleaseVersion,
+		gatewayReadinessTimeout, gatewayReadinessPollInterval,
+	); err != nil {
+		return fmt.Errorf("Gateway did not become publicly ready after deployment; BOOTSTRAP_TOKEN was retained and the one-time URL was not opened: %w", err)
+	}
+	fmt.Fprintln(console.stdout, "The public Gateway route is ready.")
 	if err := completeBootstrapCeremony(ctx, tools.Wrangler, profile, bundle, material, deps, console); err != nil {
 		return err
 	}
@@ -335,11 +348,6 @@ func runBinaryFirstProductionDeployment(
 		return err
 	}
 	onePasswordCleanupActive = false
-	installNow, installPromptErr := console.confirmDefaultYes("Install the OneNod local runtime, requester support, and managed Skill for this macOS user now?")
-	var localInstallErr error
-	if installNow {
-		localInstallErr = installVerifiedRelease(ctx, release, material.Origin, deps, true)
-	}
 	profileRevoked, err = promptAndRevokeWranglerProfile(
 		tools.Wrangler, profile, account.ID, deps.cloudflareTransport, console, true,
 	)
@@ -351,6 +359,11 @@ func runBinaryFirstProductionDeployment(
 	}
 	if err != nil {
 		return err
+	}
+	installNow, installPromptErr := console.confirmDefaultYes("Install the OneNod local runtime, requester support, and managed Skill for this macOS user now?")
+	var localInstallErr error
+	if installNow {
+		localInstallErr = installVerifiedRelease(ctx, release, material.Origin, deps, true)
 	}
 	if installPromptErr != nil {
 		return installPromptErr
@@ -1380,13 +1393,14 @@ func completeBootstrapCeremony(
 	if err := openSensitiveBootstrapURL([]byte(bootstrapURL)); err != nil {
 		fmt.Fprintln(console.stderr, "The default browser could not be opened automatically; open the URL printed above manually.")
 	}
-	if _, err := console.readLine("Press Enter after Passkey registration reaches the approval screen: "); err != nil {
-		return err
+	fmt.Fprintf(console.stdout, "Waiting up to %s for the first owner Passkey registration. Keep this terminal open; no confirmation keystroke is required.\n", bootstrapCompletionTimeout)
+	if err := waitForRemoteInitialization(
+		ctx, deps.httpClient, material.Origin,
+		bootstrapCompletionTimeout, bootstrapPollInterval,
+	); err != nil {
+		return fmt.Errorf("Gateway did not report an initialized owner identity before the wait ended; BOOTSTRAP_TOKEN was retained: %w", err)
 	}
-	initialized, err := readRemoteInitializationState(deps.httpClient, material.Origin)
-	if err != nil || !initialized {
-		return errors.New("Gateway does not report an initialized human identity; BOOTSTRAP_TOKEN was retained for a safe retry")
-	}
+	fmt.Fprintln(console.stdout, "Owner identity established; deleting the one-time bootstrap Worker Secret.")
 	config := bundleGatewayConfig(bundle)
 	if err := runWranglerStreaming(wrangler, profile, filepath.Dir(config), []string{
 		"secret", "delete", "BOOTSTRAP_TOKEN", "--config", config,
@@ -2611,11 +2625,17 @@ func assertNoCloudflareCredentialEnvironment() error {
 }
 
 func readRemoteInitializationState(client *http.Client, origin string) (bool, error) {
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return readRemoteInitializationStateContext(ctx, client, origin)
+}
+
+func readRemoteInitializationStateContext(
+	ctx context.Context,
+	client *http.Client,
+	origin string,
+) (bool, error) {
+	client = safePublicHTTPClient(client)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/v1/human/state", nil)
 	if err != nil {
 		return false, errors.New("build bootstrap verification request failed")
@@ -2640,4 +2660,135 @@ func readRemoteInitializationState(client *http.Client, origin string) (bool, er
 		return false, errors.New("Gateway bootstrap state is invalid")
 	}
 	return state.Initialized, nil
+}
+
+func waitForGatewayReadiness(
+	ctx context.Context,
+	client *http.Client,
+	origin string,
+	expectedVersion string,
+	timeout time.Duration,
+	pollInterval time.Duration,
+) error {
+	if timeout <= 0 || pollInterval <= 0 || !validProductVersion(expectedVersion) {
+		return errors.New("invalid public Gateway readiness wait")
+	}
+	return waitForOperatorCondition(ctx, timeout, pollInterval, func(probeContext context.Context) (bool, error) {
+		var health struct {
+			Environment string `json:"environment"`
+			OK          bool   `json:"ok"`
+			Service     string `json:"service"`
+			Version     string `json:"version"`
+		}
+		if err := readOperatorGatewayJSON(probeContext, client, origin, "/api/health", &health); err != nil {
+			return false, err
+		}
+		if !health.OK || health.Environment != "prod" || health.Service != "onenod-gateway" {
+			return false, errors.New("public Gateway health returned an unexpected service identity")
+		}
+		if health.Version != expectedVersion {
+			return false, fmt.Errorf(
+				"public Gateway reports release %s instead of %s",
+				health.Version, expectedVersion,
+			)
+		}
+		return true, nil
+	})
+}
+
+func waitForRemoteInitialization(
+	ctx context.Context,
+	client *http.Client,
+	origin string,
+	timeout time.Duration,
+	pollInterval time.Duration,
+) error {
+	if timeout <= 0 || pollInterval <= 0 {
+		return errors.New("invalid owner initialization wait")
+	}
+	return waitForOperatorCondition(ctx, timeout, pollInterval, func(probeContext context.Context) (bool, error) {
+		initialized, err := readRemoteInitializationStateContext(probeContext, client, origin)
+		if err != nil {
+			return false, err
+		}
+		if !initialized {
+			return false, errors.New("owner identity is not initialized yet")
+		}
+		return true, nil
+	})
+}
+
+func waitForOperatorCondition(
+	ctx context.Context,
+	timeout time.Duration,
+	pollInterval time.Duration,
+	probe func(context.Context) (bool, error),
+) error {
+	waitContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastErr error
+	for {
+		probeContext, cancelProbe := context.WithTimeout(waitContext, requesterPreflightTimeout)
+		ready, err := probe(probeContext)
+		cancelProbe()
+		if ready && err == nil {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-waitContext.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if lastErr != nil {
+				return fmt.Errorf("wait ended: %w", lastErr)
+			}
+			return errors.New("wait ended before the condition became ready")
+		case <-timer.C:
+		}
+	}
+}
+
+func readOperatorGatewayJSON(
+	ctx context.Context,
+	client *http.Client,
+	origin string,
+	path string,
+	result any,
+) error {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\r\n") {
+		return errors.New("invalid Gateway readiness path")
+	}
+	client = safePublicHTTPClient(client)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+path, nil)
+	if err != nil {
+		return errors.New("build Gateway readiness request failed")
+	}
+	request.Header.Set("accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("Gateway readiness request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("Gateway readiness returned HTTP %d", response.StatusCode)
+	}
+	if mediaType := strings.ToLower(response.Header.Get("content-type")); mediaType != "" && !strings.HasPrefix(mediaType, "application/json") {
+		return errors.New("Gateway readiness returned a non-JSON response")
+	}
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
+	if err != nil || len(encoded) == 0 || len(encoded) > 64*1024 {
+		return errors.New("read Gateway readiness response failed")
+	}
+	defer zeroBytes(encoded)
+	if json.Unmarshal(encoded, result) != nil {
+		return errors.New("Gateway readiness response is invalid")
+	}
+	return nil
 }

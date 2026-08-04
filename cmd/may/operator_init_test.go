@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testCloudflareAccountID = "0123456789abcdef0123456789abcdef"
@@ -320,6 +323,63 @@ func TestRemoteBootstrapStateAcceptsOnlyInitializedJSON(t *testing.T) {
 	initialized, err := readRemoteInitializationState(client, "https://onenod.human-vault.workers.dev")
 	if err != nil || !initialized {
 		t.Fatalf("%v %v", initialized, err)
+	}
+}
+
+func TestGatewayReadinessWaitsThroughPublicRoutePropagation(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if request.URL.Path != "/api/health" {
+			t.Fatalf("unexpected readiness path %s", request.URL.Path)
+		}
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("There is nothing here yet")),
+				Header:     http.Header{"content-type": []string{"text/plain"}},
+			}, nil
+		}
+		version := "0.0.2-alpha.12"
+		if attempts >= 3 {
+			version = "0.0.2-alpha.13"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"environment":"prod","ok":true,"service":"onenod-gateway","version":"` + version + `"}`)),
+			Header:     http.Header{"content-type": []string{"application/json"}},
+		}, nil
+	})}
+	if err := waitForGatewayReadiness(
+		context.Background(), client, "https://onenod.human-vault.workers.dev",
+		"0.0.2-alpha.13", 100*time.Millisecond, time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("readiness used %d probes, want 3", attempts)
+	}
+}
+
+func TestBootstrapCompletionPollsWithoutTerminalConfirmation(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		initialized := attempts >= 2
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"initialized":%t}`, initialized))),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	if err := waitForRemoteInitialization(
+		context.Background(), client, "https://onenod.human-vault.workers.dev",
+		100*time.Millisecond, time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("bootstrap wait used %d probes, want 2", attempts)
 	}
 }
 

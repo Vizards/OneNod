@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,70 @@ func TestDefaultRequesterDisplayNameIsUsable(t *testing.T) {
 	}
 	if len([]rune(name)) > 80 {
 		t.Fatalf("default requester display name has %d runes, want at most 80", len([]rune(name)))
+	}
+}
+
+func TestCommandHelpRunsBeforeConfigurationCredentialsAndNetwork(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, userAgentDirectoryName)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, userAgentEnvFileName), []byte("BROKEN=value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	for _, args := range [][]string{
+		{"--help"},
+		{"help", "version"},
+		{"version", "--help"},
+		{"install", "--help"},
+		{"preflight", "--help"},
+		{"enroll", "-h"},
+		{"catalog", "search", "--help"},
+		{"read", "--help"},
+		{"secret", "read", "--help"},
+		{"item", "create", "--help"},
+		{"item", "patch", "--help"},
+		{"item", "archive", "--help"},
+		{"ssh", "public-key", "export", "--help"},
+		{"agent", "status", "--help"},
+		{"configure", "ssh", "--help"},
+		{"configure", "git-signing", "apply", "--help"},
+		{"update", "check", "--help"},
+		{"dev", "verify-release", "--help"},
+		{"operator", "init", "--help"},
+		{"operator", "revoke-cloudflare", "--help"},
+		{"--origin", "https://ignored.example.workers.dev", "catalog", "search", "--help"},
+	} {
+		name := strings.NewReplacer("-", "_", " ", "_").Replace(strings.Join(args, "_"))
+		t.Run(name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			backend := &recordingKeychainBackend{
+				loadErr: errors.New("credentials must not be loaded for help"),
+			}
+			err := runCLI(args, dependencies{
+				keychain: keychainStore{backend: backend},
+				stderr:   &stderr,
+				stdin:    strings.NewReader(""),
+				stdout:   io.Discard,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(stderr.String()) == "" {
+				t.Fatal("help output was empty")
+			}
+			if backend.account != "" {
+				t.Fatal("help loaded requester credentials")
+			}
+		})
+	}
+}
+
+func TestCatalogQueryNamedHelpIsNotAHelpFlag(t *testing.T) {
+	if _, ok := requestedHelp([]string{"catalog", "search", "help"}); ok {
+		t.Fatal("a literal catalog query named help was treated as CLI help")
 	}
 }
 
@@ -560,6 +626,19 @@ func TestCanonicalJSONRejectsFractions(t *testing.T) {
 	_, err := canonicalJSON(map[string]any{"value": 1.5})
 	if err == nil {
 		t.Fatal("fractional number was accepted")
+	}
+}
+
+func TestCanonicalJSONUsesTheCrossRuntimeSafeIntegerDomain(t *testing.T) {
+	for _, value := range []int64{maximumCanonicalInteger, -maximumCanonicalInteger} {
+		if _, err := canonicalJSON(map[string]any{"value": value}); err != nil {
+			t.Fatalf("safe integer %d was rejected: %v", value, err)
+		}
+	}
+	for _, value := range []int64{maximumCanonicalInteger + 1, -maximumCanonicalInteger - 1} {
+		if _, err := canonicalJSON(map[string]any{"value": value}); err == nil {
+			t.Fatalf("unsafe integer %d was accepted", value)
+		}
 	}
 }
 
