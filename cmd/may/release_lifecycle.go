@@ -276,6 +276,27 @@ type runtimeVersion struct {
 	PwaVersion             string        `json:"pwa_version,omitempty"`
 }
 
+type remoteRuntimeVersionResponse struct {
+	Components struct {
+		Executor struct {
+			Channel string `json:"channel"`
+			Version string `json:"version"`
+		} `json:"executor"`
+		Gateway struct {
+			AcceptedClientProtocol protocolRange `json:"accepted_client_protocol"`
+			Channel                string        `json:"channel"`
+			Protocol               int           `json:"protocol"`
+			Version                string        `json:"version"`
+		} `json:"gateway"`
+		PWA struct {
+			Channel string `json:"channel"`
+			Version string `json:"version"`
+		} `json:"pwa"`
+	} `json:"components"`
+	ReleaseChannel string `json:"release_channel"`
+	ReleaseVersion string `json:"release_version"`
+}
+
 type deploymentBundleDescriptor struct {
 	Executor struct {
 		Config     string `json:"config"`
@@ -2743,46 +2764,31 @@ func validateReceiptReleaseIdentity(receipt *localInstallReceipt, manifest relea
 }
 
 func readRemoteRuntimeVersion(origin string, client *http.Client) (runtimeVersion, bool) {
-	var response struct {
-		Components struct {
-			Executor struct {
-				Channel string `json:"channel"`
-				Version string `json:"version"`
-			} `json:"executor"`
-			Gateway struct {
-				AcceptedClientProtocol protocolRange `json:"accepted_client_protocol"`
-				Channel                string        `json:"channel"`
-				Protocol               int           `json:"protocol"`
-				Version                string        `json:"version"`
-			} `json:"gateway"`
-			PWA struct {
-				Channel string `json:"channel"`
-				Version string `json:"version"`
-			} `json:"pwa"`
-		} `json:"components"`
-		ReleaseChannel string `json:"release_channel"`
-		ReleaseVersion string `json:"release_version"`
-	}
+	var response remoteRuntimeVersionResponse
 	if err := readPublicGatewayJSON(safePublicHTTPClient(client), origin, "/api/version", &response); err == nil {
-		expectedChannel := releaseChannelForVersion(response.ReleaseVersion)
-		remote := runtimeVersion{
-			AcceptedClientProtocol: response.Components.Gateway.AcceptedClientProtocol,
-			Channel:                response.ReleaseChannel,
-			ExecutorVersion:        response.Components.Executor.Version,
-			GatewayProtocol:        response.Components.Gateway.Protocol,
-			GatewayVersion:         response.Components.Gateway.Version,
-			PwaVersion:             response.Components.PWA.Version,
-		}
-		return remote, validProductVersion(response.ReleaseVersion) && validReleaseChannel(expectedChannel) &&
-			releaseChannel(response.ReleaseChannel) == expectedChannel &&
-			releaseChannel(response.Components.Gateway.Channel) == expectedChannel &&
-			releaseChannel(response.Components.Executor.Channel) == expectedChannel &&
-			releaseChannel(response.Components.PWA.Channel) == expectedChannel &&
-			remote.GatewayVersion == response.ReleaseVersion &&
-			remote.ExecutorVersion == response.ReleaseVersion &&
-			remote.PwaVersion == response.ReleaseVersion
+		return parseRemoteRuntimeVersion(response)
 	}
 	return runtimeVersion{}, false
+}
+
+func parseRemoteRuntimeVersion(response remoteRuntimeVersionResponse) (runtimeVersion, bool) {
+	expectedChannel := releaseChannelForVersion(response.ReleaseVersion)
+	remote := runtimeVersion{
+		AcceptedClientProtocol: response.Components.Gateway.AcceptedClientProtocol,
+		Channel:                response.ReleaseChannel,
+		ExecutorVersion:        response.Components.Executor.Version,
+		GatewayProtocol:        response.Components.Gateway.Protocol,
+		GatewayVersion:         response.Components.Gateway.Version,
+		PwaVersion:             response.Components.PWA.Version,
+	}
+	return remote, validProductVersion(response.ReleaseVersion) && validReleaseChannel(expectedChannel) &&
+		releaseChannel(response.ReleaseChannel) == expectedChannel &&
+		releaseChannel(response.Components.Gateway.Channel) == expectedChannel &&
+		releaseChannel(response.Components.Executor.Channel) == expectedChannel &&
+		releaseChannel(response.Components.PWA.Channel) == expectedChannel &&
+		remote.GatewayVersion == response.ReleaseVersion &&
+		remote.ExecutorVersion == response.ReleaseVersion &&
+		remote.PwaVersion == response.ReleaseVersion
 }
 
 func writeHumanUpdateReport(output io.Writer, report updateCheckReport) {

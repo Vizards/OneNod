@@ -30,6 +30,8 @@ const (
 	operatorInitializationTimeout = 45 * time.Minute
 	gatewayReadinessTimeout       = 2 * time.Minute
 	gatewayReadinessPollInterval  = 2 * time.Second
+	updateConvergenceTimeout      = 30 * time.Second
+	updateConvergencePollInterval = 2 * time.Second
 	bootstrapCompletionTimeout    = 30 * time.Minute
 	bootstrapPollInterval         = 2 * time.Second
 	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
@@ -2113,6 +2115,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return errors.New("operator update was not confirmed; production traffic was unchanged")
 	}
 	executorAfter, gatewayAfter, deployErr := deployVerifiedUpdate(
+		ctx, deps.httpClient,
 		tools.Wrangler, profile, bundle, release, receipt, executorBefore, gatewayBefore,
 		console, transaction, transactionPath, resuming,
 	)
@@ -2310,6 +2313,8 @@ func recoverOrCreateOperatorUpdateTransaction(
 }
 
 func deployVerifiedUpdate(
+	ctx context.Context,
+	httpClient *http.Client,
 	wrangler, profile string,
 	bundle *stagedDeploymentBundle,
 	release *verifiedRelease,
@@ -2400,11 +2405,20 @@ func deployVerifiedUpdate(
 	_ = writeAtomicPrivateJSON(transactionPath, transaction)
 	actualExecutor, executorErr := readExactDeploymentVersion(wrangler, profile, executorConfig, receipt.ExecutorWorker)
 	actualGateway, gatewayErr := readExactDeploymentVersion(wrangler, profile, gatewayConfig, receipt.GatewayWorker)
-	remote, complete := readRemoteRuntimeVersion(receipt.Origin, nil)
-	if executorErr != nil || gatewayErr != nil || actualExecutor != executorAfter || actualGateway != gatewayAfter ||
-		!complete || remote.GatewayVersion != release.Manifest.ReleaseVersion ||
-		remote.ExecutorVersion != release.Manifest.ReleaseVersion || remote.PwaVersion != release.Manifest.ReleaseVersion {
-		verifyErr := errors.New("authoritative Cloudflare or runtime version verification failed")
+	if executorErr != nil || gatewayErr != nil || actualExecutor != executorAfter || actualGateway != gatewayAfter {
+		verifyErr := errors.New("authoritative Cloudflare traffic verification failed")
+		return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
+	}
+	fmt.Fprintf(
+		console.stdout,
+		"Waiting up to %s for the public Gateway runtime declaration to converge.\n",
+		updateConvergenceTimeout,
+	)
+	if err := waitForRemoteRuntimeVersion(
+		ctx, httpClient, receipt.Origin, release.Manifest.ReleaseVersion,
+		updateConvergenceTimeout, updateConvergencePollInterval,
+	); err != nil {
+		verifyErr := fmt.Errorf("public runtime version did not converge: %w", err)
 		return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
 	}
 	return executorAfter, gatewayAfter, nil
@@ -2690,6 +2704,37 @@ func waitForGatewayReadiness(
 			return false, fmt.Errorf(
 				"public Gateway reports release %s instead of %s",
 				health.Version, expectedVersion,
+			)
+		}
+		return true, nil
+	})
+}
+
+func waitForRemoteRuntimeVersion(
+	ctx context.Context,
+	client *http.Client,
+	origin string,
+	expectedVersion string,
+	timeout time.Duration,
+	pollInterval time.Duration,
+) error {
+	if timeout <= 0 || pollInterval <= 0 || !validProductVersion(expectedVersion) {
+		return errors.New("invalid public runtime version wait")
+	}
+	return waitForOperatorCondition(ctx, timeout, pollInterval, func(probeContext context.Context) (bool, error) {
+		var response remoteRuntimeVersionResponse
+		if err := readOperatorGatewayJSON(probeContext, client, origin, "/api/version", &response); err != nil {
+			return false, err
+		}
+		remote, complete := parseRemoteRuntimeVersion(response)
+		if !complete {
+			return false, errors.New("public runtime version declaration is internally inconsistent")
+		}
+		if remote.GatewayVersion != expectedVersion || remote.ExecutorVersion != expectedVersion ||
+			remote.PwaVersion != expectedVersion {
+			return false, fmt.Errorf(
+				"public runtime reports Gateway %s, Executor %s, and PWA %s instead of %s",
+				remote.GatewayVersion, remote.ExecutorVersion, remote.PwaVersion, expectedVersion,
 			)
 		}
 		return true, nil

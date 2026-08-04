@@ -361,6 +361,50 @@ func TestGatewayReadinessWaitsThroughPublicRoutePropagation(t *testing.T) {
 	}
 }
 
+func TestRemoteRuntimeVersionWaitsThroughDeploymentPropagation(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if request.URL.Path != "/api/version" {
+			t.Fatalf("unexpected runtime version path %s", request.URL.Path)
+		}
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("There is nothing here yet")),
+				Header:     http.Header{"content-type": []string{"text/plain"}},
+			}, nil
+		}
+		version := "0.0.2-alpha.13"
+		if attempts >= 3 {
+			version = "0.0.2-alpha.14"
+		}
+		body := fmt.Sprintf(`{
+			"release_channel":"alpha",
+			"release_version":%q,
+			"components":{
+				"executor":{"channel":"alpha","version":%q},
+				"gateway":{"accepted_client_protocol":{"min":1,"max":1},"channel":"alpha","protocol":1,"version":%q},
+				"pwa":{"channel":"alpha","version":%q}
+			}
+		}`, version, version, version, version)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"content-type": []string{"application/json"}},
+		}, nil
+	})}
+	if err := waitForRemoteRuntimeVersion(
+		context.Background(), client, "https://onenod.human-vault.workers.dev",
+		"0.0.2-alpha.14", 100*time.Millisecond, time.Millisecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("runtime convergence used %d probes, want 3", attempts)
+	}
+}
+
 func TestBootstrapCompletionPollsWithoutTerminalConfirmation(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
