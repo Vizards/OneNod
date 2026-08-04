@@ -755,7 +755,7 @@ function RequestsPage() {
         <EmptyQueue />
       ) : null}
       {pendingRequests.length ? (
-        <ul className="mx-auto grid max-w-[760px] gap-3">
+        <ul className="grid gap-3">
           {pendingRequests.map((request) => (
             <RequestCard key={request.requestId} request={request} />
           ))}
@@ -1057,7 +1057,7 @@ function ApprovalControls({
     request.action === "ssh.sign" && Boolean(request.authorizationSession);
 
   return (
-    <div className="grid w-full grid-cols-2 gap-3 sm:ml-auto sm:max-w-[420px]">
+    <div className="grid w-full grid-cols-2 gap-3 sm:ml-auto sm:max-w-[560px] lg:grid-cols-[minmax(10rem,0.8fr)_minmax(18rem,1.2fr)]">
       <button
         type="button"
         aria-label={`Deny ${request.targetLabel}`}
