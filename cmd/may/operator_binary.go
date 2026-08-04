@@ -35,6 +35,7 @@ const (
 	bootstrapCompletionTimeout    = 30 * time.Minute
 	bootstrapPollInterval         = 2 * time.Second
 	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
+	operatorUpdateReexecIdentity  = "ONENOD_UPDATE_REEXEC_IDENTITY"
 	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator revoke-cloudflare"
 )
 
@@ -427,7 +428,63 @@ func ensureCurrentInitializer(
 	return true, nil
 }
 
+func ensureCurrentOperatorUpdater(
+	ctx context.Context,
+	release *verifiedRelease,
+	deps dependencies,
+) (bool, error) {
+	expectedIdentity := release.Manifest.ReleaseVersion + "@" + release.Manifest.Source.Commit
+	marker := os.Getenv(operatorUpdateReexecIdentity)
+	exact, err := runningReleaseCanConsume(release.Manifest)
+	if err != nil {
+		return false, err
+	}
+	if marker != "" && (marker != expectedIdentity || !exact) {
+		return false, errors.New("operator_update_reexec_identity_mismatch: verified updater did not restart as the expected exact Release")
+	}
+	if exact {
+		return false, nil
+	}
+	if marker != "" {
+		return false, errors.New("operator_update_reexec_loop: refusing to restart the updater more than once")
+	}
+	path, stage, err := stageVerifiedReleaseMay(ctx, release)
+	if err != nil {
+		return false, fmt.Errorf("stage current verified operator updater failed: %w", err)
+	}
+	defer os.RemoveAll(stage)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, errors.New("resolve user home for operator updater failed")
+	}
+	command := exec.CommandContext(
+		ctx, path,
+		"operator", "update", "--version", release.Manifest.ReleaseVersion,
+	)
+	command.Dir = home
+	command.Env = releaseReexecEnvironment(operatorUpdateReexecIdentity, expectedIdentity)
+	command.Stdin = deps.stdin
+	command.Stdout = deps.stdout
+	command.Stderr = deps.stderr
+	fmt.Fprintf(
+		deps.stdout,
+		"Restarting with verified OneNod %s to plan and execute its own update; the installed runtime is unchanged.\n",
+		release.Manifest.ReleaseVersion,
+	)
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return false, errors.New("re-executed operator updater timed out")
+		}
+		return false, errors.New("re-executed verified operator updater failed")
+	}
+	return true, nil
+}
+
 func initializerReexecEnvironment(expectedIdentity string) []string {
+	return releaseReexecEnvironment(initializerReexecIdentity, expectedIdentity)
+}
+
+func releaseReexecEnvironment(markerName, expectedIdentity string) []string {
 	allowed := map[string]bool{
 		"HOME": true, "LANG": true, "LOGNAME": true, "PATH": true,
 		"SHELL": true, "TERM": true, "TMPDIR": true, "USER": true,
@@ -443,7 +500,7 @@ func initializerReexecEnvironment(expectedIdentity string) []string {
 	return append(environment,
 		"WRANGLER_LOG_SANITIZE=true",
 		"WRANGLER_WRITE_LOGS=false",
-		initializerReexecIdentity+"="+expectedIdentity,
+		markerName+"="+expectedIdentity,
 	)
 }
 
@@ -1946,19 +2003,25 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		}
 		return errors.New("anti_rollback: latest official release is older than the deployed receipt")
 	}
-	if _, err := runningReleaseCanConsume(release.Manifest); err != nil {
+	if os.Getenv(operatorUpdateReexecIdentity) == "" {
+		if err := confirmHigherRiskChannel(
+			deps.stdin, deps.stdout, currentChannel, channel, "Operator updates",
+		); err != nil {
+			return err
+		}
+	}
+	reexecuted, err := ensureCurrentOperatorUpdater(ctx, release, deps)
+	if err != nil {
 		return err
+	}
+	if reexecuted {
+		return nil
 	}
 	localReceipt, _, err := readLocalInstallReceipt()
 	if err != nil {
 		return err
 	}
 	helperPlan := buildKeychainHelperUpdatePlan(release, localReceipt)
-	if err := confirmHigherRiskChannel(
-		deps.stdin, deps.stdout, currentChannel, channel, "Operator updates",
-	); err != nil {
-		return err
-	}
 	if release.Manifest.ReleaseVersion == receipt.ReleaseVersion {
 		if release.Manifest.Source.Commit != receipt.SourceCommit ||
 			receipt.DeploymentArtifactSHA != artifactDigestByName(release.Manifest, receipt.DeploymentArtifact) {

@@ -1849,6 +1849,53 @@ func stageVerifiedDeploymentBundle(
 	}, nil
 }
 
+func stageVerifiedReleaseMay(
+	ctx context.Context,
+	release *verifiedRelease,
+) (string, string, error) {
+	if release == nil {
+		return "", "", errors.New("verified release is unavailable")
+	}
+	artifactName, err := localArtifactName()
+	if err != nil {
+		return "", "", err
+	}
+	artifact, err := artifactFor(release, artifactName)
+	if err != nil {
+		return "", "", err
+	}
+	stage, err := privateStagingDirectory()
+	if err != nil {
+		return "", "", err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	archive, err := downloadVerifiedArtifact(ctx, release, artifact, stage)
+	if err != nil {
+		return "", "", err
+	}
+	extracted := filepath.Join(stage, "updater")
+	if err := os.Mkdir(extracted, 0o700); err != nil {
+		return "", "", errors.New("create verified updater extraction directory failed")
+	}
+	if err := extractReleaseArchive(archive, extracted, map[string]os.FileMode{
+		"onenod/bin/may": 0o700, "onenod/bin/" + gitSignAdapterBinaryName: 0o700,
+	}); err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(extracted, "onenod", "bin", "may")
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() ||
+		info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		return "", "", errors.New("verified updater binary is missing or unsafe")
+	}
+	cleanup = false
+	return path, stage, nil
+}
+
 func validateStagedDeploymentBundle(
 	bundleRoot string,
 	manifest releaseManifest,

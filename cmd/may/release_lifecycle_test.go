@@ -446,6 +446,79 @@ func TestInitializerReexecPreservesExactReleaseSelection(t *testing.T) {
 	}
 }
 
+func TestOperatorUpdateReexecUsesExactVerifiedTargetWithoutInstallingIt(t *testing.T) {
+	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
+		t.Skip("OneNod operator updates support macOS release binaries")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLOUDFLARE_API_TOKEN", "must-not-cross-the-reexec-boundary")
+	archivePath := filepath.Join(t.TempDir(), "onenod.tar.gz")
+	writeTestRegularArchive(t, archivePath, []testArchiveFile{
+		{name: "onenod/bin/may", content: []byte(`#!/bin/sh
+set -eu
+umask 077
+printf '%s' "$*" > "$HOME/reexec-arguments"
+printf '%s' "${ONENOD_UPDATE_REEXEC_IDENTITY-unset}" > "$HOME/reexec-identity"
+printf '%s' "${CLOUDFLARE_API_TOKEN-unset}" > "$HOME/reexec-cloudflare-environment"
+`)},
+		{name: "onenod/bin/" + gitSignAdapterBinaryName, content: []byte("verified adapter")},
+	})
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	artifactName, err := localArtifactName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := releaseArtifact{
+		Kind: "local", Name: artifactName, Size: int64(len(archive)),
+		SHA256: "sha256:" + hex.EncodeToString(digest[:]), Subject: "requester",
+		Platform: &struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}{Architecture: runtime.GOARCH, OS: runtime.GOOS},
+	}
+	manifest := validManifestFixture("0.0.2-alpha.16", []releaseArtifact{artifact})
+	source := &memoryReleaseSource{downloads: map[string][]byte{artifactName: archive}}
+	release := &verifiedRelease{Manifest: manifest, Source: source}
+
+	oldVersion, oldTag, oldSource := productVersion, releaseTag, sourceCommit
+	productVersion = "0.0.2-alpha.15"
+	releaseTag = "v0.0.2-alpha.15"
+	sourceCommit = strings.Repeat("b", 40)
+	t.Cleanup(func() {
+		productVersion, releaseTag, sourceCommit = oldVersion, oldTag, oldSource
+	})
+
+	reexecuted, err := ensureCurrentOperatorUpdater(
+		context.Background(), release,
+		dependencies{stdin: strings.NewReader(""), stdout: io.Discard, stderr: io.Discard},
+	)
+	if err != nil || !reexecuted {
+		t.Fatalf("verified target updater was not re-executed: reexecuted=%t err=%v", reexecuted, err)
+	}
+	assertFile := func(name, want string) {
+		t.Helper()
+		value, err := os.ReadFile(filepath.Join(home, name))
+		if err != nil || string(value) != want {
+			t.Fatalf("%s = %q, %v; want %q", name, value, err, want)
+		}
+	}
+	assertFile("reexec-arguments", "operator update --version 0.0.2-alpha.16")
+	assertFile("reexec-identity", "0.0.2-alpha.16@"+manifest.Source.Commit)
+	assertFile("reexec-cloudflare-environment", "unset")
+	if _, err := os.Lstat(filepath.Join(home, userAgentDirectoryName, "bin", "may")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target updater changed the installed stable may path: %v", err)
+	}
+	stages, err := filepath.Glob(filepath.Join(home, userAgentDirectoryName, "update", ".stage-*"))
+	if err != nil || len(stages) != 0 {
+		t.Fatalf("verified updater staging was not cleaned: %v %v", stages, err)
+	}
+}
+
 func TestPrereleaseResolverSelectsHighestAcceptedSemver(t *testing.T) {
 	releases := []githubReleaseMetadata{
 		{Tag: "v0.0.2-beta.2", Immutable: true, Prerelease: true},
