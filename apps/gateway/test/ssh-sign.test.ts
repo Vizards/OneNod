@@ -4,6 +4,7 @@ import test from "node:test";
 import { encodeBase64Url } from "@onenod/protocol";
 
 import {
+  describeAuthorizedSshSign,
   describeSshSign,
   parseSshSignRequest,
   sshAuthorizationProofMaterial,
@@ -62,6 +63,35 @@ test("parses a closed opaque SSH request and keeps bytes out of its description"
     expected_version: 3,
     item_id: "item-1",
   });
+});
+
+test("describes an authorized SSH request from its exact stored grant", () => {
+  const request = requestWith({ kind: "ssh.opaque-signature" });
+  const description = describeAuthorizedSshSign(
+    request,
+    {
+      fingerprint: FINGERPRINT,
+      itemId: "item-1",
+      itemTitle: "GitHub SSH Key",
+      itemVersion: 3,
+    },
+    "keyed-payload-digest",
+  );
+  assert.equal(description.itemTitle, "GitHub SSH Key");
+  assert.equal(description.signatureAlgorithm, "ssh-ed25519");
+  assert.equal(JSON.stringify(description).includes(request.data), false);
+  assert.throws(() =>
+    describeAuthorizedSshSign(
+      request,
+      {
+        fingerprint: FINGERPRINT,
+        itemId: "another-item",
+        itemTitle: "GitHub SSH Key",
+        itemVersion: 3,
+      },
+      "keyed-payload-digest",
+    ),
+  );
 });
 
 test("describes verified native SSH authentication facts", () => {

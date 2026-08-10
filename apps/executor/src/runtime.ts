@@ -115,11 +115,15 @@ export function createRestrictedFetch(
     }
     try {
       controller.signal.throwIfAborted();
+      lease.observeUpstreamRequest?.();
       const response = await baseFetch(input, {
         ...init,
         redirect: "manual",
         signal: controller.signal,
       });
+      if (response.status === 429) {
+        lease.upstreamRateLimited = true;
+      }
       const body = await readResponseBody(
         response,
         controller.signal,

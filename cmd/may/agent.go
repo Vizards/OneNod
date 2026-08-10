@@ -37,8 +37,6 @@ const (
 	versionExtensionName             = "version@github.com/Vizards/OneNod"
 	sshIdentityCacheVersion          = 2
 	sshIdentityCacheLegacyVersion    = 1
-	sshIdentityCacheTTL              = 5 * time.Minute
-	sshIdentityRefreshRetryInterval  = time.Minute
 	sshIdentityRefreshRequestTimeout = 15 * time.Second
 )
 
@@ -258,11 +256,8 @@ func runAgentStatus(deps dependencies) error {
 	}
 	if cacheErr == nil {
 		result["identities"] = len(identities)
-		if stale, err := sshIdentityCacheIsStale(sshIdentityCachePath(), time.Now()); err == nil && stale {
-			result["inventory_cache"] = "stale"
-		} else {
-			result["inventory_cache"] = "fresh"
-		}
+		result["inventory_cache"] = "ready"
+		result["inventory_refresh"] = "manual"
 	} else {
 		result["identities"] = 0
 		result["inventory_cache"] = "unavailable"
@@ -321,33 +316,14 @@ func newSSHIdentityLoader(
 	deps dependencies,
 ) func() ([]servedSSHIdentity, error) {
 	var mutex sync.Mutex
-	var lastRefreshAttempt time.Time
 	return func() ([]servedSSHIdentity, error) {
 		mutex.Lock()
 		defer mutex.Unlock()
 		identities, err := readSSHIdentityCache(cachePath)
 		if errors.Is(err, os.ErrNotExist) {
-			lastRefreshAttempt = time.Now()
 			return refreshSSHIdentityCacheAt(cachePath, config, deps)
 		}
-		if err != nil {
-			return nil, err
-		}
-		stale, err := sshIdentityCacheIsStale(cachePath, time.Now())
-		if err != nil {
-			fmt.Fprintf(deps.stderr, "OneNod could not inspect SSH inventory freshness; serving the last verified cache: %v\n", err)
-			return identities, nil
-		}
-		if !stale || (!lastRefreshAttempt.IsZero() && time.Since(lastRefreshAttempt) < sshIdentityRefreshRetryInterval) {
-			return identities, nil
-		}
-		lastRefreshAttempt = time.Now()
-		refreshed, refreshErr := refreshSSHIdentityCacheAt(cachePath, config, deps)
-		if refreshErr != nil {
-			fmt.Fprintf(deps.stderr, "OneNod SSH inventory refresh failed; serving the last verified cache: %v\n", refreshErr)
-			return identities, nil
-		}
-		return refreshed, nil
+		return identities, err
 	}
 }
 
@@ -526,18 +502,6 @@ func decodeStrictSSHIdentityCache(encoded []byte, result any) error {
 		return errors.New("trailing SSH identity cache data")
 	}
 	return nil
-}
-
-func sshIdentityCacheIsStale(path string, now time.Time) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		return false, errors.New("SSH identity cache is unsafe")
-	}
-	age := now.Sub(info.ModTime())
-	return age < 0 || age >= sshIdentityCacheTTL, nil
 }
 
 func listenApprovalAgent(path string) (net.Listener, error) {

@@ -822,16 +822,6 @@ func TestSSHIdentityCacheIsPublicMetadataOnlyAndStrictlyPrivate(t *testing.T) {
 	if bytes.Contains(encoded, []byte("Cached key")) || bytes.Contains(bytes.ToLower(encoded), []byte("title")) {
 		t.Fatalf("private item title was persisted in the SSH inventory cache: %s", encoded)
 	}
-	if stale, err := sshIdentityCacheIsStale(cachePath, time.Now()); err != nil || stale {
-		t.Fatalf("new cache was not fresh: stale=%t err=%v", stale, err)
-	}
-	old := time.Now().Add(-sshIdentityCacheTTL - time.Second)
-	if err := os.Chtimes(cachePath, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if stale, err := sshIdentityCacheIsStale(cachePath, time.Now()); err != nil || !stale {
-		t.Fatalf("expired cache was not stale: stale=%t err=%v", stale, err)
-	}
 	if err := os.Chmod(cachePath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -907,7 +897,7 @@ func TestLegacySSHIdentityCacheIsMigratedWithoutPersistingTitles(t *testing.T) {
 	}
 }
 
-func TestSSHIdentityLoaderRefreshesByTTLAndServesVerifiedStaleCacheOnFailure(t *testing.T) {
+func TestSSHIdentityLoaderUsesVerifiedCacheUntilExplicitRefresh(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -930,26 +920,25 @@ func TestSSHIdentityLoaderRefreshesByTTLAndServesVerifiedStaleCacheOnFailure(t *
 		t.Fatal(err)
 	}
 	backend := &recordingKeychainBackend{loadErr: errors.New("catalog unavailable")}
-	var diagnostics strings.Builder
 	loader := newSSHIdentityLoader(cachePath, cliConfig{
 		origin: "https://onenod.example.workers.dev",
 	}, dependencies{
-		keychain: keychainStore{backend: backend}, stderr: &diagnostics,
+		keychain: keychainStore{backend: backend}, stderr: io.Discard,
 	})
 	identities, err := loader()
 	if err != nil || len(identities) != 1 || backend.account != "" {
-		t.Fatalf("fresh cache unnecessarily refreshed: identities=%d account=%q err=%v", len(identities), backend.account, err)
+		t.Fatalf("verified cache unnecessarily refreshed: identities=%d account=%q err=%v", len(identities), backend.account, err)
 	}
-	old := time.Now().Add(-sshIdentityCacheTTL - time.Second)
+	old := time.Now().Add(-365 * 24 * time.Hour)
 	if err := os.Chtimes(cachePath, old, old); err != nil {
 		t.Fatal(err)
 	}
 	identities, err = loader()
 	if err != nil || len(identities) != 1 {
-		t.Fatalf("verified stale cache was not served: identities=%d err=%v", len(identities), err)
+		t.Fatalf("verified cache was not served: identities=%d err=%v", len(identities), err)
 	}
-	if backend.account == "" || !strings.Contains(diagnostics.String(), "serving the last verified cache") {
-		t.Fatalf("stale refresh was not attempted and diagnosed: account=%q diagnostics=%q", backend.account, diagnostics.String())
+	if backend.account != "" {
+		t.Fatalf("cache age triggered an implicit catalog refresh: account=%q", backend.account)
 	}
 }
 

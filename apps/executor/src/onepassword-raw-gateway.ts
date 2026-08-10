@@ -7,7 +7,6 @@ import {
   decodeDetailedItemList,
   decodeItem,
   decodeResolvedSecret,
-  decodeVaultList,
   decodeVoid,
 } from "./onepassword-wire";
 import {
@@ -157,6 +156,7 @@ export class GatewayOperationError extends Error {
       | "item_operation_invalid"
       | "item_stale"
       | "onepassword_operation_failed"
+      | "onepassword_rate_limited"
       | "onepassword_timeout"
       | "onepassword_write_outcome_unknown"
       | "ssh_algorithm_mismatch"
@@ -173,8 +173,10 @@ export class GatewayOperationError extends Error {
 }
 
 export async function executeCatalog(options: CatalogOptions): Promise<CatalogItem[]> {
+  // The Worker supplies vaultId exclusively from OP_VAULT_ID; request bodies
+  // cannot select a vault. Provisioning verifies the Service Account has exact
+  // Agent-Vault scope, and every returned item is still checked against vaultId.
   const vaultId = itemIdentifier(options.vaultId);
-  await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, false);
   const normalized = options.query.trim().toLocaleLowerCase("en-US");
   const matches =
@@ -201,7 +203,6 @@ export async function executeSecretReadMetadata(
   options: SecretTargetOptions,
 ): Promise<SecretReadMetadata> {
   const target = validateSecretTarget(options);
-  await assertVaultScope(options.client, target.vaultId);
   const item = await getItem(options.client, target.vaultId, target.itemId);
   const field = findField(item, target.fieldId);
   return projectSecretMetadata(item, target.fieldId, field);
@@ -211,7 +212,6 @@ export async function executeSecretRead(
   options: SecretReadOptions,
 ): Promise<SecretReadMetadata & { value: string }> {
   const target = validateSecretTarget(options);
-  await assertVaultScope(options.client, target.vaultId);
   const item = await getItem(options.client, target.vaultId, target.itemId);
   if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
@@ -227,7 +227,6 @@ export async function resolveSecret(
   options: SecretTargetOptions,
 ): Promise<string> {
   const target = validateSecretTarget(options);
-  await assertVaultScope(options.client, target.vaultId);
   const value = await invokeRead(
     options.client,
     {
@@ -254,7 +253,6 @@ export async function executeSshSign(
   }
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
   let metadata;
   try {
@@ -296,7 +294,6 @@ export async function executeItemMetadata(
 ): Promise<CatalogItem> {
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  await assertVaultScope(options.client, vaultId);
   return projectCatalogItem(await getItem(options.client, vaultId, itemId));
 }
 
@@ -305,7 +302,6 @@ export async function executeItemCreate(
 ): Promise<ItemMutationResult> {
   const vaultId = itemIdentifier(options.vaultId);
   assertUserFieldIds(options.fields);
-  await assertVaultScope(options.client, vaultId);
 
   const params: WireItemCreateParams = {
     category: options.category,
@@ -351,7 +347,6 @@ export async function executeItemPatch(
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
   assertUserFieldIds(options.operations);
-  await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
   if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
@@ -380,7 +375,6 @@ export async function executeItemArchive(
 ): Promise<ItemMutationResult> {
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
   if (item.version !== options.expectedVersion) {
     throw new GatewayOperationError("item_stale", 409);
@@ -397,7 +391,6 @@ export async function reconcileItemCreate(
   options: RawGatewayOptions & { requestId: string },
 ): Promise<ItemReconciliationResult> {
   const vaultId = itemIdentifier(options.vaultId);
-  await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, true);
   const matches: WireItem[] = [];
   for (const overview of overviews.filter((item) =>
@@ -427,7 +420,6 @@ export async function reconcileItemPatch(
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
   assertUserFieldIds(options.operations);
-  await assertVaultScope(options.client, vaultId);
   const item = await getItem(options.client, vaultId, itemId);
   if (item.version === options.expectedVersion) {
     return { item_id: item.id, reconciliation: "NOT_APPLIED", version: item.version };
@@ -443,7 +435,6 @@ export async function reconcileItemArchive(
 ): Promise<ItemReconciliationResult> {
   const vaultId = itemIdentifier(options.vaultId);
   const itemId = itemIdentifier(options.itemId);
-  await assertVaultScope(options.client, vaultId);
   const overviews = await listItems(options.client, vaultId, true);
   const overview = overviews.find((item) => item.id === itemId);
   if (!overview) return { item_id: itemId, reconciliation: "AMBIGUOUS" };
@@ -457,16 +448,6 @@ export async function reconcileItemArchive(
       item.version === options.expectedVersion ? "NOT_APPLIED" : "AMBIGUOUS",
     version: item.version,
   };
-}
-
-async function assertVaultScope(
-  client: OnePasswordCoreClient,
-  vaultId: string,
-): Promise<void> {
-  const vaults = await invokeRead(client, { kind: "vault.list" }, decodeVaultList);
-  if (vaults.length !== 1 || vaults[0]?.id !== vaultId) {
-    throw new GatewayOperationError("vault_scope_mismatch", 502);
-  }
 }
 
 async function listItems(
@@ -510,6 +491,12 @@ async function invokeRead<T>(
     return decode(await client.invoke(operation));
   } catch (error) {
     if (error instanceof GatewayOperationError) throw error;
+    if (
+      error instanceof CoreAdapterError &&
+      error.code === "onepassword_rate_limited"
+    ) {
+      throw new GatewayOperationError("onepassword_rate_limited", 429);
+    }
     if (isTimeoutError(error)) {
       throw new GatewayOperationError("onepassword_timeout", 504);
     }

@@ -23,10 +23,14 @@ const (
 	headerRequestNonce     = "x-onenod-request-nonce"
 	headerRequestSignature = "x-onenod-request-signature"
 	headerRequestTimestamp = "x-onenod-request-timestamp"
+	headerGatewayErrorCode = "x-onenod-error-code"
 	maxResponseBytes       = 1 << 20
 )
 
 var workersDevHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.workers\.dev$`)
+var safeGatewayErrorCodes = map[string]int{
+	"onepassword_rate_limited": http.StatusTooManyRequests,
+}
 
 type apiClient struct {
 	credential *requesterCredential
@@ -203,6 +207,9 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// Gateway error bodies may contain request metadata or secret-shaped
 		// upstream diagnostics. Do not attach them to CLI errors.
+		if code := response.Header.Get(headerGatewayErrorCode); isSafeGatewayErrorCode(code, response.StatusCode) {
+			return fmt.Errorf("gateway returned %s (HTTP %d)", code, response.StatusCode)
+		}
 		return fmt.Errorf("gateway returned HTTP %d", response.StatusCode)
 	}
 	if mediaType := strings.ToLower(response.Header.Get("content-type")); mediaType != "" &&
@@ -216,6 +223,11 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 		return errors.New("gateway returned invalid JSON")
 	}
 	return nil
+}
+
+func isSafeGatewayErrorCode(code string, status int) bool {
+	expected, ok := safeGatewayErrorCodes[code]
+	return ok && expected == status
 }
 
 func (client *apiClient) sign(

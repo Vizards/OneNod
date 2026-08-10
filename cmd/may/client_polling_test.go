@@ -98,3 +98,44 @@ func TestPollingCapabilityRejectsMalformedTokensBeforeNetwork(t *testing.T) {
 		t.Fatal("malformed polling capability reached the network")
 	}
 }
+
+func TestGatewayErrorHeaderExposesOnlyOneStableSafeCode(t *testing.T) {
+	t.Parallel()
+	credential, err := credentialFromSeed("error-code-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		header string
+		status int
+		want   string
+	}{
+		{header: "onepassword_rate_limited", status: http.StatusTooManyRequests, want: "gateway returned onepassword_rate_limited (HTTP 429)"},
+		{header: "onepassword_rate_limited", status: http.StatusBadGateway, want: "gateway returned HTTP 502"},
+		{header: "private_item_identifier", status: http.StatusTooManyRequests, want: "gateway returned HTTP 429"},
+		{header: "secret value", status: http.StatusTooManyRequests, want: "gateway returned HTTP 429"},
+	}
+	for _, test := range tests {
+		client, createErr := newAPIClient(
+			"https://onenod.example-account.workers.dev",
+			credential,
+			&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				response := jsonHTTPResponse(test.status, `{"ok":false}`)
+				response.Header.Set(headerGatewayErrorCode, test.header)
+				return response, nil
+			})},
+		)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		err = client.doPollingJSON(
+			context.Background(),
+			"/v1/requests/request-1/status",
+			strings.Repeat("A", 43),
+			&map[string]any{},
+		)
+		if err == nil || err.Error() != test.want {
+			t.Fatalf("error = %v, want %q", err, test.want)
+		}
+	}
+}

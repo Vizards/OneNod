@@ -61,6 +61,8 @@ type ClientOperationOutcome<T> =
 export interface CoreRunOptions {
   accountHost: string;
   deadlineAt: number;
+  observeInvocation?: (kind: OnePasswordOperation["kind"]) => void;
+  observeUpstreamRequest?: () => void;
   serviceAccountToken: string;
   signal?: AbortSignal;
 }
@@ -77,10 +79,15 @@ export class CoreAdapterError extends Error {
 
 export class OnePasswordCoreClient {
   #clientId: ClientIdJson | undefined;
+  #observeInvocation: ((kind: OnePasswordOperation["kind"]) => void) | undefined;
   #plugin: CorePlugin;
 
-  constructor(plugin: CorePlugin) {
+  constructor(
+    plugin: CorePlugin,
+    observeInvocation?: (kind: OnePasswordOperation["kind"]) => void,
+  ) {
     this.#plugin = plugin;
+    this.#observeInvocation = observeInvocation;
   }
 
   get initialized(): boolean {
@@ -121,6 +128,7 @@ export class OnePasswordCoreClient {
       }
       throw error;
     }
+    this.#observeInvocation?.(operation.kind);
     return this.#call("invoke", input, "operation.invoke");
   }
 
@@ -138,8 +146,13 @@ export class OnePasswordCoreClient {
   ): Promise<Uint8Array> {
     try {
       return await this.#plugin.callRequired(exportName, input);
-    } catch {
-      throw new CoreAdapterError(stage, "core_call_failed");
+    } catch (error) {
+      throw new CoreAdapterError(
+        stage,
+        error instanceof Error && error.message === "onepassword_rate_limited"
+          ? "onepassword_rate_limited"
+          : "core_call_failed",
+      );
     }
   }
 }
@@ -173,10 +186,13 @@ export async function runWithOnePasswordClient<T>(
         accountHost: options.accountHost,
         credentialDigest,
         deadlineAt: options.deadlineAt,
+        ...(options.observeUpstreamRequest === undefined
+          ? {}
+          : { observeUpstreamRequest: options.observeUpstreamRequest }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
       async (lease) => {
-        const client = new OnePasswordCoreClient(lease);
+        const client = new OnePasswordCoreClient(lease, options.observeInvocation);
         let operationError: unknown;
         let operationSucceeded = false;
         let value!: T;

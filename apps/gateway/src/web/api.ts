@@ -716,6 +716,9 @@ function defaultErrorMessage(status: number, code?: string): string {
   if (code === "gateway_locked") {
     return "The gateway is in Lock mode. This request was rejected without notifying an approver.";
   }
+  if (code === "onepassword_rate_limited") {
+    return "The 1Password Service Account rate limit has been reached. Try again after its quota resets.";
+  }
   if (status === 401) return "Your session has expired. Sign in again with a passkey.";
   if (status === 403) return "This action failed its security check. Reload the page and try again.";
   if (status === 404) return "The request does not exist or has already been removed.";

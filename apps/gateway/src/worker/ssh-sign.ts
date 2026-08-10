@@ -18,6 +18,13 @@ export interface SshSignDescription {
   summary: Array<{ label: string; value: string }>;
 }
 
+export interface TrustedSshAuthorization {
+  fingerprint: string;
+  itemId: string;
+  itemTitle: string;
+  itemVersion: number;
+}
+
 export function parseSshSignRequest(value: unknown): SshSignCreateRequest {
   const body = record(value);
   assertExactKeys(body, [
@@ -98,6 +105,35 @@ export function describeSshSign(
       ...describeSshOperation(
         body.operation,
       ),
+    ],
+  };
+}
+
+export function describeAuthorizedSshSign(
+  body: SshSignCreateRequest,
+  authorization: TrustedSshAuthorization,
+  payloadDigest: string,
+): SshSignDescription {
+  if (
+    authorization.itemId !== body.item_id ||
+    authorization.itemVersion !== body.expected_version ||
+    authorization.fingerprint !== body.expected_fingerprint
+  ) {
+    throw new Error("ssh_authorization_mismatch");
+  }
+  return {
+    expectedVersion: authorization.itemVersion,
+    fingerprint: authorization.fingerprint,
+    itemId: authorization.itemId,
+    itemTitle: authorization.itemTitle,
+    signatureAlgorithm: body.algorithm,
+    summary: [
+      { label: "Item", value: authorization.itemTitle },
+      { label: "Version", value: String(authorization.itemVersion) },
+      { label: "SSH key fingerprint", value: authorization.fingerprint },
+      { label: "Signature algorithm", value: body.algorithm },
+      { label: "Encrypted signing payload digest", value: payloadDigest },
+      ...describeSshOperation(body.operation),
     ],
   };
 }

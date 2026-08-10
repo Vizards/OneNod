@@ -69,6 +69,7 @@ import {
   type EncryptedPendingPayload,
 } from "./pending-payload.js";
 import {
+  describeAuthorizedSshSign,
   describeSshSign,
   parseSshSignRequest,
   sshAuthorizationProofMaterial,
@@ -2523,7 +2524,21 @@ export class ApprovalCoordinator extends DurableObject<Env> {
     }
     const releaseApproval = this.reserveNewApproval(requester.deviceId, false);
     try {
-      const metadata = await this.executeItemMetadata(body.item_id);
+      const grant = authorizationSession
+        ? this.activeSshAuthorization(
+            requester.deviceId,
+            authorizationSession,
+            body.item_id,
+            body.expected_version,
+            body.expected_fingerprint,
+          )
+        : undefined;
+      if (grant) {
+        this.assertRememberedSshSignRate(requester.deviceId, grant.id);
+      }
+      const metadata = grant
+        ? undefined
+        : await this.executeItemMetadata(body.item_id);
       if (!this.env.GATEWAY_MASTER_KEY) {
         throw new GatewayHttpError("gateway_master_key_not_configured", 503);
       }
@@ -2548,7 +2563,18 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       }
       let description;
       try {
-        description = describeSshSign(body, metadata, encrypted.digest);
+        description = grant
+          ? describeAuthorizedSshSign(
+              body,
+              {
+                fingerprint: grant.fingerprint,
+                itemId: grant.item_id,
+                itemTitle: grant.item_title,
+                itemVersion: grant.item_version,
+              },
+              encrypted.digest,
+            )
+          : describeSshSign(body, metadata!, encrypted.digest);
       } catch (error) {
         if (error instanceof Error && error.message === "item_stale") {
           throw new GatewayHttpError("item_stale", 409);
@@ -2560,18 +2586,6 @@ export class ApprovalCoordinator extends DurableObject<Env> {
           throw new GatewayHttpError("ssh_algorithm_mismatch", 400);
         }
         throw new GatewayHttpError("ssh_sign_request_invalid", 400);
-      }
-      const grant = authorizationSession
-      ? this.activeSshAuthorization(
-          requester.deviceId,
-          authorizationSession,
-          description.itemId,
-          description.expectedVersion,
-          description.fingerprint,
-        )
-      : undefined;
-      if (grant) {
-        this.assertRememberedSshSignRate(requester.deviceId, grant.id);
       }
       const initialStatus = grant ? "approved" : "pending";
       const authorizedUntil = grant ? now + AUTHORIZATION_TTL_MS : null;
@@ -6589,7 +6603,11 @@ function json(
 }
 
 function errorResponse(code: string, status: number): Response {
-  return json({ code, error: code, ok: false }, status);
+  return json(
+    { code, error: code, ok: false },
+    status,
+    { "x-onenod-error-code": code },
+  );
 }
 
 function safeErrorName(error: unknown): string {
