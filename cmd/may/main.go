@@ -22,6 +22,8 @@ type dependencies struct {
 	cloudflareTransport http.RoundTripper
 	httpClient          *http.Client
 	keychain            keychainStore
+	localOnePassword    localOnePasswordFactory
+	localSSHAgent       localSSHAgentFactory
 	platformProbe       func() (hostPlatform, error)
 	releases            releaseSource
 	stderr              io.Writer
@@ -357,7 +359,7 @@ func runCatalog(args []string, config cliConfig, deps dependencies) error {
 		gatewayRequestTimeout,
 	)
 	defer cancel()
-	response, err := searchCatalog(ctx, client, query)
+	response, err := searchCatalogWithLocalFallback(ctx, client, query, deps)
 	if err != nil {
 		return err
 	}
@@ -549,7 +551,7 @@ func resolveSecretReference(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	defer cancel()
-	response, err := searchCatalog(ctx, client, itemReference)
+	response, err := searchCatalogWithLocalFallback(ctx, client, itemReference, deps)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -610,7 +612,12 @@ func readApprovedSecret(
 	resolvedVersion := expectedVersion
 	if resolvedVersion < 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
-		resolvedVersion, err = resolveExpectedVersion(ctx, client, itemID)
+		resolvedVersion, err = resolveExpectedVersionWithLocalFallback(
+			ctx,
+			client,
+			itemID,
+			deps,
+		)
 		cancel()
 		if err != nil {
 			return "", err
@@ -637,7 +644,19 @@ func readApprovedSecret(
 	err = client.doJSON(createContext, http.MethodPost, "/v1/requests", request, &created)
 	cancelCreate()
 	if err != nil {
-		return "", err
+		fallbackContext, cancelFallback := context.WithTimeout(
+			context.Background(),
+			localFallbackOperationLimit,
+		)
+		defer cancelFallback()
+		return readSecretWithLocalFallback(
+			fallbackContext,
+			err,
+			deps,
+			itemID,
+			fieldID,
+			resolvedVersion,
+		)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
 		return "", errors.New("gateway returned an invalid request creation response")
@@ -679,7 +698,19 @@ func readApprovedSecret(
 	)
 	cancelConsume()
 	if err != nil {
-		return "", err
+		fallbackContext, cancelFallback := context.WithTimeout(
+			context.Background(),
+			localFallbackOperationLimit,
+		)
+		defer cancelFallback()
+		return readSecretWithLocalFallback(
+			fallbackContext,
+			err,
+			deps,
+			itemID,
+			fieldID,
+			resolvedVersion,
+		)
 	}
 	if !consumed.OK || consumed.RequestID != created.RequestID ||
 		normalizeStatus(consumed.Status) != "consumed" {
@@ -809,6 +840,26 @@ func resolveExpectedVersion(
 	if err != nil {
 		return 0, fmt.Errorf("resolve expected version: %w", err)
 	}
+	return expectedVersionFromCatalog(response, itemID)
+}
+
+func resolveExpectedVersionWithLocalFallback(
+	ctx context.Context,
+	client *apiClient,
+	itemID string,
+	deps dependencies,
+) (int64, error) {
+	response, err := searchCatalogWithLocalFallback(ctx, client, itemID, deps)
+	if err != nil {
+		return 0, fmt.Errorf("resolve expected version: %w", err)
+	}
+	return expectedVersionFromCatalog(response, itemID)
+}
+
+func expectedVersionFromCatalog(
+	response catalogSearchResponse,
+	itemID string,
+) (int64, error) {
 	var version int64
 	matches := 0
 	for _, item := range response.Items {
@@ -856,6 +907,9 @@ Usage:
   may configure git-signing status
   may configure git-signing apply --signing-key <key-or-path>
   may configure git-signing restore
+  may configure local-fallback status
+  may configure local-fallback apply [--account <1Password-account-name-or-UUID>]
+  may configure local-fallback restore
   may [--origin URL] preflight
   may [--origin URL] enroll [--name "MacBook"] [--new-identity]
   may [--origin URL] catalog search <query>
@@ -946,35 +1000,39 @@ func requestedHelp(args []string) (string, bool) {
 }
 
 var commandHelp = map[string]string{
-	"agent":                         "usage: may [global flags] agent <serve|status|refresh>",
-	"catalog":                       catalogSearchUsage,
-	"catalog search":                catalogSearchUsage,
-	"configure":                     "usage: may configure <ssh|git-signing> <status|apply|restore>",
-	"configure git-signing":         "usage: may configure git-signing <status|apply|restore> [--signing-key key-or-path]",
-	"configure git-signing apply":   "usage: may configure git-signing apply --signing-key <key-or-path>",
-	"configure git-signing restore": "usage: may configure git-signing restore",
-	"configure git-signing status":  "usage: may configure git-signing status",
-	"configure ssh":                 "usage: may configure ssh <status|apply|restore>",
-	"dev":                           "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
-	"dev verify-release":            "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
-	"enroll":                        "usage: may [global flags] enroll [--name \"MacBook\"] [--new-identity]",
-	"install":                       "usage: may install --origin https://<worker>.<account>.workers.dev [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
-	"item":                          "usage: may [global flags] item <create|patch|archive> ...",
-	"item archive":                  itemArchiveUsage,
-	"item create":                   itemCreateUsage,
-	"item patch":                    itemPatchUsage,
-	"operator":                      operatorUsage,
-	"operator init":                 "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
-	"operator revoke-cloudflare":    "usage: may operator revoke-cloudflare",
-	"operator update":               "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
-	"preflight":                     "usage: may [global flags] preflight",
-	"read":                          "usage: may [global flags] read [--no-newline] op://Agent/<item>/<field>",
-	"secret":                        secretReadUsage,
-	"secret read":                   secretReadUsage,
-	"ssh":                           sshPublicKeyExportUsage,
-	"ssh public-key":                sshPublicKeyExportUsage,
-	"ssh public-key export":         sshPublicKeyExportUsage,
-	"update":                        "usage: may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
-	"update check":                  "usage: may update check [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--json]",
-	"version":                       "usage: may version [--json]",
+	"agent":                            "usage: may [global flags] agent <serve|status|refresh>",
+	"catalog":                          catalogSearchUsage,
+	"catalog search":                   catalogSearchUsage,
+	"configure":                        "usage: may configure <ssh|git-signing|local-fallback> <status|apply|restore>",
+	"configure git-signing":            "usage: may configure git-signing <status|apply|restore> [--signing-key key-or-path]",
+	"configure git-signing apply":      "usage: may configure git-signing apply --signing-key <key-or-path>",
+	"configure git-signing restore":    "usage: may configure git-signing restore",
+	"configure git-signing status":     "usage: may configure git-signing status",
+	"configure local-fallback":         "usage: may configure local-fallback <status|apply|restore> [--account name-or-uuid]",
+	"configure local-fallback apply":   "usage: may configure local-fallback apply [--account name-or-uuid]",
+	"configure local-fallback restore": "usage: may configure local-fallback restore",
+	"configure local-fallback status":  "usage: may configure local-fallback status",
+	"configure ssh":                    "usage: may configure ssh <status|apply|restore>",
+	"dev":                              "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
+	"dev verify-release":               "usage: may dev verify-release --directory <path> [--artifact <basename>]...",
+	"enroll":                           "usage: may [global flags] enroll [--name \"MacBook\"] [--new-identity]",
+	"install":                          "usage: may install --origin https://<worker>.<account>.workers.dev [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"item":                             "usage: may [global flags] item <create|patch|archive> ...",
+	"item archive":                     itemArchiveUsage,
+	"item create":                      itemCreateUsage,
+	"item patch":                       itemPatchUsage,
+	"operator":                         operatorUsage,
+	"operator init":                    "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"operator revoke-cloudflare":       "usage: may operator revoke-cloudflare",
+	"operator update":                  "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"preflight":                        "usage: may [global flags] preflight",
+	"read":                             "usage: may [global flags] read [--no-newline] op://Agent/<item>/<field>",
+	"secret":                           secretReadUsage,
+	"secret read":                      secretReadUsage,
+	"ssh":                              sshPublicKeyExportUsage,
+	"ssh public-key":                   sshPublicKeyExportUsage,
+	"ssh public-key export":            sshPublicKeyExportUsage,
+	"update":                           "usage: may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"update check":                     "usage: may update check [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--json]",
+	"version":                          "usage: may version [--json]",
 }

@@ -87,7 +87,7 @@ func loadSSHIdentity(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	defer cancel()
-	response, err := searchCatalog(ctx, client, itemID)
+	response, err := searchCatalogWithLocalFallback(ctx, client, itemID, deps)
 	if err != nil {
 		return sshCatalogIdentity{}, err
 	}

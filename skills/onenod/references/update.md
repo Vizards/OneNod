@@ -44,6 +44,12 @@ is exceptional and can trigger a separate macOS security prompt.
 Repeat local update on every requester Mac. Preserve unrelated Skill discovery
 paths and stop if the CLI reports an unrecognized collision.
 
+Local updates preserve the non-secret local quota-fallback binding and do not
+rewrite the human-owned 1Password `agent.toml`. After changing 1Password
+accounts, renaming or recreating `Agent`, or changing its SSH inventory, run
+`may configure local-fallback status` and then rerun the guided apply flow as
+needed.
+
 ## Deployment update
 
 Remote update is another human-owned production ceremony. Before Cloudflare

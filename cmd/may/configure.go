@@ -67,15 +67,17 @@ type configurationReceipt struct {
 
 func runConfigure(args []string, deps dependencies) error {
 	if len(args) < 2 {
-		return errors.New("usage: may configure <ssh|git-signing> <status|apply|restore>")
+		return errors.New("usage: may configure <ssh|git-signing|local-fallback> <status|apply|restore>")
 	}
 	switch args[0] {
 	case "ssh":
 		return runConfigureSSH(args[1:], deps)
 	case "git-signing":
 		return runConfigureGitSigning(args[1:], deps)
+	case "local-fallback":
+		return runConfigureLocalFallback(args[1:], deps)
 	default:
-		return errors.New("usage: may configure <ssh|git-signing> <status|apply|restore>")
+		return errors.New("usage: may configure <ssh|git-signing|local-fallback> <status|apply|restore>")
 	}
 }
 

@@ -65,3 +65,22 @@ blindly repeat an operation whose outcome is unknown.
 
 If Lock mode is active, stop. It intentionally rejects requester operations
 without notifying an approver; a human must leave Lock mode with a Passkey.
+
+## When the Service Account quota is exhausted
+
+If the human configured local quota fallback on this Mac, keep using the same
+`may`, `ssh`, or Git command. An authenticated quota-exhaustion response from
+the Gateway makes `may` request approval through the local 1Password app for
+that exact read or signature. Do not invoke `op`, alter the Origin, or retry
+through another tool.
+
+This fallback can serve catalog metadata, one approved field value, or an
+SSH/Git signature. Mutations remain unavailable until the remote Service
+Account quota recovers. If the local 1Password app is locked, absent, or not
+authorized, report both the remote quota condition and the local failure; do
+not weaken the trigger or bypass OneNod.
+
+If a PWA-approved request reached remote execution before the quota error was
+known, Gateway Activity keeps that truthful remote failure even when the local
+operation subsequently succeeds. Use `may`'s local-success diagnostic as the
+result of that invocation; do not retry merely to change the Activity entry.

@@ -32,6 +32,22 @@ var safeGatewayErrorCodes = map[string]int{
 	"onepassword_rate_limited": http.StatusTooManyRequests,
 }
 
+type gatewayHTTPError struct {
+	Code   string
+	Status int
+}
+
+func (value *gatewayHTTPError) Error() string {
+	return fmt.Sprintf("gateway returned %s (HTTP %d)", value.Code, value.Status)
+}
+
+func isGatewayErrorCode(err error, code string) bool {
+	var gatewayError *gatewayHTTPError
+	expectedStatus, supported := safeGatewayErrorCodes[code]
+	return supported && errors.As(err, &gatewayError) &&
+		gatewayError.Code == code && gatewayError.Status == expectedStatus
+}
+
 type apiClient struct {
 	credential *requesterCredential
 	httpClient *http.Client
@@ -207,8 +223,9 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// Gateway error bodies may contain request metadata or secret-shaped
 		// upstream diagnostics. Do not attach them to CLI errors.
-		if code := response.Header.Get(headerGatewayErrorCode); isSafeGatewayErrorCode(code, response.StatusCode) {
-			return fmt.Errorf("gateway returned %s (HTTP %d)", code, response.StatusCode)
+		code := response.Header.Get(headerGatewayErrorCode)
+		if isSafeGatewayErrorCode(code, response.StatusCode) {
+			return &gatewayHTTPError{Code: code, Status: response.StatusCode}
 		}
 		return fmt.Errorf("gateway returned HTTP %d", response.StatusCode)
 	}

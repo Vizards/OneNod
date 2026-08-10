@@ -145,6 +145,48 @@ prompt, hand it to the human; if it does not, use `may preflight`, enrollment
 status, and `may agent status` as the evidence instead of treating silence as a
 failed install.
 
+## Optional local quota fallback
+
+OneNod normally sends every request through the Gateway. On each requester Mac,
+the human may additionally configure a local emergency path for the exact case
+where the Gateway reports that its 1Password Service Account quota is
+exhausted. This does not make local approval a substitute for an unreachable,
+denied, locked, revoked, timed-out, or otherwise unhealthy Gateway.
+
+This option requires the 1Password desktop app, signed in to the same account
+that owns `Agent`. It does not require 1Password CLI. In **1Password Settings >
+Developer**, the human must enable both **Integrate with other apps** and the
+**SSH Agent**, then make the `Agent` Vault available to that SSH Agent in:
+
+```text
+~/.config/1Password/ssh/agent.toml
+```
+
+Run `may configure local-fallback apply`. The guided flow asks for the
+1Password account name shown in the desktop app or its account UUID, resolves
+the unique `Agent` Vault, and prints the exact entry to add without editing the
+human-owned file. It has this shape:
+
+```toml
+[[ssh-keys]]
+vault = "<resolved Agent Vault ID>"
+account = "<1Password account name or UUID>"
+```
+
+Preserve unrelated entries. After the human confirms the edit, `may` verifies
+local Desktop SDK access and checks every available Agent SSH key against the
+native 1Password SSH Agent by public fingerprint before saving the non-secret
+local binding. If the Vault has no SSH keys yet, it can verify only that the
+native Agent is reachable; rerun the apply flow after adding keys.
+
+The Desktop SDK authorization prompt covers the selected 1Password account;
+OneNod's own code restricts reads to the resolved `Agent` Vault ID. This is a
+separate, explicit trust choice. It helps only while a human can approve
+1Password on that same Mac, so it does not replace remote PWA approval while
+the human is away. Disable the OneNod path with `may configure local-fallback
+restore`; that command deliberately leaves the user-owned `agent.toml` and
+1Password settings unchanged.
+
 ## Optional OpenSSH and Git signing
 
 Installation starts the fixed SSH Agent but does not change OpenSSH or Git.
@@ -183,4 +225,5 @@ edit only that exact Host mapping. Never infer a mapping from an item title.
 | PWA registration and push subscription | Per browser/PWA installation |
 | Local install, enrollment, and local update | Per macOS user on each requester Mac |
 | Optional OpenSSH or Git signing integration | Per user and Mac that opts in |
+| Optional local quota fallback and `agent.toml` entry | Per user and Mac that opts in |
 | Human batch copy into `Agent` | Once per selected batch |

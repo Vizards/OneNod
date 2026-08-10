@@ -55,6 +55,7 @@ func TestCommandHelpRunsBeforeConfigurationCredentialsAndNetwork(t *testing.T) {
 		{"agent", "status", "--help"},
 		{"configure", "ssh", "--help"},
 		{"configure", "git-signing", "apply", "--help"},
+		{"configure", "local-fallback", "apply", "--help"},
 		{"update", "check", "--help"},
 		{"dev", "verify-release", "--help"},
 		{"operator", "init", "--help"},

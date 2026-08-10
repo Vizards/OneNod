@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Route the OneNod lifecycle for deploying, installing, updating, operating, troubleshooting, and migrating 1Password credentials for remote coding Agents. Use for the human-controlled Cloudflare ceremony, requester or PWA enrollment, optional SSH integration, full-stack updates, approved secret or SSH operations, and reversible batch copies into the Agent Vault.
+description: Route the OneNod lifecycle for deploying, installing, updating, operating, troubleshooting, and migrating 1Password credentials for remote coding Agents. Use for the human-controlled Cloudflare ceremony, requester or PWA enrollment, optional SSH and local quota-fallback integration, full-stack updates, approved secret or SSH operations, and reversible batch copies into the Agent Vault.
 ---
 
 # OneNod
@@ -22,7 +22,7 @@ Load one primary reference:
 | Route | Load when |
 | --- | --- |
 | [Common](references/common.md) | Explain trust boundaries, `may` versus `op`, Passkeys, Lock mode, or SSH semantics |
-| [Setup](references/setup.md) | Deploy a Gateway, install or enroll a Mac, add a PWA, or opt into SSH/Git integration |
+| [Setup](references/setup.md) | Deploy a Gateway, install or enroll a Mac, add a PWA, or opt into SSH/Git or local quota-fallback integration |
 | [Update](references/update.md) | Reconcile the CLI, helper, Skill, Gateway, Executor, and PWA |
 | [Migration](references/migration.md) | A human asks to copy a selected credential batch into `Agent` and cut consumers over |
 | [Daily use](references/daily-use.md) | Use credentials, mutate items, sign over SSH, or troubleshoot a normal request |
@@ -50,3 +50,6 @@ For migration, load the router plus only the applicable leaf:
   output or storage.
 - Reconcile an unknown mutation result before retrying. A denial, revocation,
   timeout, or Lock-mode response is not a reason to switch tools or Origins.
+  If the human opted into local quota fallback, `may` itself may request local
+  1Password approval only when the Gateway returns its authenticated Service
+  Account quota-exhaustion error; the Agent still does not invoke `op`.

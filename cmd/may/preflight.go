@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -28,8 +29,14 @@ type requesterPreflightReport struct {
 	} `json:"gateway"`
 	GatewayCrypto string `json:"gateway_crypto"`
 	HumanIdentity string `json:"human_identity"`
-	Origin        string `json:"origin"`
-	Requester     struct {
+	LocalFallback struct {
+		AgentConfig string `json:"agent_config"`
+		Configured  bool   `json:"configured"`
+		DesktopApp  string `json:"desktop_app"`
+		SSHAgent    string `json:"ssh_agent"`
+	} `json:"local_fallback"`
+	Origin    string `json:"origin"`
+	Requester struct {
 		DeviceID             string `json:"device_id,omitempty"`
 		DisplayName          string `json:"display_name,omitempty"`
 		LocalCredential      string `json:"local_credential"`
@@ -121,6 +128,23 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 	report.Executor.Declared = version.Components.Executor.Declared
 	report.Executor.Runtime = "declared_cloudflare_worker"
 	report.Executor.Version = version.Components.Executor.Version
+	report.LocalFallback.DesktopApp = localDesktopAppStatus()
+	report.LocalFallback.AgentConfig = "not detected"
+	if configPath, configPathErr := onePasswordSSHAgentConfigPath(); configPathErr == nil {
+		if _, found, readErr := readOptionalRegularFile(configPath, 1<<20); readErr == nil && found {
+			report.LocalFallback.AgentConfig = "present"
+		}
+	}
+	report.LocalFallback.SSHAgent = "not detected"
+	if socketPath, socketErr := onePasswordSSHAgentSocketPath(); socketErr == nil {
+		if _, statErr := os.Lstat(socketPath); statErr == nil {
+			report.LocalFallback.SSHAgent = "present"
+		}
+	}
+	_, report.LocalFallback.Configured, err = readLocalFallbackConfig()
+	if err != nil {
+		return err
+	}
 	report.Requester.LocalCredential = "absent"
 	credential, found, err := deps.keychain.LoadIfPresent()
 	if err != nil {

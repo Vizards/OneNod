@@ -269,13 +269,14 @@ func refreshSSHIdentityCache(
 	config cliConfig,
 	deps dependencies,
 ) ([]servedSSHIdentity, error) {
-	return refreshSSHIdentityCacheAt(sshIdentityCachePath(), config, deps)
+	return refreshSSHIdentityCacheAt(sshIdentityCachePath(), config, deps, true)
 }
 
 func refreshSSHIdentityCacheAt(
 	cachePath string,
 	config cliConfig,
 	deps dependencies,
+	allowLocalFallback bool,
 ) ([]servedSSHIdentity, error) {
 	credential, err := deps.keychain.Load()
 	if err != nil {
@@ -287,7 +288,12 @@ func refreshSSHIdentityCacheAt(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sshIdentityRefreshRequestTimeout)
 	defer cancel()
-	response, err := searchCatalog(ctx, client, "")
+	var response catalogSearchResponse
+	if allowLocalFallback {
+		response, err = searchCatalogWithLocalFallback(ctx, client, "", deps)
+	} else {
+		response, err = searchCatalog(ctx, client, "")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +327,7 @@ func newSSHIdentityLoader(
 		defer mutex.Unlock()
 		identities, err := readSSHIdentityCache(cachePath)
 		if errors.Is(err, os.ErrNotExist) {
-			return refreshSSHIdentityCacheAt(cachePath, config, deps)
+			return refreshSSHIdentityCacheAt(cachePath, config, deps, false)
 		}
 		return identities, err
 	}
@@ -885,6 +891,25 @@ func requestSshSignature(
 	err = client.doJSON(createContext, http.MethodPost, "/v1/requests", request, &created)
 	cancelCreate()
 	if err != nil {
+		if isGatewayErrorCode(err, "onepassword_rate_limited") {
+			fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting approval from the local 1Password SSH Agent on this Mac.")
+			fallbackContext, cancelFallback := context.WithTimeout(
+				ctx,
+				localFallbackOperationLimit,
+			)
+			defer cancelFallback()
+			result, localErr := signWithConfiguredLocalSSHAgent(
+				fallbackContext,
+				deps,
+				identity,
+				algorithm,
+				data,
+			)
+			if localErr != nil {
+				return sshSignConsumeResponse{}, localFallbackUnavailable(err, localErr)
+			}
+			return result, nil
+		}
 		return sshSignConsumeResponse{}, fmt.Errorf("create SSH approval request failed: %w", err)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
@@ -939,6 +964,25 @@ func requestSshSignature(
 	)
 	cancelConsume()
 	if err != nil {
+		if isGatewayErrorCode(err, "onepassword_rate_limited") {
+			fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting approval from the local 1Password SSH Agent on this Mac.")
+			fallbackContext, cancelFallback := context.WithTimeout(
+				ctx,
+				localFallbackOperationLimit,
+			)
+			defer cancelFallback()
+			result, localErr := signWithConfiguredLocalSSHAgent(
+				fallbackContext,
+				deps,
+				identity,
+				algorithm,
+				data,
+			)
+			if localErr != nil {
+				return sshSignConsumeResponse{}, localFallbackUnavailable(err, localErr)
+			}
+			return result, nil
+		}
 		return sshSignConsumeResponse{}, fmt.Errorf(
 			"consume SSH request %s failed: %w",
 			created.RequestID,
