@@ -69,9 +69,22 @@ Any registered Passkey may register another PWA installation. PWA viewing
 sessions and push subscriptions are per installation. Losing every Passkey
 requires rebuilding the Gateway in the first release.
 
+Passkeys identify the OneNod owner, not a Mac or PWA installation. The label
+shown under **Owner passkeys** is management metadata only; it does not rename
+the WebAuthn account, bind a synced Passkey to one device, or rename the entry
+inside a password manager. A password manager may derive that entry's title
+from the actual `workers.dev` RP ID, including the user's Cloudflare account
+subdomain. PWA installations and their push subscriptions are registered and
+revoked separately from owner Passkeys.
+
+Adding or revoking an owner Passkey requires fresh Passkey authentication, and
+the Gateway refuses to revoke the last registered Passkey. To replace one,
+register and successfully use the new Passkey before revoking the old one.
+
 Lock mode rejects new and pending operations without push, removes unconsumed
-encrypted payloads, and invalidates remembered SSH authority. Leaving it
-requires a registered Passkey.
+encrypted payloads, and invalidates remembered SSH authority. Entering Lock
+mode only removes authority and therefore does not require a Passkey; leaving
+it expands authority again and requires a registered Passkey.
 
 ## Installed surfaces
 

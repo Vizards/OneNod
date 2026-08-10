@@ -19,13 +19,13 @@ Do not reveal private material or infer a role from an item title alone.
 
 ## Refresh and reconcile
 
-On every requester Mac, run the fixed requester's preflight, refresh the SSH
-Agent's public inventory when an immediate refresh is needed, and inspect Agent
-status. Normal identity listing refreshes a five-minute inventory cache
-opportunistically; an explicit refresh is diagnostic, not a daily prerequisite.
-Compare fingerprints with the human-selected batch. Missing, duplicate,
-unsupported, or changed keys stop automatic cutover only for the affected
-consumer.
+On every requester Mac, run the fixed requester's preflight, run
+`may agent refresh` after the selected SSH Key batch is copied or changed, and
+inspect Agent status. The verified public inventory remains local until an
+explicit refresh; normal identity listing does not contact 1Password merely
+because time passed. Compare fingerprints with the human-selected batch.
+Missing, duplicate, unsupported, or changed keys stop automatic cutover only
+for the affected consumer.
 
 OpenSSH authentication and Git commit/tag SSH signing are independent opt-ins.
 Use the CLI's corresponding status and apply capabilities only for consumers

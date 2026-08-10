@@ -24,6 +24,11 @@ human-selected canonical Release. Once running, `may` verifies the attributed
 Release set before installing or deploying it; do not replace that path with a
 locally built binary or an unverified third-party package.
 
+The first preview is not Developer ID signed or notarized. macOS may therefore
+require the human to allow the first verified binary through Gatekeeper. Never
+remove quarantine metadata, ad-hoc sign the downloaded binary, disable
+Gatekeeper, or otherwise bypass that decision for the human.
+
 Stable is the default release channel. A human who is deliberately testing a
 candidate may select `beta` or `alpha` through the CLI's `--channel` option.
 That selection is a risk ceiling: `beta` may consume beta or stable Releases,
@@ -73,6 +78,8 @@ The Gateway and Executor prompts offer cryptographically randomized Worker
 names by default. Pressing Enter accepts those names. A Worker name explicitly
 typed by the human is the complete final name and receives no automatic suffix.
 The human should inspect the derived public `workers.dev` Origin in the plan.
+Random naming only reduces predictable discovery; it is not an authentication
+or authorization boundary.
 
 The bootstrap URL carries a one-time secret in its fragment. The CLI opens it
 directly rather than using the clipboard; the PWA removes the fragment before
@@ -127,6 +134,16 @@ Open a new login shell before diagnosing a newly added short command.
 
 To add an approver browser or Home Screen PWA, open the public Origin and
 authenticate with any registered Passkey. Another live PWA is not required.
+Notification permission and the OneNod push subscription are per installation
+and optional; repeat **Enable notifications** in every browser or Home Screen
+PWA where push is wanted.
+
+Installing the helper or enrolling a requester does not guarantee a macOS
+password prompt. A new requester can be added silently while the login
+Keychain is already unlocked. If macOS does show a Keychain or Gatekeeper
+prompt, hand it to the human; if it does not, use `may preflight`, enrollment
+status, and `may agent status` as the evidence instead of treating silence as a
+failed install.
 
 ## Optional OpenSSH and Git signing
 
@@ -144,6 +161,12 @@ worktree, command, or system-scoped values are never rewritten. Run
 `may configure git-signing status` inside the repository that will be used for
 acceptance and review the reported effective scope; an intentional higher-scope
 override must be resolved separately before treating the cutover as complete.
+
+OneNod does not own `gpg.ssh.allowedSignersFile` or the trust entries inside
+that file. It is needed for local verification, not for creating a signature.
+Preserve it when valid; if it points into a retired product directory, place a
+verified copy of that public trust file at a vendor-neutral user path, update
+the Git setting, and verify a known signed commit before removing the old path.
 
 The global `IdentityAgent` cutover does not rewrite per-Host `IdentityFile` or
 `IdentitiesOnly` selectors. `may configure ssh status` reports selectors found

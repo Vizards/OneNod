@@ -26,13 +26,13 @@ exists, the CLI leaves state unchanged and reports that it is waiting for one.
 Use an explicit `--channel` only when the human has asked to join or leave a
 prerelease channel.
 
-For a branch-bound E2E candidate, use the exact immutable version selected by
-the human, for example `may update --version 0.0.2-alpha.7`. `--version` and
+When the human deliberately selects an exact immutable prerelease for
+evaluation, pass that version to `may update --version`. `--version` and
 `--channel` are mutually exclusive. An exact selection applies only to that
 operation; the resulting receipt records the version's inferred risk channel,
 so later unqualified updates follow that channel rather than remaining pinned.
-Never substitute a locally built binary for this test because it does not
-exercise OneNod's Release, provenance, installer, or deployment-bundle path.
+Never substitute a locally built binary for a Release-path evaluation because
+it does not exercise OneNod's provenance, installer, or deployment bundle.
 
 ## Local update
 
