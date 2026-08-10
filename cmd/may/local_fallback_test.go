@@ -23,12 +23,16 @@ import (
 
 type fakeLocalOnePasswordBackend struct {
 	catalog      catalogSearchResponse
+	catalogCtx   context.Context
+	clientCtx    context.Context
+	clientCtxErr error
 	readCalls    int
 	readExpected int64
 	readField    string
 	readItem     string
 	readVault    string
 	resolveCalls int
+	resolveCtxs  []context.Context
 	searchCalls  int
 	searchQuery  string
 	searchVault  string
@@ -38,18 +42,23 @@ type fakeLocalOnePasswordBackend struct {
 }
 
 func (backend *fakeLocalOnePasswordBackend) ResolveAgentVault(
-	context.Context,
+	ctx context.Context,
 ) (localFallbackVault, error) {
 	backend.resolveCalls++
+	backend.resolveCtxs = append(backend.resolveCtxs, ctx)
 	return backend.vault, backend.vaultError
 }
 
 func (backend *fakeLocalOnePasswordBackend) SearchCatalog(
-	_ context.Context,
+	ctx context.Context,
 	vaultID string,
 	query string,
 ) (catalogSearchResponse, error) {
 	backend.searchCalls++
+	backend.catalogCtx = ctx
+	if backend.clientCtx != nil {
+		backend.clientCtxErr = backend.clientCtx.Err()
+	}
 	backend.searchVault = vaultID
 	backend.searchQuery = query
 	return backend.catalog, nil
@@ -89,6 +98,21 @@ func (agent *fakeLocalSSHAgent) SignWithFlags(
 
 func (agent *fakeLocalSSHAgent) Close() error { return nil }
 
+type lineCountingReader struct {
+	reader io.Reader
+	lines  int
+}
+
+func (reader *lineCountingReader) Read(buffer []byte) (int, error) {
+	count, err := reader.reader.Read(buffer)
+	for _, value := range buffer[:count] {
+		if value == '\n' {
+			reader.lines++
+		}
+	}
+	return count, err
+}
+
 func TestLocalFallbackConfigurationGuidesAndVerifiesAgentVault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -110,11 +134,17 @@ func TestLocalFallbackConfigurationGuidesAndVerifiesAgentVault(t *testing.T) {
 			Version: identity.catalog.Version,
 		}}},
 	}
+	var clientContexts []context.Context
+	input := &lineCountingReader{reader: strings.NewReader("y\ny\n")}
+	factoryPromptLines := -1
 	var output strings.Builder
 	err := runConfigureLocalFallback(
 		[]string{"apply", "--account", "Test Family"},
 		dependencies{
-			localOnePassword: func(context.Context, string) (localOnePasswordBackend, error) {
+			localOnePassword: func(ctx context.Context, _ string) (localOnePasswordBackend, error) {
+				factoryPromptLines = input.lines
+				clientContexts = append(clientContexts, ctx)
+				backend.clientCtx = ctx
 				return backend, nil
 			},
 			localSSHAgent: func(context.Context) (localSSHAgent, error) {
@@ -125,7 +155,7 @@ func TestLocalFallbackConfigurationGuidesAndVerifiesAgentVault(t *testing.T) {
 					signer: signer,
 				}, nil
 			},
-			stdin:  strings.NewReader("y\ny\n"),
+			stdin:  input,
 			stderr: io.Discard,
 			stdout: &output,
 		},
@@ -133,10 +163,23 @@ func TestLocalFallbackConfigurationGuidesAndVerifiesAgentVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(backend.resolveCtxs) != 1 || backend.catalogCtx == nil || backend.resolveCtxs[0] != backend.catalogCtx {
+		t.Fatal("Agent Vault resolution and catalog validation did not share one post-confirmation operation context")
+	}
+	if len(clientContexts) != 1 {
+		t.Fatalf("configuration initialized the SDK an unexpected number of times: %d", len(clientContexts))
+	}
+	if factoryPromptLines != 2 {
+		t.Fatalf("SDK initialized before all human configuration prompts completed: %d lines", factoryPromptLines)
+	}
+	if backend.clientCtxErr != nil {
+		t.Fatalf("SDK client context was canceled before catalog validation: %v", backend.clientCtxErr)
+	}
 	for _, expected := range []string{
 		"onepassword_rate_limited",
+		"Integrate with 1Password SDKs",
 		agentConfig,
-		"vault = \"" + vaultID + "\"",
+		"vault = \"Agent\"",
 		"account = \"Test Family\"",
 		"Verified 1 Agent Vault SSH key",
 		"must continue to call may",

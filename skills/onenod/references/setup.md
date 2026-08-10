@@ -155,29 +155,33 @@ denied, locked, revoked, timed-out, or otherwise unhealthy Gateway.
 
 This option requires the 1Password desktop app, signed in to the same account
 that owns `Agent`. It does not require 1Password CLI. In **1Password Settings >
-Developer**, the human must enable both **Integrate with other apps** and the
-**SSH Agent**, then make the `Agent` Vault available to that SSH Agent in:
+Developer**, the human must enable both **Integrate with 1Password SDKs** and
+the **SSH Agent**, then make the `Agent` Vault available to that SSH Agent in:
 
 ```text
 ~/.config/1Password/ssh/agent.toml
 ```
 
 Run `may configure local-fallback apply`. The guided flow asks for the
-1Password account name shown in the desktop app or its account UUID, resolves
-the unique `Agent` Vault, and prints the exact entry to add without editing the
-human-owned file. It has this shape:
+1Password account name shown in the desktop app or its account UUID, then
+prints the exact entry to add without editing the human-owned file. It has this
+shape:
 
 ```toml
 [[ssh-keys]]
-vault = "<resolved Agent Vault ID>"
+vault = "Agent"
 account = "<1Password account name or UUID>"
 ```
 
-Preserve unrelated entries. After the human confirms the edit, `may` verifies
-local Desktop SDK access and checks every available Agent SSH key against the
-native 1Password SSH Agent by public fingerprint before saving the non-secret
-local binding. If the Vault has no SSH keys yet, it can verify only that the
-native Agent is reachable; rerun the apply flow after adding keys.
+Preserve unrelated entries. `agent.toml` officially supports Vault and account
+names or IDs. After the human confirms the edit, `may` requests Desktop SDK
+authorization, resolves exactly one `Agent` Vault in the selected account, and
+immediately checks every available Agent SSH key against the native 1Password
+SSH Agent by public fingerprint before saving the non-secret local binding. No
+SDK client is kept across the human editing step, so an automatically locking
+1Password app cannot invalidate an in-progress client while the CLI waits. If
+the Vault has no SSH keys yet, `may` can verify only that the native Agent is
+reachable; rerun the apply flow after adding keys.
 
 The Desktop SDK authorization prompt covers the selected 1Password account;
 OneNod's own code restricts reads to the resolved `Agent` Vault ID. This is a

@@ -28,6 +28,7 @@ const (
 	localFallbackConfigFileName = "local-fallback.json"
 	localFallbackConfigSchema   = 1
 	localFallbackOperationLimit = 2 * time.Minute
+	localFallbackSDKSetting     = "Integrate with 1Password SDKs"
 	localFallbackVaultTitle     = "Agent"
 	localNotesFieldID           = "com.github.vizards.onenod.notes"
 	maxLocalFallbackConfigBytes = 4096
@@ -138,37 +139,11 @@ func applyLocalFallbackConfiguration(args []string, deps dependencies) error {
 	fmt.Fprintln(deps.stdout, "Local 1Password quota-fallback plan:")
 	fmt.Fprintf(deps.stdout, "  Account: %s\n", selectedAccount)
 	fmt.Fprintf(deps.stdout, "  Vault: %s (fixed OneNod Vault; resolved to an ID before saving)\n", localFallbackVaultTitle)
+	fmt.Fprintf(deps.stdout, "  1Password prerequisite: Settings > Developer > %s must be enabled\n", localFallbackSDKSetting)
 	fmt.Fprintln(deps.stdout, "  Secret reads: official 1Password Desktop SDK, only after the Gateway reports onepassword_rate_limited")
 	fmt.Fprintln(deps.stdout, "  SSH/Git signing: local 1Password SSH Agent, only after the same exact Gateway error")
 	fmt.Fprintln(deps.stdout, "  Item create, patch, archive, denial, Lock mode, revocation, timeout, network failure, and generic 5xx responses never fall back.")
 	fmt.Fprintln(deps.stdout, "  1Password authorizes the SDK process to the selected account for up to ten minutes of inactivity; OneNod restricts its code path to the resolved Agent Vault.")
-	confirmed, err := promptYesNo(
-		deps.stdin,
-		deps.stdout,
-		"Request local 1Password authorization and verify the Agent Vault now?",
-		false,
-	)
-	if err != nil {
-		return err
-	}
-	if !confirmed {
-		return errors.New("local 1Password fallback was not configured")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), localFallbackOperationLimit)
-	defer cancel()
-	backend, err := localOnePasswordFactoryFor(deps)(ctx, selectedAccount)
-	if err != nil {
-		return fmt.Errorf("open local 1Password Desktop SDK integration failed: %w", err)
-	}
-	vault, err := backend.ResolveAgentVault(ctx)
-	if err != nil {
-		return err
-	}
-	if vault.Title != localFallbackVaultTitle || !onePasswordVaultIDPattern.MatchString(vault.ID) {
-		return errors.New("local 1Password integration returned an invalid Agent Vault identity")
-	}
-
 	configPath, err := onePasswordSSHAgentConfigPath()
 	if err != nil {
 		return err
@@ -176,9 +151,9 @@ func applyLocalFallbackConfiguration(args []string, deps dependencies) error {
 	fmt.Fprintln(deps.stdout, "Before continuing, make the Agent Vault available to the 1Password SSH Agent.")
 	fmt.Fprintf(deps.stdout, "Add this entry to %s without removing unrelated entries:\n\n", configPath)
 	fmt.Fprintln(deps.stdout, "[[ssh-keys]]")
-	fmt.Fprintf(deps.stdout, "vault = %s\n", strconv.Quote(vault.ID))
+	fmt.Fprintf(deps.stdout, "vault = %s\n", strconv.Quote(localFallbackVaultTitle))
 	fmt.Fprintf(deps.stdout, "account = %s\n\n", strconv.Quote(selectedAccount))
-	fmt.Fprintln(deps.stdout, "In 1Password Settings > Developer, also enable both the SSH Agent and Integrate with other apps. Lock and unlock 1Password if it does not notice a newly created agent.toml file.")
+	fmt.Fprintf(deps.stdout, "In 1Password Settings > Developer, also enable both the SSH Agent and %s. Lock and unlock 1Password if it does not notice a newly created agent.toml file.\n", localFallbackSDKSetting)
 	configured, err := promptYesNo(
 		deps.stdin,
 		deps.stdout,
@@ -197,11 +172,52 @@ func applyLocalFallbackConfiguration(args []string, deps dependencies) error {
 		return fmt.Errorf("1Password SSH Agent config does not exist at %s", configPath)
 	}
 
-	sshCatalog, err := backend.SearchCatalog(ctx, vault.ID, "")
+	confirmed, err := promptYesNo(
+		deps.stdin,
+		deps.stdout,
+		"Request local 1Password authorization and verify the Agent Vault now?",
+		false,
+	)
 	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errors.New("local 1Password fallback was not configured")
+	}
+
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	defer clientCancel()
+	backend, err := localOnePasswordFactoryFor(deps)(clientCtx, selectedAccount)
+	if err != nil {
+		return fmt.Errorf(
+			"open local 1Password Desktop SDK integration failed; verify Settings > Developer > %s is enabled: %w",
+			localFallbackSDKSetting,
+			err,
+		)
+	}
+	validationCtx, validationCancel := context.WithTimeout(
+		context.Background(),
+		localFallbackOperationLimit,
+	)
+	defer validationCancel()
+	vault, err := backend.ResolveAgentVault(validationCtx)
+	if err != nil {
+		if errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
+			return errors.New("resolve the local Agent Vault through 1Password timed out")
+		}
+		return err
+	}
+	if vault.Title != localFallbackVaultTitle || !onePasswordVaultIDPattern.MatchString(vault.ID) {
+		return errors.New("local 1Password integration returned an invalid Agent Vault identity")
+	}
+	sshCatalog, err := backend.SearchCatalog(validationCtx, vault.ID, "")
+	if err != nil {
+		if errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
+			return errors.New("read Agent SSH inventory through the local 1Password SDK timed out")
+		}
 		return fmt.Errorf("read Agent SSH inventory through the local 1Password SDK failed: %w", err)
 	}
-	if err := verifyNativeSSHAgentInventory(ctx, deps, sshCatalog.Items); err != nil {
+	if err := verifyNativeSSHAgentInventory(validationCtx, deps, sshCatalog.Items); err != nil {
 		return err
 	}
 	config := localFallbackConfig{
@@ -377,13 +393,14 @@ func newSDKLocalOnePasswordBackend(
 func (backend *sdkLocalOnePasswordBackend) ResolveAgentVault(
 	ctx context.Context,
 ) (localFallbackVault, error) {
+	defer runtime.KeepAlive(backend.client)
 	decryptDetails := true
 	vaults, err := backend.client.Vaults().List(
 		ctx,
 		onepassword.VaultListParams{DecryptDetails: &decryptDetails},
 	)
 	if err != nil {
-		return localFallbackVault{}, errors.New("list local 1Password Vaults failed")
+		return localFallbackVault{}, fmt.Errorf("list local 1Password Vaults failed: %w", err)
 	}
 	matches := make([]onepassword.VaultOverview, 0, 1)
 	for _, vault := range vaults {
@@ -402,6 +419,7 @@ func (backend *sdkLocalOnePasswordBackend) SearchCatalog(
 	vaultID string,
 	query string,
 ) (catalogSearchResponse, error) {
+	defer runtime.KeepAlive(backend.client)
 	if !onePasswordVaultIDPattern.MatchString(vaultID) {
 		return catalogSearchResponse{}, errors.New("local Agent Vault ID is invalid")
 	}
@@ -410,7 +428,7 @@ func (backend *sdkLocalOnePasswordBackend) SearchCatalog(
 	)
 	overviews, err := backend.client.Items().List(ctx, vaultID, filter)
 	if err != nil {
-		return catalogSearchResponse{}, errors.New("list local Agent Vault items failed")
+		return catalogSearchResponse{}, fmt.Errorf("list local Agent Vault items failed: %w", err)
 	}
 	normalized := strings.ToLower(strings.TrimSpace(query))
 	limit := maxLocalCatalogResults
@@ -437,7 +455,7 @@ func (backend *sdkLocalOnePasswordBackend) SearchCatalog(
 	for _, overview := range matches {
 		item, err := backend.client.Items().Get(ctx, vaultID, overview.ID)
 		if err != nil {
-			return catalogSearchResponse{}, errors.New("read local Agent Vault item metadata failed")
+			return catalogSearchResponse{}, fmt.Errorf("read local Agent Vault item metadata failed: %w", err)
 		}
 		projected, err := projectLocalCatalogItem(item, vaultID)
 		if err != nil {
@@ -455,6 +473,7 @@ func (backend *sdkLocalOnePasswordBackend) ReadSecret(
 	fieldID string,
 	expectedVersion int64,
 ) (string, error) {
+	defer runtime.KeepAlive(backend.client)
 	if !onePasswordVaultIDPattern.MatchString(vaultID) {
 		return "", errors.New("local Agent Vault ID is invalid")
 	}
