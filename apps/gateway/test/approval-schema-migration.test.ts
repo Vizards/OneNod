@@ -323,6 +323,12 @@ test("alpha.20 terminal state upgrades while preserving identities and retiring 
 
   assert.deepEqual(preservedState(database), before);
   assert.equal(
+    database.prepare(
+      "SELECT legacy_ssh_signed_consume FROM requests WHERE id = 'request-a'",
+    ).get()?.legacy_ssh_signed_consume,
+    0,
+  );
+  assert.equal(
     database.prepare("SELECT revoked_at FROM ssh_authorization_grants").get()
       ?.revoked_at,
     NOW,
@@ -336,7 +342,14 @@ test("alpha.20 terminal state upgrades while preserving identities and retiring 
   assert.deepEqual(
     database.prepare("SELECT version FROM gateway_schema_migrations ORDER BY version")
       .all().map((row) => row.version),
-    [1, 2, 3, 4],
+    [1, 2, 3, 4, 5],
+  );
+  assert.equal(
+    database.prepare(
+      `SELECT expires_at FROM legacy_bearerless_ssh_requesters
+        WHERE device_id = 'requester-a'`,
+    ).get()?.expires_at,
+    NOW + 24 * 60 * 60_000,
   );
 
   const once = databaseSnapshot(database);

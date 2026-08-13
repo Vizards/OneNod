@@ -212,6 +212,7 @@ export interface RequestRow {
   id: string;
   item_id: string;
   item_title: string;
+  legacy_ssh_signed_consume: number;
   operation_summary: string | null;
   requester_device_id: string;
   requester_name: string;

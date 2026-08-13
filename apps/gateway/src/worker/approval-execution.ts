@@ -10,6 +10,7 @@ import {
 } from "./authorization-grants.js";
 import {
   GatewayHttpError,
+  assertExactKeys,
   isUncertainWriteFailure,
   json,
   readJsonObject,
@@ -18,11 +19,8 @@ import type { RequestOperationRow, RequestRow } from "./approval-types.js";
 import { ApprovalExecutor } from "./approval-executor.js";
 import { ApprovalRequestStore } from "./approval-request-store.js";
 import { HumanAccess } from "./human-access.js";
+import { requestPollingAuthorizationAccepted } from "./legacy-consume-bridge.js";
 import { decryptPendingPayload } from "./pending-payload.js";
-import {
-  pollingTokensMatch,
-  readRequestPollingBearer,
-} from "./request-polling.js";
 import type { RequesterIdentity } from "./requester-auth.js";
 
 declare const RECONCILIATION_IMMEDIATE_ENABLED: boolean;
@@ -66,6 +64,7 @@ export class ApprovalExecution {
     requestId: string,
   ): Promise<Response> {
     const body = await readJsonObject(request);
+    assertExactKeys(body, []);
     const requester = await this.callbacks.authenticateSignedRequest(
       request,
       path,
@@ -82,13 +81,23 @@ export class ApprovalExecution {
       requestId,
       requester.deviceId,
     );
-    if (
-      !pollingTokensMatch(
-        readRequestPollingBearer(request),
-        expectedPollingToken,
-      )
-    ) {
+    const authorizationHeader = request.headers.get("authorization");
+    if (!requestPollingAuthorizationAccepted({
+      action: row.action,
+      authorizationHeader,
+      expectedToken: expectedPollingToken,
+      legacySshSignedConsume: row.legacy_ssh_signed_consume,
+      secretGrantId: row.secret_grant_id,
+      sshGrantId: row.ssh_grant_id,
+    })) {
       throw new GatewayHttpError("request_not_found", 404);
+    }
+    if (authorizationHeader === null) {
+      this.callbacks.audit(
+        "legacy_bearerless_ssh_consume",
+        requestId,
+        requester.deviceId,
+      );
     }
     if (row.action === "ssh.sign") {
       return this.consumeSshSign(row, requester);

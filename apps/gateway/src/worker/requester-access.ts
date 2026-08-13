@@ -432,6 +432,10 @@ export class RequesterAccess {
         deviceId,
       );
       this.sql.exec(
+        `DELETE FROM legacy_bearerless_ssh_requesters WHERE device_id = ?`,
+        deviceId,
+      );
+      this.sql.exec(
         `UPDATE ssh_authorization_grants SET revoked_at = ?
          WHERE requester_device_id = ? AND revoked_at IS NULL`,
         now,

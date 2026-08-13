@@ -21,6 +21,7 @@ export interface RequestInsertRecord extends ApplicationIdentityColumns {
   idempotency_key: string;
   item_id: string;
   item_title: string;
+  legacy_ssh_signed_consume: number;
   requester_device_id: string;
   requester_name: string;
   secret_grant_id: string | null;
@@ -48,11 +49,12 @@ export function insertRequest(
        application_team_identifier, application_signer_name,
        application_scope_id, secret_grant_id, ssh_agent_instance_public_key,
        ssh_scope_id, ssh_scope_kind, ssh_grant_id, item_title, field_label,
-       field_type, idempotency_key, body_hash, status, created_at, expires_at,
+       field_type, legacy_ssh_signed_consume, idempotency_key, body_hash,
+       status, created_at, expires_at,
        decided_at, authorized_until, execution_started_at, consumed_at,
        error_code)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     record.id,
     record.requester_device_id,
     record.requester_name,
@@ -77,6 +79,7 @@ export function insertRequest(
     record.item_title,
     record.field_label,
     record.field_type,
+    record.legacy_ssh_signed_consume,
     record.idempotency_key,
     record.body_hash,
     record.status,
