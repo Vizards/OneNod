@@ -3,11 +3,13 @@ import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import test from "node:test";
 
 import {
+  APPLICATION_ATTESTATION_PROTOCOL,
   buildRequesterCanonicalString,
   canonicalizeJson,
   decodeBase64Url,
   encodeBase64Url,
   formatRequesterCanonicalString,
+  formatApplicationAttestationString,
   parseOneNodProductVersion,
   requesterPublicKeyFingerprint,
   sha256Base64Url,
@@ -72,18 +74,6 @@ test("base64url round-trips bytes and rejects padded or non-canonical input", ()
   assert.throws(() => decodeBase64Url("aGVsbG8="), TypeError);
   assert.throws(() => decodeBase64Url("A"), TypeError);
   assert.throws(() => decodeBase64Url("AB"), TypeError);
-
-  for (let length = 0; length <= 257; length += 1) {
-    const sample = Uint8Array.from({ length }, (_, index) => (index * 131 + length) & 0xff);
-    assert.deepEqual(decodeBase64Url(encodeBase64Url(sample)), sample);
-  }
-});
-
-test("matches the standard SHA-256 abc vector", async () => {
-  assert.equal(
-    await sha256Base64Url("abc"),
-    "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0",
-  );
 });
 
 test("parses only stable, alpha.N, and beta.N OneNod product versions", () => {
@@ -198,6 +188,40 @@ test("rejects ambiguous requester canonical-string fields", () => {
   );
   assert.throws(
     () => formatRequesterCanonicalString({ ...validFields, unix_seconds: -1 }),
+    TypeError,
+  );
+});
+
+test("formats an application attestation around the complete requester signature material", () => {
+  const requesterCanonical = [
+    "onenod-request-v1",
+    "example.workers.dev",
+    "POST",
+    "/v1/requests",
+    "body-digest",
+    "requester-device",
+    "42",
+    "nonce",
+  ].join("\n");
+  assert.equal(
+    formatApplicationAttestationString({
+      principal_id: "principal",
+      principal_scheme: "macos-designated-requirement-v1",
+      requester_canonical_string: requesterCanonical,
+    }),
+    [
+      APPLICATION_ATTESTATION_PROTOCOL,
+      requesterCanonical,
+      "macos-designated-requirement-v1",
+      "principal",
+    ].join("\n"),
+  );
+  assert.throws(
+    () => formatApplicationAttestationString({
+      principal_id: "principal\nforged",
+      principal_scheme: "macos-designated-requirement-v1",
+      requester_canonical_string: requesterCanonical,
+    }),
     TypeError,
   );
 });

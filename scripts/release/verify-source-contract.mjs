@@ -144,13 +144,22 @@ async function readJSON(path) {
 async function digestHelperSources() {
   const directory = "cmd/may/keychainhelper";
   const names = (await listSourceNames(directory))
-    .filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"))
+    .filter(
+      (name) =>
+        (name.endsWith(".go") && !name.endsWith("_test.go")) ||
+        name.endsWith(".c") ||
+        name.endsWith(".h"),
+    )
     .sort((left, right) => left.localeCompare(right, "en"));
-  if (names.length === 0) fail("Keychain helper has no production Go sources");
+  if (names.length === 0) fail("Keychain helper has no production sources");
   const hash = createHash("sha256");
-  for (const name of names) {
-    const content = await readSourceBytes(`${directory}/${name}`);
-    hash.update(name);
+  for (const path of [
+    ...names.map((name) => `${directory}/${name}`),
+    `${directory}/go.mod`,
+    `${directory}/go.sum`,
+  ]) {
+    const content = await readSourceBytes(path);
+    hash.update(path);
     hash.update("\0");
     hash.update(String(content.byteLength));
     hash.update("\0");

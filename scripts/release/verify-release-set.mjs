@@ -255,6 +255,14 @@ function validateManifest(value, values, policy, contract) {
     value.components?.may?.client_protocol !==
       contract.components.may.client_protocol ||
     !isDeepStrictEqual(
+      value.components?.may?.code_identity,
+      contract.components.may.code_identity,
+    ) ||
+    !isDeepStrictEqual(
+      value.components?.may?.adapter_code_identity,
+      contract.components.may.adapter_code_identity,
+    ) ||
+    !isDeepStrictEqual(
       value.components?.gateway?.accepted_client_protocol,
       contract.components.gateway.accepted_client_protocol,
     ) ||
@@ -498,9 +506,22 @@ async function verifyArchive(path, expectedRoot, requiredEntries, values) {
 }
 
 function validateArtifactIdentity(identity, label) {
+  if (identity.kind === "local") {
+    if (
+      !isDeepStrictEqual(identity.codeIdentities, {
+        may: manifest.components.may.code_identity,
+        may_ssh_sign: manifest.components.may.adapter_code_identity,
+      })
+    ) {
+      fail(`may exact-build identity differs from the release manifest: ${label}`);
+    }
+    return;
+  }
   if (identity.kind !== "keychain_helper") return;
   const helper = manifest.components.keychain_helper;
   if (
+	!/^sha256:[0-9a-f]{64}$/u.test(identity.binarySha256 ?? "") ||
+    !isDeepStrictEqual(identity.codeIdentity, helper.code_identity) ||
     identity.version !== helper.version ||
     identity.helperSourceDigest !== helper.source_digest ||
     identity.helperProtocol < helper.helper_protocol.min ||

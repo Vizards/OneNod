@@ -86,6 +86,31 @@ export function validateReleaseWorkflow(value) {
       fail(`release build job ${jobName} must wait for release authorization`);
     }
   }
+  const localSteps = workflowSteps(
+    workflowJob(workflow, "local-artifacts"),
+    "local-artifacts",
+  );
+  const exactBuildSigning = stepRun(
+    namedStep(localSteps, "Bind deterministic exact-build macOS identities"),
+  );
+  const exactBuildVerification = stepRun(
+    namedStep(localSteps, "Verify exact-build identities and Hardened Runtime"),
+  );
+  if (
+    !exactBuildSigning.includes("--sign -") ||
+    !exactBuildSigning.includes("--options runtime") ||
+    !exactBuildSigning.includes("--timestamp=none") ||
+    !exactBuildSigning.includes("com.github.vizards.onenod.may-ssh-sign") ||
+    !exactBuildVerification.includes("codesign --verify --strict") ||
+    !exactBuildVerification.includes("com.apple.security.get-task-allow") ||
+    !exactBuildVerification.includes("com.apple.security.debugger") ||
+    !exactBuildVerification.includes("com.apple.security.cs.disable-library-validation") ||
+    !exactBuildVerification.includes("com.apple.security.cs.disable-executable-page-protection") ||
+    !exactBuildVerification.includes("com.apple.security.cs.allow-jit") ||
+    !exactBuildVerification.includes("com.apple.security.cs.allow-unsigned-executable-memory")
+  ) {
+    fail("native release jobs must bind and verify deterministic ad-hoc Hardened Runtime exact builds");
+  }
   const publishJob = workflowJob(workflow, "publish");
   const publishSteps = workflowSteps(publishJob, "publish");
   const publishCheckout = namedStep(

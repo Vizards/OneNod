@@ -58,12 +58,62 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cmd/may/go.mod
-          cache-dependency-path: cmd/may/go.sum
+          cache-dependency-path: |
+            cmd/may/go.sum
+            cmd/may/keychainhelper/go.sum
       - name: Test
-        run: go test ./...
+        run: |
+          go test ./...
+          go -C keychainhelper test ./...
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go -C keychainhelper vet ./...
       - name: Validate GitHub Actions workflows
         run: >-
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           ../../.github/workflows/*.yml
+
+  go-macos-security:
+    name: Go macOS security boundary
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cmd/may
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cmd/may/go.mod
+          cache-dependency-path: |
+            cmd/may/go.sum
+            cmd/may/keychainhelper/go.sum
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.23.0
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+      - name: Install frozen dependencies
+        working-directory: ${{ github.workspace }}
+        run: pnpm install --frozen-lockfile
+      - name: Test Security.framework integration
+        run: |
+          CGO_ENABLED=1 go test ./...
+          CGO_ENABLED=1 go -C keychainhelper test ./...
+      - name: Vet Security.framework integration
+        run: |
+          CGO_ENABLED=1 go vet ./...
+          CGO_ENABLED=1 go -C keychainhelper vet ./...
+      - name: Test native release tooling
+        working-directory: ${{ github.workspace }}
+        run: node --test scripts/release/test/release-scripts.test.mjs

@@ -177,7 +177,7 @@ func staticVersionResponse(executorDeclared bool) string {
 			"gateway": map[string]any{
 				"channel":                  "stable",
 				"version":                  "0.2.0",
-				"accepted_client_protocol": map[string]int{"min": 1, "max": 1},
+				"accepted_client_protocol": map[string]int{"min": 1, "max": 2},
 			},
 			"executor": map[string]any{
 				"declared": executorDeclared,

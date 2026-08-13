@@ -74,6 +74,12 @@ export interface RequesterEnrollmentListResponse {
   enrollments: RequesterEnrollmentStatusResponse[];
 }
 
+export interface RequesterSelfResponse {
+  device_id: string;
+  public_key_fingerprint: string;
+  registered: true;
+}
+
 export type Decision = "approve" | "reject";
 
 export type SshAuthorizationDuration =
@@ -82,6 +88,11 @@ export type SshAuthorizationDuration =
   | "4-hours"
   | "12-hours"
   | "24-hours";
+
+export type SecretAuthorizationDuration = Exclude<
+  SshAuthorizationDuration,
+  "until-agent-quits"
+>;
 
 export interface DecisionOptionsRequest {
   authorization_duration?: SshAuthorizationDuration;
@@ -139,13 +150,40 @@ export interface CatalogSearchResponse {
 
 export interface ClientObservationRequest {
   application: string;
+  identity?: ApplicationIdentityRequest;
   source: "process-ancestry" | "unavailable";
+}
+
+export interface VerifiedMacOSApplicationIdentityRequest {
+  assurance: "verified-code-signature";
+  platform: "macos";
+  principal_id: string;
+  principal_scheme: "macos-designated-requirement-v1";
+  signer_name?: string;
+  signing_identifier: string;
+  team_identifier?: string;
+}
+
+export interface UnverifiedApplicationIdentityRequest {
+  assurance: "unverified";
+  platform: "macos" | "unsupported";
+}
+
+export type ApplicationIdentityRequest =
+  | VerifiedMacOSApplicationIdentityRequest
+  | UnverifiedApplicationIdentityRequest;
+
+export interface ApplicationAuthorizationScopeRequest {
+  scope_id: string;
+  scope_kind: "application";
 }
 
 export interface SshAuthorizationSessionRequest {
   agent_instance_public_key: string;
   proof: string;
   scope_id: string;
+  // Protocol 1 clients used terminal-session. The Gateway accepts that shape
+  // only as a rolling-upgrade bridge and never turns it into reusable authority.
   scope_kind: "application" | "terminal-session";
 }
 
@@ -177,6 +215,7 @@ export type SshOperationRequest =
 
 export interface SecretReadCreateRequest {
   action: "secret.read";
+  authorization_scope?: ApplicationAuthorizationScopeRequest;
   client: ClientObservationRequest;
   expected_version: number;
   field_id: string;

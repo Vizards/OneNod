@@ -1,4 +1,5 @@
 import {
+  type ApplicationIdentityRequest,
   canonicalizeJson,
   decodeBase64Url,
   type SshSignCreateRequest,
@@ -23,6 +24,22 @@ export interface TrustedSshAuthorization {
   itemId: string;
   itemTitle: string;
   itemVersion: number;
+}
+
+export function applicationBoundSshAuthorizationSession(
+  identity: ApplicationIdentityRequest,
+  session: SshAuthorizationSessionRequest | undefined,
+): SshAuthorizationSessionRequest | undefined {
+  if (!session || identity.assurance !== "verified-code-signature") {
+    return undefined;
+  }
+  if (session.scope_kind !== "application") {
+    throw new Error("ssh_authorization_session_legacy_scope");
+  }
+  if (session.scope_id !== identity.principal_id) {
+    throw new Error("ssh_authorization_session_application_mismatch");
+  }
+  return session;
 }
 
 export function parseSshSignRequest(value: unknown): SshSignCreateRequest {

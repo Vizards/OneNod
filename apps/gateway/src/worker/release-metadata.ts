@@ -6,10 +6,10 @@ declare const ONENOD_SOURCE_COMMIT: string | undefined;
 import { resolveGatewayRelease } from "../release.js";
 
 export const REQUESTER_PROTOCOL_MIN = 1;
-export const REQUESTER_PROTOCOL_MAX = 1;
+export const REQUESTER_PROTOCOL_MAX = 2;
 export const GATEWAY_EXECUTOR_PROTOCOL_MIN = 1;
 export const GATEWAY_EXECUTOR_PROTOCOL_MAX = 1;
-export const GATEWAY_STATE_SCHEMA = 1;
+export const GATEWAY_STATE_SCHEMA = 2;
 export const EXECUTOR_STATE_SCHEMA = 1;
 
 const RELEASE = resolveGatewayRelease({

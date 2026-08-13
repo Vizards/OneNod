@@ -55,6 +55,15 @@ test("prepare verifies the exact selected source before authorization", () => {
   );
 });
 
+test("native artifacts cannot silently lose exact-build signing", () => {
+  const changed = workflow.replaceAll("              --options runtime \\\n", "");
+  assert.notEqual(changed, workflow);
+  assert.throws(
+    () => validateReleaseWorkflow(changed),
+    /must bind and verify deterministic ad-hoc Hardened Runtime exact builds/u,
+  );
+});
+
 function replaceOnce(value, before, after) {
   const changed = value.replace(before, after);
   assert.notEqual(changed, value, `fixture text is missing: ${before}`);

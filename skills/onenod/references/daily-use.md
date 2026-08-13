@@ -15,6 +15,15 @@ operation proves the private Executor path.
   by stdin or a private file rather than argv.
 - Use `may agent status` and `may agent refresh` after SSH Key items change.
 
+When an approver remembers a secret or SSH approval, treat it as authorization
+for every task and session in the displayed application on that requester Mac.
+It is never evidence that only the current Agent task was approved. Secret
+grants cover one exact item field and version; SSH grants cover one exact key
+and version. Do not assume another field, key, application, or requester is
+authorized. If OneNod cannot verify the caller through the helper's live macOS
+code-identity chain, that caller is intentionally limited to one-time approval;
+do not try to obtain a duration grant by renaming a process or changing paths.
+
 These are stable command families, not a replacement for command-specific
 help. Do not translate an arbitrary `op` command into a presumed `may`
 equivalent.

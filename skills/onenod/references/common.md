@@ -42,7 +42,7 @@ Agent consumer
   -> may or the OneNod SSH Agent
   -> requester signature from the Keychain helper
   -> public Gateway and approval state
-  -> human Passkey decision or remembered SSH authorization
+  -> human Passkey decision or remembered application authorization
   -> private Cloudflare Service Binding
   -> Executor and scoped 1Password Service Account
   -> Agent Vault
@@ -65,19 +65,88 @@ mode, requester revocation, timeout, network failure, or generic 5xx errors.
 The local 1Password app authorizes the SDK at account scope, while OneNod binds
 its code path to the exact `Agent` Vault ID saved during setup.
 
+## Application-scoped approval semantics
+
+OneNod cannot reliably distinguish tasks or conversations inside Codex,
+Claude Code, or another Agent harness. A remembered approval therefore applies
+to the entire verified application on one enrolled requester Mac. Never
+describe a duration choice as authorizing only the current task, conversation,
+terminal command, or model invocation.
+
+On macOS, the stable Keychain helper traces live process ancestry and asks
+Security.framework to validate the running code. A verified Application scope
+is derived from Apple trust class, Team ID, signing identifier, and designated
+requirement—not from a process name, path, PID, Agent-brand list, or mutable
+display label. SSH and Git requests additionally carry their accepted Unix
+socket peer into the helper so the long-running OneNod SSH Agent cannot
+self-report the caller. The display name comes from signed application metadata;
+the cryptographic principal controls reuse.
+
+Unsigned, invalid, unsupported, or unresolvable caller applications stop
+ancestry inheritance and receive only one-time approval. Third-party ad-hoc
+applications are also unverified. A verified scope additionally requires the
+OneNod transport itself to match the exact hardened ad-hoc build authorized by
+the stable Keychain helper. The official Release digest, architecture-specific
+CDHash, designated requirement, and fixed role identifier are carried through
+an authenticated update transaction; paths, ownership, permissions, process
+names, and socket names are never substitutes for that identity. OneNod does
+not require a paid Apple Developer ID for this per-build chain.
+
+The first `may` cannot prove its own origin. Before it ever runs, bootstrap must
+independently verify the canonical GitHub Release artifact attestation and
+SHA-256, then pause every same-user Agent harness before the first execution.
+Once the human completes that one-time ceremony, the helper-protected current
+build becomes the trust root
+for later updates. This protects requester secrecy and authorization integrity;
+it does not prevent another same-user process from deleting files, killing the
+Agent, presenting a social-engineering prompt, or otherwise causing denial of
+service.
+
+Fresh requester bootstrap is Create-only in a new random slot. An existing,
+precreated, or legacy Keychain record is never adopted; a legacy record without
+the signed protocol-v3 transport envelope fails closed. Before reusing any
+selected local requester, `may` makes a signed read-only self request and
+requires the Gateway's active device ID and public-key fingerprint to match
+exactly. A stable not-found result creates a different random slot; a mismatch
+or unverifiable response stops. Bootstrap and a changed helper are attended
+ceremonies: pause every same-user Agent harness and let the human handle any
+macOS dialogs. A byte-identical helper stays pinned across ordinary local
+updates, which require no Keychain prompt.
+
+A remembered secret approval is bound to the requester, application scope,
+exact item, exact field, and item version. Its supported lifetimes are until
+Lock mode or 4, 12, or 24 hours. Every task and session in that application can
+read that field while the grant remains active. A changed item version requires
+a new approval. Item mutations are never remembered.
+
+Unknown local applications receive only one-time approval because no stable
+application scope is available.
+
+A verified command-line runtime can itself be the Application principal. For
+example, a remembered grant shown for a signed Node runtime applies to every
+local program using that same signed runtime on the requester Mac, not just the
+Agent harness whose request happened to reveal it. The PWA shows the signer,
+Team ID, and signing identifier so the human can recognize this wider scope.
+
+The PWA **Access** tab lists every active remembered grant as one
+item/field-or-key, application, and requester tuple. It shows the end condition
+or time and lets the owner revoke each grant independently.
+
 ## SSH approval semantics
 
 The SSH Agent exposes public identities from supported SSH Key items in
 `Agent`; private keys remain in 1Password. The SSH Agent protocol carries the
-key and signing payload, not a task statement or remote command. The displayed
-local application is an advisory process observation, and the requester label
-identifies the enrolled device key rather than a trusted Agent persona.
+key and signing payload, not a task statement or remote command. A verified
+application identity describes the local signed application as a whole; the
+requester label separately identifies the enrolled device key.
 
-A remembered approval is bound to the requester, running SSH Agent instance,
-local client scope, key fingerprint, and item version. Supported lifetimes are
-until Lock mode, until Agent exit, or 4, 12, or 24 hours. Unknown local clients
-do not receive duration choices. SSH authentication approves a signature, not
-the command later executed on the remote host.
+A remembered SSH approval is bound to the requester, whole application,
+running SSH Agent instance, key fingerprint, and item version. Supported
+lifetimes are until Lock mode, until SSH Agent exit, or 4, 12, or 24 hours.
+Every choice ends early when the local SSH Agent restarts; the Agent-exit choice
+has no earlier time deadline. None of these choices is scoped to a task or
+conversation. SSH authentication approves a signature, not the command later
+executed on the remote host.
 
 ## Passkeys and Lock mode
 
@@ -98,7 +167,7 @@ the Gateway refuses to revoke the last registered Passkey. To replace one,
 register and successfully use the new Passkey before revoking the old one.
 
 Lock mode rejects new and pending operations without push, removes unconsumed
-encrypted payloads, and invalidates remembered SSH authority. Entering Lock
+encrypted payloads, and blocks remembered secret and SSH authority. Entering Lock
 mode only removes authority and therefore does not require a Passkey; leaving
 it expands authority again and requires a registered Passkey.
 

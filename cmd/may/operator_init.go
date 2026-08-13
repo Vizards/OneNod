@@ -97,14 +97,31 @@ func runProductionInitialization(args []string, deps dependencies) error {
 		return errors.New("usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 	}
 	fallback := releaseChannelStable
+	trustedBootstrap := false
 	if receipt, found, err := readInitializerInstallReceipt(); err != nil {
 		return err
 	} else if found {
 		fallback = releaseChannel(receipt.Channel)
+		trustedBootstrap = true
+	}
+	if _, found, err := readLocalInstallReceipt(); err != nil {
+		return err
+	} else if found {
+		trustedBootstrap = true
 	}
 	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, fallback)
 	if err != nil {
 		return err
+	}
+	if !trustedBootstrap {
+		if err := confirmFirstExecutionCeremony(
+			deps.stdin,
+			deps.stdout,
+			firstExecutionOperatorInit,
+			"may operator init will establish the local initializer trust before any Cloudflare or 1Password production mutation",
+		); err != nil {
+			return err
+		}
 	}
 	console := operatorConsole{
 		stdin:  deps.stdin,

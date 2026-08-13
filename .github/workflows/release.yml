@@ -272,7 +272,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cmd/may/go.mod
-          cache-dependency-path: cmd/may/go.sum
+          cache-dependency-path: |
+            cmd/may/go.sum
+            cmd/may/keychainhelper/go.sum
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -302,16 +304,51 @@ jobs:
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: |
           go test ./...
+          go -C keychainhelper test ./...
           mkdir -p ../../dist/build ../../dist/release
           go build -trimpath -buildvcs=true \
             -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
             -o ../../dist/build/may .
           test "$(lipo -archs ../../dist/build/may)" = "$EXPECTED_ARCH"
           if [ "$HELPER_CHANGED" = "true" ]; then
-            go build -trimpath -buildvcs=true \
+            go -C keychainhelper build -trimpath -buildvcs=true \
               -ldflags="-s -w -X main.helperVersion=$HELPER_VERSION -X main.sourceCommit=$SOURCE_SHA" \
-              -o ../../dist/build/onenod-keychain-helper ./keychainhelper
+              -o ../../../dist/build/onenod-keychain-helper .
             test "$(lipo -archs ../../dist/build/onenod-keychain-helper)" = "$EXPECTED_ARCH"
+          fi
+      - name: Bind deterministic exact-build macOS identities
+        env:
+          HELPER_CHANGED: ${{ needs.prepare.outputs.helper_changed }}
+        run: |
+          sign_exact_build() {
+            binary="$1"
+            identifier="$2"
+            replica="$RUNNER_TEMP/$(basename "$binary").unsigned-replica"
+            cp "$binary" "$replica"
+            /usr/bin/codesign --force --sign - \
+              --identifier "$identifier" \
+              --options runtime \
+              --timestamp=none \
+              "$binary"
+            /usr/bin/codesign --force --sign - \
+              --identifier "$identifier" \
+              --options runtime \
+              --timestamp=none \
+              "$replica"
+            if ! cmp -s "$binary" "$replica"; then
+              echo "Release blocked: ad-hoc exact-build signing was not deterministic for $binary." >&2
+              exit 1
+            fi
+          }
+          cp dist/build/may dist/build/may-ssh-sign
+          sign_exact_build dist/build/may com.github.vizards.onenod.may
+          sign_exact_build \
+            dist/build/may-ssh-sign \
+            com.github.vizards.onenod.may-ssh-sign
+          if [ "$HELPER_CHANGED" = "true" ]; then
+            sign_exact_build \
+              dist/build/onenod-keychain-helper \
+              com.github.vizards.onenod.keychain-helper
           fi
       - name: Reuse the exact prior immutable Keychain helper
         if: needs.prepare.outputs.helper_changed != 'true'
@@ -340,6 +377,48 @@ jobs:
             dist/build/onenod-keychain-helper
           chmod 700 dist/build/onenod-keychain-helper
           test "$(lipo -archs dist/build/onenod-keychain-helper)" = "$EXPECTED_ARCH"
+      - name: Verify exact-build identities and Hardened Runtime
+        run: |
+          verify_exact_build() {
+            binary="$1"
+            identifier="$2"
+            /usr/bin/codesign --verify --strict --verbose=2 "$binary"
+            details="$(/usr/bin/codesign -d --verbose=4 "$binary" 2>&1)"
+            if ! grep -Fqx "Identifier=$identifier" <<<"$details"; then
+              echo "Release blocked: $binary has the wrong signing identifier." >&2
+              exit 1
+            fi
+            code_directory="$(grep '^CodeDirectory ' <<<"$details" || true)"
+            if ! grep -Eq 'flags=.*\([^)]*adhoc' <<<"$code_directory" || \
+              ! grep -Eq 'flags=.*\([^)]*runtime' <<<"$code_directory"; then
+              echo "Release blocked: $binary is not an ad-hoc Hardened Runtime exact build." >&2
+              exit 1
+            fi
+            if /usr/bin/codesign -d --entitlements - "$binary" \
+              >"$RUNNER_TEMP/onenod-entitlements.plist" 2>/dev/null; then
+              for forbidden in \
+                com.apple.security.get-task-allow \
+                com.apple.security.debugger \
+                com.apple.security.cs.allow-dyld-environment-variables \
+                com.apple.security.cs.disable-library-validation \
+                com.apple.security.cs.disable-executable-page-protection \
+                com.apple.security.cs.allow-jit \
+                com.apple.security.cs.allow-unsigned-executable-memory; do
+                if /usr/libexec/PlistBuddy -c "Print :$forbidden" \
+                  "$RUNNER_TEMP/onenod-entitlements.plist" >/dev/null 2>&1; then
+                  echo "Release blocked: $binary carries forbidden entitlement $forbidden." >&2
+                  exit 1
+                fi
+              done
+            fi
+          }
+          verify_exact_build dist/build/may com.github.vizards.onenod.may
+          verify_exact_build \
+            dist/build/may-ssh-sign \
+            com.github.vizards.onenod.may-ssh-sign
+          verify_exact_build \
+            dist/build/onenod-keychain-helper \
+            com.github.vizards.onenod.keychain-helper
       - name: Verify embedded binary versions
         env:
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
@@ -391,6 +470,7 @@ jobs:
         run: |
           node scripts/release/package-artifact.mjs local \
             --binary dist/build/may \
+            --adapter-binary dist/build/may-ssh-sign \
             --arch "$ARCH" \
             --version "$RELEASE_VERSION" \
             --commit "$SOURCE_SHA" \

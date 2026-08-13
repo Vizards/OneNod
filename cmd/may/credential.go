@@ -126,10 +126,14 @@ func requesterKeychainService(origin string) (string, error) {
 }
 
 func (store keychainStore) selectedService() string {
-	if store.service == "" {
-		return defaultKeychainService
+	service := store.service
+	if service == "" {
+		service = defaultKeychainService
 	}
-	return store.service
+	if store.slot != "" && store.slot != "active" {
+		return service + ".slot." + store.slot
+	}
+	return service
 }
 
 func (store keychainStore) selectedBackend() keychainBackend {
@@ -238,18 +242,33 @@ func (store keychainStore) Ensure(displayName string) (*requesterCredential, boo
 }
 
 func (credential *requesterCredential) signCanonical(message []byte) ([]byte, error) {
+	signature, _, err := credential.signCanonicalWithApplication(message, nil, nil)
+	return signature, err
+}
+
+func (credential *requesterCredential) signCanonicalWithApplication(
+	message,
+	canonicalBody []byte,
+	evidence *applicationEvidence,
+) ([]byte, []byte, error) {
 	if credential == nil {
-		return nil, errors.New("requester credential is required")
+		return nil, nil, errors.New("requester credential is required")
 	}
 	if credential.PrivateKey != "" {
 		privateKey, err := credential.privateKey()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return ed25519.Sign(privateKey, message), nil
+		return ed25519.Sign(privateKey, message), nil, nil
 	}
 	if credential.helperOrigin == "" {
-		return nil, errors.New("requester signing provider is unavailable")
+		return nil, nil, errors.New("requester signing provider is unavailable")
 	}
-	return signRequesterWithHelper(credential.helperOrigin, credential.helperSlot, message)
+	return signRequesterWithHelper(
+		credential.helperOrigin,
+		credential.helperSlot,
+		message,
+		canonicalBody,
+		evidence,
+	)
 }

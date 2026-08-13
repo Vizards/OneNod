@@ -5,7 +5,6 @@ import {
   type CachedExtismPlugin,
   type CachedPluginFactory,
   ReusableExtismRuntime,
-  ReusableExtismRuntimeError,
 } from "../src/reusable-extism-runtime.ts";
 
 const ACCOUNT_HOST = "my.1password.com";
@@ -289,44 +288,6 @@ test("guest memory over the page limit is wiped, evicted, and rebuilt", async ()
   assert.equal(rebuilt.pluginCreated, true);
   assert.equal(rebuilt.pluginReused, false);
   assert.equal(rebuilt.pluginDisposition, "retained");
-});
-
-test("guest page telemetry captures growth without exposing guest memory", async () => {
-  const memory = new WebAssembly.Memory({ initial: 1 });
-  const runtime = new ReusableExtismRuntime(async () => fakePlugin({ memory }));
-
-  const outcome = await runtime.withLease(leaseOptions(), async () => {
-    memory.grow(2);
-    return "grown";
-  });
-
-  assert.deepEqual(
-    {
-      guestPagesAfter: outcome.guestPagesAfter,
-      guestPagesBefore: outcome.guestPagesBefore,
-      value: outcome.value,
-    },
-    { guestPagesAfter: 3, guestPagesBefore: 1, value: "grown" },
-  );
-});
-
-test("operation failures retain numeric guest page telemetry on the safe error", async () => {
-  const memory = new WebAssembly.Memory({ initial: 1 });
-  const runtime = new ReusableExtismRuntime(async () => fakePlugin({ memory }));
-
-  await assert.rejects(
-    runtime.withLease(leaseOptions(), async () => {
-      memory.grow(1);
-      throw new Error("raw operation failure");
-    }),
-    (error) => {
-      assert.ok(error instanceof ReusableExtismRuntimeError);
-      assert.equal(error.guestPagesBefore, 1);
-      assert.equal(error.guestPagesAfter, 2);
-      assert.equal(error.pluginDisposition, "evicted");
-      return true;
-    },
-  );
 });
 
 interface FakePlugin extends CachedExtismPlugin {

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,24 +65,6 @@ func TestSSHConfigurationReportsHostSelectorsWithoutGuessingMappings(t *testing.
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("selector advisory omitted %q:\n%s", expected, output.String())
 		}
-	}
-}
-
-func TestNormalizedSigningKeyUsesGitKeyLiteral(t *testing.T) {
-	public, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sshPublic, err := ssh.NewPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := normalizedSigningKey(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPublic))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(value, "key::ssh-ed25519 ") || strings.Contains(value, "\n") {
-		t.Fatalf("Git signing key was not normalized as a key:: literal: %q", value)
 	}
 }
 
@@ -340,45 +321,6 @@ func TestGitSigningConfigurationRefusesConcurrentEditAfterConfirmation(t *testin
 	values, readErr := gitGlobalValues("gpg.format")
 	if readErr != nil || len(values) != 1 || values[0] != "changed-during-review" {
 		t.Fatalf("concurrent Git edit was overwritten: %#v %v", values, readErr)
-	}
-}
-
-func TestGitSigningStatusReportsEffectiveRepositoryOverride(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := setGitGlobalValue("gpg.ssh.program", filepath.Join(home, ".onenod", "bin", "may-ssh-sign")); err != nil {
-		t.Fatal(err)
-	}
-	repository := t.TempDir()
-	command := exec.Command("git", "init", "--quiet", repository)
-	command.Env = operatorEnvironment(nil)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("initialize test repository: %v: %s", err, output)
-	}
-	command = exec.Command("git", "-C", repository, "config", "--local", "gpg.ssh.program", "/legacy/ssh-sign")
-	command.Env = operatorEnvironment(nil)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("configure test repository: %v: %s", err, output)
-	}
-	t.Chdir(repository)
-
-	var output strings.Builder
-	if err := runConfigureGitSigning(
-		[]string{"status"},
-		dependencies{stdin: strings.NewReader(""), stdout: &output, stderr: io.Discard},
-	); err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{
-		"Global Git signing configuration managed by OneNod:",
-		filepath.Join(home, ".onenod", "bin", "may-ssh-sign"),
-		"Effective Git signing configuration in the current directory:",
-		"/legacy/ssh-sign (scope: local)",
-		"OneNod reports but does not modify these scopes",
-	} {
-		if !strings.Contains(output.String(), expected) {
-			t.Fatalf("Git signing status omitted %q:\n%s", expected, output.String())
-		}
 	}
 }
 

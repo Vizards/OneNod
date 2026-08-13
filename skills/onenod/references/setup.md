@@ -11,18 +11,41 @@ verification, installation, and update mechanics.
 
 ## Bootstrap the first `may`
 
-When `may` is not installed, obtain the macOS archive for the detected machine
-architecture from the canonical GitHub Release selected by the human. Stable is
-the default; use an exact prerelease only when the human deliberately requests
-that channel or version. Extract it in a private temporary directory, inspect
-`may version`, and use that binary to start `may install` for an existing
-Gateway or `may operator init` for a new deployment. Do not require Go, a
-repository clone, private project documents, or another Skill.
+When `may` is not installed, obtain the macOS archive, `release-manifest.json`,
+and `onenod-provenance.intoto.jsonl` from the canonical GitHub Release selected
+by the human. Stable is the default; use an exact prerelease only when the human
+deliberately requests that channel or version. Do not execute the downloaded
+binary yet.
 
-The bootstrap download establishes the first executable trust root from the
-human-selected canonical Release. Once running, `may` verifies the attributed
-Release set before installing or deploying it; do not replace that path with a
-locally built binary or an unverified third-party package.
+The first executable cannot authenticate itself. The Agent uses an independent GitHub
+attestation verifier (normally `gh
+attestation verify release-manifest.json --repo Vizards/OneNod --bundle
+onenod-provenance.intoto.jsonl --signer-workflow
+Vizards/OneNod/.github/workflows/release.yml --source-ref refs/heads/main
+--deny-self-hosted-runners`) to
+verify the manifest's GitHub build provenance. Then locate the exact
+architecture-specific archive entry in that
+verified manifest and compare its declared SHA-256 and byte size with the
+downloaded archive. Reject a repository, workflow, source commit, artifact
+name, digest, architecture, or version mismatch. After these read-only checks,
+the Agent must output only the authenticated temporary `may` path, the attested
+source digest and Release tag, and one exact `may install ...` or `may operator
+init ...` command. It then exits without executing `may`. The human inspects
+that non-secret summary, stops every same-user Agent harness, and runs the exact
+command from a human-controlled terminal. Do not treat `may version`, a
+filename, a Release page, or the archive's own `RELEASE.json` as independent
+provenance.
+
+Only after those checks, treat the downloaded bytes as one authenticated,
+bounded artifact snapshot and extract it in a private temporary directory. The
+CLI repeats a default-no first-execution ceremony summary before it can install
+an initializer, helper, Skill, or local runtime. That prompt is a human gate,
+not permission for the Agent that verified the artifact to remain running. Do
+not require Go, a repository clone, private project documents, or another
+Skill. Once the one-time Keychain
+ceremony has pinned the exact official build, later updates are authenticated
+by the installed `may` and stable helper; never replace that path with a locally
+built binary or an unverified third-party package.
 
 The first preview is not Developer ID signed or notarized. macOS may therefore
 require the human to allow the first verified binary through Gatekeeper. Never
@@ -31,11 +54,13 @@ Gatekeeper, or otherwise bypass that decision for the human.
 
 Stable is the default release channel. A human who is deliberately testing a
 candidate may select `beta` or `alpha` through the CLI's `--channel` option.
-That selection is a risk ceiling: `beta` may consume beta or stable Releases,
-while `alpha` may consume alpha, beta, or stable Releases. Moving to a higher
-risk channel requires an explicit default-no confirmation and is persisted in
-the applicable local or operator receipt. Do not infer prerelease consent from
-the fact that the task is a test.
+This is a release-discovery preference, not a code-execution trust boundary:
+all official alpha, beta, and stable artifacts must pass the same provenance,
+digest, and exact-build checks. `beta` may discover beta or stable Releases;
+`alpha` may discover alpha, beta, or stable Releases. Broadening discovery to
+include a prerelease requires an explicit default-no anti-accident confirmation
+and is persisted in the applicable local or operator receipt. Do not infer
+prerelease consent from the fact that the task is a test.
 
 A stable binary released before channel support cannot discover the first
 candidate. In that one bootstrap case, obtain `may` from the exact GitHub
@@ -61,8 +86,8 @@ Workers Free is supported, but billing tier is not a security check. If
 Wrangler exposes multiple accounts, the human selects the dedicated account.
 
 Wrangler account selection, browser OAuth when needed, and 1Password unlock
-begin the deployment ceremony. At that point, stop other same-user Agents and
-let the human own the terminal. The CLI shows one non-secret production plan
+begin the deployment ceremony. At that point, stop every same-user Agent
+harness and let the human own the terminal. The CLI shows one non-secret production plan
 and asks for one default-no deployment confirmation before creating Vaults, a
 Service Account, Workers, Durable Objects, or Worker Secrets.
 
@@ -138,12 +163,21 @@ Notification permission and the OneNod push subscription are per installation
 and optional; repeat **Enable notifications** in every browser or Home Screen
 PWA where push is wanted.
 
-Installing the helper or enrolling a requester does not guarantee a macOS
-password prompt. A new requester can be added silently while the login
-Keychain is already unlocked. If macOS does show a Keychain or Gatekeeper
-prompt, hand it to the human; if it does not, use `may preflight`, enrollment
-status, and `may agent status` as the evidence instead of treating silence as a
-failed install.
+The first requester exact-build bootstrap is an attended ceremony. Immediately
+before a fresh Create-only credential write, `may enroll` displays a separate
+default-no summary. Pause every same-user Agent harness and let the human run
+that command and handle any Gatekeeper or Keychain dialogs; macOS may show one
+or more, and their count is not the success condition. A server-proven active
+requester reuse does not repeat this gate. The
+helper creates a fresh random requester slot with Create-only semantics. It
+never adopts an existing, precreated, or legacy Keychain item, and an old item
+without the protocol-v3 signed transport envelope fails closed. If local
+requester state already selects an identity, `may` reuses it only after a
+signed read-only Gateway self-proof returns the same active device ID and
+public-key fingerprint. A stable not-found response moves bootstrap to a new
+random slot; mismatch or an unverifiable response stops. Use `may preflight`,
+enrollment status, and `may agent status` as the final evidence. Do not delete
+or rewrite an unexpected record just to make bootstrap continue.
 
 ## Optional local quota fallback
 
