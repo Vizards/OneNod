@@ -83,6 +83,17 @@ func TestKeychainLoadIfPresentRecognizesMissingItem(t *testing.T) {
 	}
 }
 
+func TestUnselectedRequesterDoesNotProbeLegacyHelperSlot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	credential, found, err := (keychainStore{
+		origin: "https://onenod.example-account.workers.dev",
+		slot:   "active",
+	}).LoadIfPresent()
+	if err != nil || found || credential != nil {
+		t.Fatalf("unselected requester helper probe = %+v, %v, %v", credential, found, err)
+	}
+}
+
 func TestKeychainBackendErrorDoesNotExposeOutput(t *testing.T) {
 	backend := &recordingKeychainBackend{
 		found:   true,

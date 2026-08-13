@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,8 @@ const (
 	keychainHelperTimeout         = 15 * time.Second
 	keychainHelperCeremonyTimeout = 5 * time.Minute
 )
+
+var currentExecutablePath = os.Executable
 
 type keychainHelperRequest struct {
 	ApplicationEvidence               string `json:"application_evidence,omitempty"`
@@ -213,7 +217,7 @@ func closeExactTransportCandidates(files []*os.File) {
 }
 
 func currentTransportCandidatePaths() (string, string, error) {
-	mayPath, err := os.Executable()
+	mayPath, err := currentExecutablePath()
 	if err != nil {
 		return "", "", errors.New("resolve running may executable failed")
 	}
@@ -224,8 +228,21 @@ func currentTransportCandidatePaths() (string, string, error) {
 	return mayPath, filepath.Join(home, userAgentDirectoryName, "bin", gitSignAdapterBinaryName), nil
 }
 
-func transportCandidateDigest(path string) (string, error) {
-	return regularFileSHA256(path, maxReleaseArtifactBytes)
+func transportCandidateDigest(file *os.File) (string, error) {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxReleaseArtifactBytes {
+		return "", errors.New("exact-build transport candidate is not a bounded regular file")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.NewSectionReader(file, 0, info.Size())); err != nil {
+		return "", errors.New("hash exact-build transport candidate failed")
+	}
+	infoAfter, err := file.Stat()
+	if err != nil || !os.SameFile(info, infoAfter) || info.Size() != infoAfter.Size() ||
+		info.ModTime() != infoAfter.ModTime() {
+		return "", errors.New("exact-build transport candidate changed while hashing")
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCredential, error) {
@@ -233,11 +250,16 @@ func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCr
 	if err != nil {
 		return nil, err
 	}
-	mayDigest, err := transportCandidateDigest(mayPath)
+	files, err := openExactTransportCandidates(mayPath, adapterPath)
 	if err != nil {
 		return nil, err
 	}
-	adapterDigest, err := transportCandidateDigest(adapterPath)
+	defer closeExactTransportCandidates(files)
+	mayDigest, err := transportCandidateDigest(files[0])
+	if err != nil {
+		return nil, err
+	}
+	adapterDigest, err := transportCandidateDigest(files[1])
 	if err != nil {
 		return nil, err
 	}
@@ -249,11 +271,6 @@ func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCr
 		adapterDigest != receipt.Files["bin/"+gitSignAdapterBinaryName] {
 		return nil, errors.New("running requester transport differs from its verified install receipt")
 	}
-	files, err := openExactTransportCandidates(mayPath, adapterPath)
-	if err != nil {
-		return nil, err
-	}
-	defer closeExactTransportCandidates(files)
 	response, err := callKeychainHelperWithFiles(keychainHelperRequest{
 		Operation: "transport-bootstrap", Origin: origin, Slot: slot,
 		DisplayName: displayName, CandidateMaySHA256: mayDigest,

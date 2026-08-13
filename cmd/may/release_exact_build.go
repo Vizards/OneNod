@@ -32,9 +32,12 @@ func prepareExactBuildUpdateTransaction(
 	if previous == nil {
 		return nil, nil
 	}
-	slot, err := activeRequesterSlot(origin)
+	slot, selected, err := selectedRequesterSlot(origin)
 	if err != nil {
 		return nil, err
+	}
+	if !selected {
+		return nil, nil
 	}
 	status, err := queryTransportUpdateStatus(origin, slot)
 	if err != nil {
