@@ -55,6 +55,57 @@ func TestReleaseCommandEntrypointsRejectConflictingSelectors(t *testing.T) {
 	}
 }
 
+func TestPreserveImmutableReceiptCanonicalizesSchemaChannelAndIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, userAgentDirectoryName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	receipt := localInstallReceipt{
+		Channel:        string(releaseChannelAlpha),
+		ReleaseVersion: "0.0.2-alpha.25",
+		SourceCommit:   strings.Repeat("a", 40),
+	}
+	if err := preserveImmutableReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(
+		home, userAgentDirectoryName, "receipt-versions", receipt.ReleaseVersion+".json",
+	)
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored localInstallReceipt
+	if err := json.Unmarshal(first, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.SchemaVersion != localReceiptSchema {
+		t.Fatalf("immutable receipt schema = %d, want %d", stored.SchemaVersion, localReceiptSchema)
+	}
+	if stored.Channel != string(releaseChannelAlpha) {
+		t.Fatalf("immutable receipt channel = %q, want %q", stored.Channel, releaseChannelAlpha)
+	}
+	if err := preserveImmutableReceipt(receipt); err != nil {
+		t.Fatalf("preserving the same receipt again failed: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != string(first) || !os.SameFile(before, after) {
+		t.Fatal("preserving the same immutable receipt rewrote it")
+	}
+}
+
 func TestInstallCannotBypassTheExistingInstallationUpdateCeremony(t *testing.T) {
 	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
 		t.Skip("OneNod local receipts are supported on macOS hosts")

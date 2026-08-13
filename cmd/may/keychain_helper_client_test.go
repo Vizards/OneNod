@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -296,5 +297,82 @@ func TestTransportCapabilityUsesAnonymousInheritedFilesOnly(t *testing.T) {
 	transported, err := os.ReadFile(capabilityCapture)
 	if err != nil || !bytes.Equal(transported, capability) {
 		t.Fatalf("anonymous capability transport = %x, %v", transported, err)
+	}
+}
+
+func TestExactBuildMaySubprocessesReceiveOnlyCanonicalHome(t *testing.T) {
+	account, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambientHome := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	t.Setenv("ONENOD_EXACT_BUILD_SENTINEL", "must-not-leak")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "must-not-leak")
+	t.Setenv("OP_SERVICE_ACCOUNT_TOKEN", "must-not-leak")
+
+	command, err := newExactBuildMayCommand("/nonexistent/may", "--version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedHome := "HOME=" + account.HomeDir
+	if len(command.Env) != 1 || command.Env[0] != expectedHome {
+		t.Fatalf("exact-build may environment = %q, want only %q", command.Env, expectedHome)
+	}
+
+	transactionID := strings.Repeat("E", 32)
+	captures := map[string]string{
+		"status": filepath.Join(ambientHome, "status-environment"),
+		"commit": filepath.Join(ambientHome, "commit-environment"),
+		"abort":  filepath.Join(ambientHome, "abort-environment"),
+	}
+	scriptPath := filepath.Join(ambientHome, "may")
+	script := fmt.Sprintf(`#!/bin/sh
+case "$2" in
+  status) capture=%q ;;
+  commit) capture=%q ;;
+  abort) capture=%q ;;
+  *) exit 90 ;;
+esac
+/usr/bin/env > "$capture"
+if [ "$2" = status ]; then
+  /usr/bin/printf '%%s' '{"role":"current","transaction_id":"%s","transaction_state":"committed"}'
+fi
+`, captures["status"], captures["commit"], captures["abort"], transactionID)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const origin = "https://gateway.example.workers.dev"
+	const slot = "active"
+	if _, err := runExactTransportStatus(scriptPath, origin, slot, transactionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := runStagedTransportFinalize(
+		scriptPath, origin, slot, transactionID, false, bytes.Repeat([]byte{0x45}, 32),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCurrentTransportAbort(scriptPath, origin, slot, transactionID); err != nil {
+		t.Fatal(err)
+	}
+
+	for operation, path := range captures {
+		captured, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s environment: %v", operation, err)
+		}
+		if !bytes.Contains(captured, []byte(expectedHome+"\n")) {
+			t.Fatalf("%s environment omitted canonical home: %q", operation, captured)
+		}
+		for _, forbidden := range []string{
+			"HOME=" + ambientHome,
+			"ONENOD_EXACT_BUILD_SENTINEL=",
+			"CLOUDFLARE_API_TOKEN=",
+			"OP_SERVICE_ACCOUNT_TOKEN=",
+		} {
+			if bytes.Contains(captured, []byte(forbidden)) {
+				t.Fatalf("%s inherited forbidden environment %q", operation, forbidden)
+			}
+		}
 	}
 }
