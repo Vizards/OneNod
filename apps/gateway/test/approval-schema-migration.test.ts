@@ -228,6 +228,38 @@ function alpha20Database(input: {
   return database;
 }
 
+function preLegacyConsumeBridgeDatabase(
+  requestStatus: "approved" | "consumed" | "executing" | "pending" | "unknown",
+): DatabaseSync {
+  // Reconstruct the schema immediately before the consume bridge. That
+  // Gateway accepted alpha.20/protocol-1 request bodies, but did not retain
+  // whether client.identity was omitted from the signed body. The migration
+  // must therefore drain active rows instead of guessing eligibility.
+  const database = alpha20Database({ requestStatus: "consumed" });
+  initialize(database);
+  database.exec(`
+    DELETE FROM gateway_schema_migrations WHERE version = 5;
+    DROP TABLE legacy_bearerless_ssh_requesters;
+    ALTER TABLE requests DROP COLUMN legacy_ssh_signed_consume;
+  `);
+  database.prepare(
+    `UPDATE requests
+        SET status = ?, expires_at = ?, decided_at = ?, authorized_until = ?,
+            execution_started_at = ?, consumed_at = ?, error_code = NULL
+      WHERE id = 'request-a'`,
+  ).run(
+    requestStatus,
+    NOW + 60_000,
+    requestStatus === "pending" ? null : NOW - 500,
+    requestStatus === "approved" ? NOW + 30_000 : null,
+    requestStatus === "executing" || requestStatus === "unknown"
+      ? NOW - 300
+      : null,
+    requestStatus === "consumed" ? NOW - 100 : null,
+  );
+  return database;
+}
+
 function initialize(database: DatabaseSync): void {
   const { sql, storage } = approvalStorageAdapters(database);
   const originalNow = Date.now;
@@ -355,6 +387,52 @@ test("alpha.20 terminal state upgrades while preserving identities and retiring 
   const once = databaseSnapshot(database);
   initialize(database);
   assert.deepEqual(databaseSnapshot(database), once);
+});
+
+test("active protocol-1 SSH rows block the consume-bridge migration with zero mutation", () => {
+  for (const status of ["pending", "approved", "executing", "unknown"] as const) {
+    const database = preLegacyConsumeBridgeDatabase(status);
+    const before = databaseSnapshot(database);
+
+    assert.throws(
+      () => initialize(database),
+      /destructive_migration_blocked_by_active_request/u,
+      status,
+    );
+    assert.deepEqual(databaseSnapshot(database), before, status);
+  }
+});
+
+test("terminal protocol-1 SSH rows migrate fail-closed after the drain", () => {
+  const database = preLegacyConsumeBridgeDatabase("consumed");
+  assert.equal(
+    database.prepare(
+      `SELECT COUNT(*) AS count FROM pragma_table_info('requests')
+        WHERE name = 'legacy_ssh_signed_consume'`,
+    ).get()?.count,
+    0,
+  );
+
+  initialize(database);
+
+  assert.equal(
+    database.prepare(
+      "SELECT legacy_ssh_signed_consume FROM requests WHERE id = 'request-a'",
+    ).get()?.legacy_ssh_signed_consume,
+    0,
+  );
+  assert.equal(
+    database.prepare(
+      `SELECT expires_at FROM legacy_bearerless_ssh_requesters
+        WHERE device_id = 'requester-a'`,
+    ).get()?.expires_at,
+    NOW + 24 * 60 * 60_000,
+  );
+  assert.deepEqual(
+    database.prepare("SELECT version FROM gateway_schema_migrations ORDER BY version")
+      .all().map((row) => row.version),
+    [1, 2, 3, 4, 5],
+  );
 });
 
 test("pre-alpha client-observation replacement blocks active work before deleting payloads", () => {

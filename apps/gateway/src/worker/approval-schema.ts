@@ -565,6 +565,15 @@ class ApprovalSchema {
     if (!requestColumns.some((column) => column.name === "client_application")) {
       return true;
     }
+    // Rows created before the legacy SSH consume marker existed do not retain
+    // enough of the signed request body to classify them safely. Let every
+    // active request drain before ALTER TABLE gives those rows the fail-closed
+    // default; terminal rows can then be migrated without reopening authority.
+    if (!requestColumns.some(
+      (column) => column.name === "legacy_ssh_signed_consume",
+    )) {
+      return true;
+    }
     if (this.tableExists("catalog_metadata_cache")) return true;
     if (
       this.tableExists("human_device_enrollments") &&
