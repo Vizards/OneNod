@@ -107,6 +107,9 @@ func TestTransportCandidateDigestUsesManagedSymlinkFileDescriptor(t *testing.T) 
 }
 
 func TestRequesterBootstrapBindsReceiptDigestsToInheritedManagedFiles(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requester bootstrap is supported on macOS only")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	const origin = "https://onenod.example-account.workers.dev"
