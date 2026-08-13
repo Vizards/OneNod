@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -66,6 +67,19 @@ test("a manual retry fails closed when the immutable tag is missing", async () =
       result.stderr,
       /manual release retry requires existing immutable tag v0\.0\.1/u,
     );
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("a manual retry rejects a tag that already has an immutable Release", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    const result = runDerivation(fixture, "workflow_dispatch", {
+      publishedTags: ["v0.0.1"],
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /v0\.0\.1 to remain unpublished/u);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }
@@ -150,6 +164,58 @@ test("successive prereleases reuse the immediate predecessor helper bytes", asyn
   }
 });
 
+test("a failed candidate tag reserves its sequence without becoming release lineage", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    await advanceReleaseTrain(fixture, "0.0.2");
+    const contractPath = join(
+      fixture.root,
+      "scripts/release/release-contract.json",
+    );
+    const contract = JSON.parse(await readFile(contractPath, "utf8"));
+    contract.components.keychain_helper.version = "2.0.0";
+    contract.components.keychain_helper.source_digest = `sha256:${"b".repeat(64)}`;
+    await writeFile(contractPath, `${JSON.stringify(contract)}\n`);
+    git(fixture.root, ["add", "scripts/release/release-contract.json"]);
+    git(fixture.root, ["commit", "-qm", "feat: replace helper build"]);
+    fixture.workflowSha = git(fixture.root, ["rev-parse", "HEAD"]).trim();
+
+    git(fixture.root, ["tag", "v0.0.2-alpha.1", fixture.workflowSha]);
+    const candidateSha = await candidateCommit(fixture, "feature/after-failed-alpha");
+    const result = runDerivation(fixture, "workflow_dispatch", {
+      intent: "alpha",
+      publishedTags: ["v0.0.1"],
+      sourceSha: candidateSha,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.version, "0.0.2-alpha.2");
+    assert.equal(output.artifact_predecessor_version, "0.0.1");
+    assert.equal(output.previous_version, "0.0.1");
+    assert.equal(output.helper_changed, true);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("a failed candidate cannot be retried after a newer official tag exists", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    await advanceReleaseTrain(fixture, "0.0.2");
+    git(fixture.root, ["tag", "v0.0.2-alpha.1", fixture.workflowSha]);
+    git(fixture.root, ["tag", "v0.0.2-alpha.2", fixture.workflowSha]);
+    const result = runDerivation(fixture, "workflow_dispatch", {
+      intent: "retry",
+      publishedTags: ["v0.0.1", "v0.0.2-alpha.2"],
+      version: "0.0.2-alpha.1",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /retry for v0\.0\.2-alpha\.1 is stale/u);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
 test("an active prerelease train blocks a different release core", async () => {
   const fixture = await releaseFixture("0.0.1");
   try {
@@ -169,6 +235,28 @@ test("an active prerelease train blocks a different release core", async () => {
     assert.match(
       result.stderr,
       /release train 0\.0\.3 must reach stable before starting 0\.0\.2/u,
+    );
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
+test("an unpublished stable candidate does not close its release train", async () => {
+  const fixture = await releaseFixture("0.0.1");
+  try {
+    await advanceReleaseTrain(fixture, "0.0.2");
+    git(fixture.root, ["tag", "v0.0.2", fixture.workflowSha]);
+    await advanceReleaseTrain(fixture, "0.0.3");
+    const candidateSha = await candidateCommit(fixture, "feature/next-train-too-early");
+    const result = runDerivation(fixture, "workflow_dispatch", {
+      intent: "alpha",
+      publishedTags: ["v0.0.1"],
+      sourceSha: candidateSha,
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /release train 0\.0\.2 must publish stable before starting 0\.0\.3/u,
     );
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
@@ -425,6 +513,17 @@ function runDerivation(fixture, event, overrides = {}) {
     (event === "workflow_dispatch" && intent === "alpha"
       ? fixture.workflowSha
       : "");
+  const allTags = git(fixture.root, ["tag", "--list", "v*"])
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  const publishedTags =
+    overrides.publishedTags ??
+    (intent === "retry"
+      ? allTags.filter((tag) => tag !== `v${version}`)
+      : allTags);
+  const publishedTagsPath = join(fixture.root, "published-release-tags.json");
+  writeFileSync(publishedTagsPath, `${JSON.stringify(publishedTags)}\n`);
   return spawnSync(
     process.execPath,
     [
@@ -437,6 +536,8 @@ function runDerivation(fixture, event, overrides = {}) {
       "refs/heads/main",
       "--sha",
       event === "push" ? fixture.releaseSha : fixture.workflowSha,
+      "--published-release-tags",
+      publishedTagsPath,
       "--source-sha",
       sourceSha,
       "--version-input",

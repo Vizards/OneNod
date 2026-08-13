@@ -31,9 +31,17 @@ export function validateReleaseWorkflow(value) {
     prepareSteps,
     "Fetch the exact same-repository alpha source",
   );
+  const publishedLineage = namedStep(
+    prepareSteps,
+    "Fetch published release lineage",
+  );
   const deriveRelease = namedStep(
     prepareSteps,
     "Derive the release from the manifest transition",
+  );
+  const predecessorLineage = namedStep(
+    prepareSteps,
+    "Require a published immutable predecessor",
   );
   const selectedSourceContract = namedStep(
     prepareSteps,
@@ -42,6 +50,19 @@ export function validateReleaseWorkflow(value) {
   if (
     !isPinnedAction(prepareCheckout?.uses, "actions/checkout") ||
     !stepRun(alphaSource).includes("branches-where-head") ||
+    !stepRun(publishedLineage).includes("gh api --paginate --slurp") ||
+    !stepRun(publishedLineage).includes(
+      "X-GitHub-Api-Version: 2026-03-10",
+    ) ||
+    !stepRun(publishedLineage).includes("releases?per_page=100") ||
+    !stepRun(publishedLineage).includes(".draft == false") ||
+    !stepRun(publishedLineage).includes(".immutable == true") ||
+    !stepRun(publishedLineage).includes(
+      '> "$RUNNER_TEMP/published-release-tags.json"',
+    ) ||
+    !stepRun(deriveRelease).includes(
+      '--published-release-tags "$RUNNER_TEMP/published-release-tags.json"',
+    ) ||
     !stepRun(deriveRelease).includes('--source-sha "$SOURCE_SHA_INPUT"') ||
     stepRun(selectedSourceContract) !==
       'node scripts/release/verify-source-contract.mjs --source-sha "$SOURCE_SHA"' ||
@@ -56,6 +77,22 @@ export function validateReleaseWorkflow(value) {
       ({ run }) => typeof run === "string" && run.includes("GITHUB_STEP_SUMMARY"),
     ) ||
     prepareJob.permissions?.contents !== "read" ||
+    prepareJob.permissions?.attestations !== "read" ||
+    !stepRun(predecessorLineage).includes(
+      "--pattern onenod-provenance.intoto.jsonl",
+    ) ||
+    !stepRun(predecessorLineage).includes("gh attestation verify") ||
+    !stepRun(predecessorLineage).includes(
+      "--bundle \"$lineage_dir/onenod-provenance.intoto.jsonl\"",
+    ) ||
+    !stepRun(predecessorLineage).includes(
+      "--predicate-type https://slsa.dev/provenance/v1",
+    ) ||
+    !stepRun(predecessorLineage).includes(
+      "--signer-workflow github.com/Vizards/OneNod/.github/workflows/release.yml",
+    ) ||
+    !stepRun(predecessorLineage).includes("--source-ref refs/heads/main") ||
+    !stepRun(predecessorLineage).includes("--deny-self-hosted-runners") ||
     namedStep(prepareSteps, "Create or verify the exact lightweight tag") !== undefined
   ) {
     fail(

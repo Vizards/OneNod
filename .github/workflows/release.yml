@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      attestations: read
       contents: read
     outputs:
       artifact_predecessor_version: ${{ steps.release.outputs.artifact_predecessor_version }}
@@ -98,6 +99,17 @@ jobs:
           git fetch --no-tags "https://github.com/$GITHUB_REPOSITORY.git" \
             '+refs/heads/*:refs/remotes/origin/*'
           test "$(git rev-parse "$SOURCE_SHA_INPUT^{commit}")" = "$SOURCE_SHA_INPUT"
+      - name: Fetch published release lineage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate --slurp \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/published-release-pages.json"
+          jq '[.[][] | select(.draft == false and .immutable == true) | .tag_name]' \
+            "$RUNNER_TEMP/published-release-pages.json" \
+            > "$RUNNER_TEMP/published-release-tags.json"
       - name: Derive the release from the manifest transition
         id: release
         env:
@@ -110,6 +122,7 @@ jobs:
           --intent "$RELEASE_INTENT"
           --ref "$GITHUB_REF"
           --sha "$GITHUB_SHA"
+          --published-release-tags "$RUNNER_TEMP/published-release-tags.json"
           --source-sha "$SOURCE_SHA_INPUT"
           --version-input "$VERSION_INPUT"
           --output "$GITHUB_OUTPUT"
@@ -179,7 +192,15 @@ jobs:
             --jq 'if .object.type == "commit" then .object.sha else "" end')"
           gh release download "$previous_tag" \
             --pattern release-manifest.json \
+            --pattern onenod-provenance.intoto.jsonl \
             --dir "$lineage_dir"
+          gh attestation verify "$lineage_dir/release-manifest.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle "$lineage_dir/onenod-provenance.intoto.jsonl" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --signer-workflow github.com/Vizards/OneNod/.github/workflows/release.yml \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
           node scripts/release/verify-previous-lineage.mjs \
             --release "$lineage_dir/release.json" \
             --manifest "$lineage_dir/release-manifest.json" \
