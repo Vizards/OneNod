@@ -3,10 +3,13 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -123,6 +126,83 @@ func TestDeploymentArtifactInstallabilityUsesRuntimeMetadataContract(t *testing.
 	}
 }
 
+func TestNativeArtifactInstallabilityUsesManifestArchitecture(t *testing.T) {
+	manifest := validManifestFixture("0.0.2-alpha.23", nil)
+	architecture := oppositeTestArchitecture()
+	fixtures := []struct {
+		archive func(*testing.T, releaseManifest, string, string) []byte
+		kind    string
+	}{
+		{archive: testLocalReleaseArchive, kind: "local"},
+		{archive: testHelperReleaseArchive, kind: "keychain_helper"},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.kind, func(t *testing.T) {
+			snapshot := fixture.archive(t, manifest, architecture, architecture)
+			artifact := testNativeReleaseArtifact(fixture.kind, architecture)
+			if err := verifyReleaseArtifactInstallability(manifest, artifact, snapshot); err != nil {
+				t.Fatalf("release verifier rejected a valid %s artifact for %s: %v", fixture.kind, architecture, err)
+			}
+
+			artifact.Platform.Architecture = runtime.GOARCH
+			if err := verifyReleaseArtifactInstallability(manifest, artifact, snapshot); err == nil {
+				t.Fatalf("release verifier accepted %s metadata that disagreed with manifest platform", fixture.kind)
+			}
+
+			artifact.Platform.Architecture = architecture
+			identityMismatch := fixture.archive(t, manifest, architecture, runtime.GOARCH)
+			if err := verifyReleaseArtifactInstallability(manifest, artifact, identityMismatch); err == nil {
+				t.Fatalf("release verifier accepted %s exact identity for the wrong architecture", fixture.kind)
+			}
+		})
+	}
+}
+
+func TestHostBoundNativeArtifactExtractionRejectsOtherArchitecture(t *testing.T) {
+	manifest := validManifestFixture("0.0.2-alpha.23", nil)
+	architecture := oppositeTestArchitecture()
+	if _, err := extractVerifiedLocalArchive(
+		testLocalReleaseArchive(t, manifest, architecture, architecture), t.TempDir(), manifest,
+	); err == nil {
+		t.Fatal("host-bound local extractor accepted another architecture")
+	}
+	if _, err := extractVerifiedHelperArchive(
+		testHelperReleaseArchive(t, manifest, architecture, architecture), t.TempDir(), manifest,
+	); err == nil {
+		t.Fatal("host-bound helper extractor accepted another architecture")
+	}
+}
+
+func TestNativeArtifactInstallabilityRejectsInvalidManifestPlatform(t *testing.T) {
+	manifest := validManifestFixture("0.0.2-alpha.23", nil)
+	snapshot := testLocalReleaseArchive(t, manifest, runtime.GOARCH, runtime.GOARCH)
+	fixtures := []struct {
+		name     string
+		platform *struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}
+	}{
+		{name: "missing"},
+		{name: "wrong operating system", platform: &struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}{Architecture: runtime.GOARCH, OS: "linux"}},
+		{name: "unsupported architecture", platform: &struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}{Architecture: "riscv64", OS: "darwin"}},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			artifact := releaseArtifact{Kind: "local", Platform: fixture.platform}
+			if err := verifyReleaseArtifactInstallability(manifest, artifact, snapshot); err == nil {
+				t.Fatal("release verifier accepted an invalid native artifact platform")
+			}
+		})
+	}
+}
+
 func TestArchiveExtractionRejectsDestinationSymlinkEscape(t *testing.T) {
 	for _, test := range archiveExtractorFixtures() {
 		t.Run(test.name, func(t *testing.T) {
@@ -182,6 +262,97 @@ func writeTestArchive(t *testing.T, path, name string, typeflag byte, content []
 type testArchiveFile struct {
 	content []byte
 	name    string
+}
+
+func oppositeTestArchitecture() string {
+	if runtime.GOARCH == "arm64" {
+		return "amd64"
+	}
+	return "arm64"
+}
+
+func testNativeReleaseArtifact(kind, architecture string) releaseArtifact {
+	return releaseArtifact{
+		Kind: kind,
+		Platform: &struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		}{Architecture: architecture, OS: "darwin"},
+	}
+}
+
+func testLocalReleaseArchive(
+	t *testing.T,
+	manifest releaseManifest,
+	metadataArchitecture, identityArchitecture string,
+) []byte {
+	t.Helper()
+	mayBytes := []byte("verified may for " + metadataArchitecture)
+	adapterBytes := []byte("verified may SSH adapter for " + metadataArchitecture)
+	metadata := localReleaseMetadata{
+		Architecture: metadataArchitecture, ArtifactKind: "local",
+		ReleaseVersion: manifest.ReleaseVersion, Repository: officialRepository,
+		SchemaVersion: 1, SourceCommit: manifest.Source.Commit,
+	}
+	metadata.CodeIdentities.May = manifest.Components.May.CodeIdentity
+	metadata.CodeIdentities.MaySSHSign = manifest.Components.May.AdapterCodeIdentity
+	metadata.ExactCodeIdentities.May = testExactBuildRuntimeIdentityForArchitecture(identityArchitecture)
+	metadata.ExactCodeIdentities.MaySSHSign = testExactBuildRuntimeIdentityForArchitecture(identityArchitecture)
+	mayDigest := sha256.Sum256(mayBytes)
+	adapterDigest := sha256.Sum256(adapterBytes)
+	metadata.BinarySHA256.May = "sha256:" + hex.EncodeToString(mayDigest[:])
+	metadata.BinarySHA256.MaySSHSign = "sha256:" + hex.EncodeToString(adapterDigest[:])
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testReleaseArchiveSnapshot(t, []testArchiveFile{
+		{name: "onenod/RELEASE.json", content: metadataBytes},
+		{name: "onenod/bin/may", content: mayBytes},
+		{name: "onenod/bin/" + gitSignAdapterBinaryName, content: adapterBytes},
+	})
+}
+
+func testHelperReleaseArchive(
+	t *testing.T,
+	manifest releaseManifest,
+	metadataArchitecture, identityArchitecture string,
+) []byte {
+	t.Helper()
+	binary := []byte("verified Keychain helper for " + metadataArchitecture)
+	digest := sha256.Sum256(binary)
+	metadata := helperReleaseMetadata{
+		Architecture:       metadataArchitecture,
+		ArtifactKind:       "keychain_helper",
+		BinarySHA256:       "sha256:" + hex.EncodeToString(digest[:]),
+		CodeIdentity:       manifest.Components.KeychainHelper.CodeIdentity,
+		ExactCodeIdentity:  testExactBuildRuntimeIdentityForArchitecture(identityArchitecture),
+		HelperProtocol:     manifest.Components.KeychainHelper.HelperProtocol.Maximum,
+		HelperSourceDigest: manifest.Components.KeychainHelper.SourceDigest,
+		HelperVersion:      manifest.Components.KeychainHelper.Version,
+		Repository:         officialRepository,
+		SchemaVersion:      1,
+		SourceCommit:       manifest.Source.Commit,
+	}
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testReleaseArchiveSnapshot(t, []testArchiveFile{
+		{name: "onenod-keychain-helper/RELEASE.json", content: metadataBytes},
+		{name: "onenod-keychain-helper/bin/onenod-keychain-helper", content: binary},
+	})
+}
+
+func testReleaseArchiveSnapshot(t *testing.T, entries []testArchiveFile) []byte {
+	t.Helper()
+	archive := filepath.Join(t.TempDir(), "release.tar.gz")
+	writeTestRegularArchive(t, archive, entries)
+	snapshot, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func writeTestRegularArchive(t *testing.T, path string, entries []testArchiveFile) {

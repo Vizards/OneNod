@@ -241,6 +241,16 @@ func extractVerifiedLocalArchive(
 	archiveSnapshot []byte, destination string,
 	manifest releaseManifest,
 ) (localReleaseMetadata, error) {
+	return extractVerifiedLocalArchiveForArchitecture(
+		archiveSnapshot, destination, manifest, runtime.GOARCH,
+	)
+}
+
+func extractVerifiedLocalArchiveForArchitecture(
+	archiveSnapshot []byte, destination string,
+	manifest releaseManifest,
+	expectedArchitecture string,
+) (localReleaseMetadata, error) {
 	var metadata localReleaseMetadata
 	if err := decodeAuthenticatedArchiveJSON(
 		archiveSnapshot, "onenod/RELEASE.json", &metadata,
@@ -257,13 +267,17 @@ func extractVerifiedLocalArchive(
 	}
 	root := filepath.Join(destination, "onenod")
 	if metadata.SchemaVersion != 1 || metadata.Repository != officialRepository ||
-		metadata.ArtifactKind != "local" || metadata.Architecture != runtime.GOARCH ||
+		metadata.ArtifactKind != "local" || metadata.Architecture != expectedArchitecture ||
 		metadata.ReleaseVersion != manifest.ReleaseVersion ||
 		metadata.SourceCommit != manifest.Source.Commit ||
 		metadata.CodeIdentities.May != manifest.Components.May.CodeIdentity ||
 		metadata.CodeIdentities.MaySSHSign != manifest.Components.May.AdapterCodeIdentity ||
-		!validExactBuildRuntimeIdentity(metadata.ExactCodeIdentities.May) ||
-		!validExactBuildRuntimeIdentity(metadata.ExactCodeIdentities.MaySSHSign) ||
+		!validExactBuildRuntimeIdentityForArchitecture(
+			metadata.ExactCodeIdentities.May, expectedArchitecture,
+		) ||
+		!validExactBuildRuntimeIdentityForArchitecture(
+			metadata.ExactCodeIdentities.MaySSHSign, expectedArchitecture,
+		) ||
 		!digestPattern.MatchString(metadata.BinarySHA256.May) ||
 		!digestPattern.MatchString(metadata.BinarySHA256.MaySSHSign) {
 		return localReleaseMetadata{}, errors.New("verified local archive exact-build metadata does not match the Release")
@@ -287,6 +301,16 @@ func extractVerifiedHelperArchive(
 	archiveSnapshot []byte, destination string,
 	manifest releaseManifest,
 ) (helperReleaseMetadata, error) {
+	return extractVerifiedHelperArchiveForArchitecture(
+		archiveSnapshot, destination, manifest, runtime.GOARCH,
+	)
+}
+
+func extractVerifiedHelperArchiveForArchitecture(
+	archiveSnapshot []byte, destination string,
+	manifest releaseManifest,
+	expectedArchitecture string,
+) (helperReleaseMetadata, error) {
 	var metadata helperReleaseMetadata
 	if err := decodeAuthenticatedArchiveJSON(
 		archiveSnapshot, "onenod-keychain-helper/RELEASE.json", &metadata,
@@ -305,11 +329,13 @@ func extractVerifiedHelperArchive(
 	// belongs to that immutable helper artifact, not necessarily to this product
 	// manifest. The outer attested artifact digest binds the complete archive.
 	if metadata.SchemaVersion != 1 || metadata.Repository != officialRepository ||
-		metadata.ArtifactKind != "keychain_helper" || metadata.Architecture != runtime.GOARCH ||
+		metadata.ArtifactKind != "keychain_helper" || metadata.Architecture != expectedArchitecture ||
 		metadata.HelperVersion != manifest.Components.KeychainHelper.Version ||
 		!commitPattern.MatchString(metadata.SourceCommit) ||
 		metadata.CodeIdentity != manifest.Components.KeychainHelper.CodeIdentity ||
-		!validExactBuildRuntimeIdentity(metadata.ExactCodeIdentity) ||
+		!validExactBuildRuntimeIdentityForArchitecture(
+			metadata.ExactCodeIdentity, expectedArchitecture,
+		) ||
 		metadata.HelperSourceDigest != manifest.Components.KeychainHelper.SourceDigest ||
 		!protocolContains(manifest.Components.KeychainHelper.HelperProtocol, metadata.HelperProtocol) ||
 		!digestPattern.MatchString(metadata.BinarySHA256) {
