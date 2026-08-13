@@ -76,7 +76,8 @@ export class ApprovalRequestStore {
               application_signer_name,
               application_scope_id, secret_grant_id,
               ssh_agent_instance_public_key, ssh_scope_id, ssh_scope_kind,
-              ssh_grant_id, item_id, field_id, expected_version,
+              ssh_grant_id, legacy_ssh_signed_consume,
+              item_id, field_id, expected_version,
               item_title, field_label, field_type,
               (SELECT operation_summary FROM request_operations o
                WHERE o.request_id = requests.id) AS operation_summary,

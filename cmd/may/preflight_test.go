@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func TestRequesterPreflightChecksCoreWithoutRequiringEnrollment(t *testing.T) {
 		dependencies{
 			httpClient: server.Client(),
 			keychain: keychainStore{
-				backend: &recordingKeychainBackend{found: false},
+				backend: &recordingKeychainBackend{loadErr: errors.New("legacy active item must not be read")},
 			},
 			stderr: io.Discard,
 			stdout: &output,
@@ -46,8 +47,12 @@ func TestRequesterPreflightChecksCoreWithoutRequiringEnrollment(t *testing.T) {
 
 func TestRequesterPreflightReportsOnlyPublicRequesterIdentity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	const slot = "11111111-2222-4333-8444-555555555555"
 	server := healthyPreflightServer(t)
 	defer server.Close()
+	if err := activateRequesterSlot(server.URL, slot); err != nil {
+		t.Fatal(err)
+	}
 	credential, err := credentialFromSeed("test-agent-device")
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +88,30 @@ func TestRequesterPreflightReportsOnlyPublicRequesterIdentity(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("preflight output omitted %q", expected)
 		}
+	}
+}
+
+func TestRequesterPreflightFailsClosedForSelectedCredentialError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const slot = "11111111-2222-4333-8444-555555555555"
+	server := healthyPreflightServer(t)
+	defer server.Close()
+	if err := activateRequesterSlot(server.URL, slot); err != nil {
+		t.Fatal(err)
+	}
+	err := runCLI(
+		[]string{"--origin", server.URL, "preflight"},
+		dependencies{
+			httpClient: server.Client(),
+			keychain: keychainStore{
+				backend: &recordingKeychainBackend{loadErr: errors.New("selected requester is unavailable")},
+			},
+			stderr: io.Discard,
+			stdout: io.Discard,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "read requester credential from Keychain failed") {
+		t.Fatalf("selected requester error was not propagated: %v", err)
 	}
 }
 

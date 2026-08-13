@@ -27,24 +27,35 @@ func requesterStatePath() (string, error) {
 }
 
 func activeRequesterSlot(origin string) (string, error) {
-	path, err := requesterStatePath()
+	slot, selected, err := selectedRequesterSlot(origin)
 	if err != nil {
 		return "", err
+	}
+	if !selected {
+		return "active", nil
+	}
+	return slot, nil
+}
+
+func selectedRequesterSlot(origin string) (string, bool, error) {
+	path, err := requesterStatePath()
+	if err != nil {
+		return "", false, err
 	}
 	encoded, exists, err := readOptionalRegularFile(path, maxManifestBytes)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !exists {
-		return "active", nil
+		return "", false, nil
 	}
 	var state requesterLocalState
 	if err := json.Unmarshal(encoded, &state); err != nil ||
 		state.SchemaVersion != requesterStateSchema || state.Origin != origin ||
 		!requesterSlotPattern.MatchString(state.ActiveSlot) {
-		return "", errors.New("local requester identity state is invalid or belongs to another Origin")
+		return "", false, errors.New("local requester identity state is invalid or belongs to another Origin")
 	}
-	return state.ActiveSlot, nil
+	return state.ActiveSlot, true, nil
 }
 
 func activateRequesterSlot(origin, slot string) error {

@@ -146,19 +146,21 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 		return err
 	}
 	report.Requester.LocalCredential = "absent"
-	credential, found, err := deps.keychain.LoadIfPresent()
-	if err != nil {
-		return err
-	}
-	if found {
-		fingerprint, err := publicKeyFingerprint(credential)
+	if deps.keychain.selected {
+		credential, found, err := deps.keychain.LoadIfPresent()
 		if err != nil {
-			return errors.New("requester credential preflight failed")
+			return err
 		}
-		report.Requester.LocalCredential = "present"
-		report.Requester.DeviceID = credential.DeviceID
-		report.Requester.DisplayName = credential.DisplayName
-		report.Requester.PublicKeyFingerprint = fingerprint
+		if found {
+			fingerprint, err := publicKeyFingerprint(credential)
+			if err != nil {
+				return errors.New("requester credential preflight failed")
+			}
+			report.Requester.LocalCredential = "present"
+			report.Requester.DeviceID = credential.DeviceID
+			report.Requester.DisplayName = credential.DisplayName
+			report.Requester.PublicKeyFingerprint = fingerprint
+		}
 	}
 	return writeIndentedValue(deps.stdout, report)
 }

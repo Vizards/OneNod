@@ -276,7 +276,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -474,12 +477,10 @@ func (store systemCredentialStore) Constrain(
 }
 
 func withKeychainMutationLock(operation func() error) error {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	lockPath, err := keychainMutationLockPath()
+	if err != nil {
 		return errors.New("Keychain mutation lock home is unavailable")
 	}
-	directory := filepath.Join(home, ".onenod")
-	lockPath := filepath.Join(directory, "keychain-helper.lock")
 	fd, err := unix.Open(
 		lockPath,
 		unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
@@ -500,4 +501,17 @@ func withKeychainMutationLock(operation func() error) error {
 	}
 	defer unix.Flock(fd, unix.LOCK_UN)
 	return operation()
+}
+
+func keychainMutationLockPath() (string, error) {
+	if os.Getuid() != os.Geteuid() {
+		return "", errors.New("real and effective user differ")
+	}
+	current, err := user.Current()
+	if err != nil || current == nil || current.Uid != strconv.Itoa(os.Geteuid()) ||
+		current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) ||
+		filepath.Clean(current.HomeDir) != current.HomeDir || strings.IndexByte(current.HomeDir, 0) >= 0 {
+		return "", errors.New("current account home is unavailable")
+	}
+	return filepath.Join(current.HomeDir, ".onenod", "keychain-helper.lock"), nil
 }

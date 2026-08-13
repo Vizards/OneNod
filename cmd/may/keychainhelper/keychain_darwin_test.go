@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -91,6 +93,22 @@ func TestDisposableKeychainMetadataAndExactBuildACL(t *testing.T) {
 	read := runKeychainProbeProcess(t, replacement, "read", account, service, 2*time.Minute)
 	if read.err != nil || !bytes.Equal(read.stdout, data) {
 		t.Fatalf("replacement helper ceremony read failed: %v %s", read.err, read.stderr)
+	}
+}
+
+func TestKeychainMutationLockPathIgnoresAmbientHome(t *testing.T) {
+	account, err := user.Current()
+	if err != nil || account == nil || account.HomeDir == "" {
+		t.Fatal("current test account home is unavailable")
+	}
+	t.Setenv("HOME", "")
+	path, err := keychainMutationLockPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(account.HomeDir, ".onenod", "keychain-helper.lock")
+	if path != expected {
+		t.Fatalf("mutation lock used ambient HOME: got %q, want %q", path, expected)
 	}
 }
 

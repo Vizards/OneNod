@@ -128,11 +128,15 @@ func runCLI(args []string, deps dependencies) error {
 		}
 		deps.keychain.service = keychainService
 		deps.keychain.origin = config.origin
-		activeSlot, err := activeRequesterSlot(config.origin)
+		activeSlot, selected, err := selectedRequesterSlot(config.origin)
 		if err != nil {
 			return err
 		}
+		if !selected {
+			activeSlot = "active"
+		}
 		deps.keychain.slot = activeSlot
+		deps.keychain.selected = selected
 	}
 
 	switch remaining[0] {

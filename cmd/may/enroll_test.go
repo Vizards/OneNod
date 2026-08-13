@@ -197,7 +197,9 @@ func TestFreshRequesterCeremonyDefaultsNoBeforeKeychainWrite(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	const origin = "https://onenod.example-account.workers.dev"
-	backend := &serviceKeychainBackend{items: make(map[string][]byte)}
+	backend := &recordingKeychainBackend{
+		loadErr: errors.New("unselected legacy requester must not be read"),
+	}
 	var output strings.Builder
 	err := runCLI([]string{
 		"--origin", origin, "enroll", "--name", "Test Mac",
@@ -214,8 +216,8 @@ func TestFreshRequesterCeremonyDefaultsNoBeforeKeychainWrite(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "requester Keychain ceremony was not confirmed") {
 		t.Fatalf("fresh requester default-no gate returned %v", err)
 	}
-	if len(backend.items) != 0 {
-		t.Fatal("fresh requester wrote a Keychain item before confirmation")
+	if backend.account != "" || len(backend.saved) != 0 {
+		t.Fatal("fresh requester accessed Keychain before confirmation")
 	}
 	if !strings.Contains(output.String(), "REQUESTER KEYCHAIN SECURITY CEREMONY") ||
 		!strings.Contains(output.String(), origin) ||

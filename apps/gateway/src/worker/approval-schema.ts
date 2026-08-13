@@ -2,6 +2,7 @@ import {
   DEFAULT_PASSKEY_LABEL,
   LEGACY_DEFAULT_PASSKEY_LABEL,
 } from "../passkey-identity.js";
+import { legacyBearerlessSshBridgeExpiresAt } from "./legacy-consume-bridge.js";
 import { RETENTION_SWEEP_INTERVAL_MS } from "./retention-policy.js";
 
 export interface ApprovalSchemaSql {
@@ -140,6 +141,10 @@ class ApprovalSchema {
         expires_at INTEGER NOT NULL,
         PRIMARY KEY (device_id, nonce)
       )`,
+      `CREATE TABLE IF NOT EXISTS legacy_bearerless_ssh_requesters (
+        device_id TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL
+      )`,
       `CREATE TABLE IF NOT EXISTS gateway_runtime_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         locked INTEGER NOT NULL,
@@ -213,6 +218,8 @@ class ApprovalSchema {
         ssh_scope_id TEXT,
         ssh_scope_kind TEXT,
         ssh_grant_id TEXT,
+        legacy_ssh_signed_consume INTEGER NOT NULL DEFAULT 0
+          CHECK (legacy_ssh_signed_consume IN (0, 1)),
         item_title TEXT NOT NULL,
         field_label TEXT NOT NULL,
         field_type TEXT NOT NULL,
@@ -359,6 +366,11 @@ class ApprovalSchema {
     this.ensureColumn("requests", "ssh_scope_id", "TEXT");
     this.ensureColumn("requests", "ssh_scope_kind", "TEXT");
     this.ensureColumn("requests", "ssh_grant_id", "TEXT");
+    this.ensureColumn(
+      "requests",
+      "legacy_ssh_signed_consume",
+      "INTEGER NOT NULL DEFAULT 0 CHECK (legacy_ssh_signed_consume IN (0, 1))",
+    );
     this.ensureColumn(
       "request_activity",
       "application_assurance",
@@ -515,6 +527,7 @@ class ApprovalSchema {
     this.migrateLegacyDefaultPasskeyLabel();
     this.migrateStableApplicationAuthorizationScopes();
     this.migrateVerifiedApplicationAuthorizationScopes();
+    this.migrateLegacyBearerlessSshRequesters();
   }
 
   /**
@@ -550,6 +563,15 @@ class ApprovalSchema {
       "PRAGMA table_info(requests)",
     );
     if (!requestColumns.some((column) => column.name === "client_application")) {
+      return true;
+    }
+    // Rows created before the legacy SSH consume marker existed do not retain
+    // enough of the signed request body to classify them safely. Let every
+    // active request drain before ALTER TABLE gives those rows the fail-closed
+    // default; terminal rows can then be migrated without reopening authority.
+    if (!requestColumns.some(
+      (column) => column.name === "legacy_ssh_signed_consume",
+    )) {
       return true;
     }
     if (this.tableExists("catalog_metadata_cache")) return true;
@@ -678,6 +700,31 @@ class ApprovalSchema {
     });
   }
 
+  private migrateLegacyBearerlessSshRequesters(): void {
+    const migrated = this.first<{ version: number }>(
+      `SELECT version FROM gateway_schema_migrations WHERE version = 5`,
+    );
+    if (migrated) return;
+
+    const now = Date.now();
+    this.storage.transactionSync(() => {
+      // This is a temporary dogfood bridge. Only requesters that already
+      // existed when the bridge was deployed may create an eligible request;
+      // newly enrolled protocol-2 requesters are never added to this table.
+      this.sql.exec(
+        `INSERT OR IGNORE INTO legacy_bearerless_ssh_requesters
+          (device_id, expires_at)
+         SELECT device_id, ? FROM requesters WHERE revoked_at IS NULL`,
+        legacyBearerlessSshBridgeExpiresAt(now),
+      );
+      this.sql.exec(
+        `INSERT INTO gateway_schema_migrations (version, applied_at)
+         VALUES (5, ?)`,
+        now,
+      );
+    });
+  }
+
   private migrateRequestClientObservation(): void {
     const columns = this.rows<{ name: string }>("PRAGMA table_info(requests)");
     if (columns.some((column) => column.name === "client_application")) return;
@@ -720,6 +767,8 @@ class ApprovalSchema {
         ssh_scope_id TEXT,
         ssh_scope_kind TEXT,
         ssh_grant_id TEXT,
+        legacy_ssh_signed_consume INTEGER NOT NULL DEFAULT 0
+          CHECK (legacy_ssh_signed_consume IN (0, 1)),
         item_title TEXT NOT NULL,
         field_label TEXT NOT NULL,
         field_type TEXT NOT NULL,

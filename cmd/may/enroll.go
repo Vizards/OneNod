@@ -23,7 +23,7 @@ func runEnroll(args []string, config cliConfig, deps dependencies) error {
 		return errors.New("usage: may [global flags] enroll [--name \"MacBook\"] [--new-identity]")
 	}
 	selectedSlot := deps.keychain.slot
-	freshIdentity := *newIdentity
+	freshIdentity := *newIdentity || !deps.keychain.selected
 	var credential *requesterCredential
 	identityCreated := false
 	if !freshIdentity {

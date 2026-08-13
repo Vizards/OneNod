@@ -327,6 +327,10 @@ func TestFinalizeChildErrorAndUnavailableStatusIsFailSafe(t *testing.T) {
 func TestPrepareExactBuildRejectsCandidateReplacedAfterVerifiedExtraction(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	const origin = "https://example.workers.dev"
+	if err := activateRequesterSlot(origin, "11111111-2222-4333-8444-555555555555"); err != nil {
+		t.Fatal(err)
+	}
 	for _, directory := range []string{
 		filepath.Join(home, userAgentDirectoryName),
 		filepath.Join(home, userAgentDirectoryName, "bin"),
@@ -360,7 +364,7 @@ func TestPrepareExactBuildRejectsCandidateReplacedAfterVerifiedExtraction(t *tes
 	}
 	t.Cleanup(func() { queryTransportUpdateStatus = oldQuery })
 	_, err := prepareExactBuildUpdateTransaction(
-		release, "https://example.workers.dev", mayPath, adapterPath, helperPath, previous,
+		release, origin, mayPath, adapterPath, helperPath, previous,
 		verifiedLocalTransportDescriptor{
 			MaySHA256:     "sha256:" + strings.Repeat("a", 64),
 			AdapterSHA256: adapterDigest, HelperSHA256: helperDigest,
@@ -373,10 +377,31 @@ func TestPrepareExactBuildRejectsCandidateReplacedAfterVerifiedExtraction(t *tes
 	}
 }
 
+func TestPrepareExactBuildSkipsTransportWithoutSelectedRequester(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldQuery := queryTransportUpdateStatus
+	queryTransportUpdateStatus = func(string, string) (transportHelperStatus, error) {
+		t.Fatal("transport status was queried without a selected requester")
+		return transportHelperStatus{}, nil
+	}
+	t.Cleanup(func() { queryTransportUpdateStatus = oldQuery })
+	transaction, err := prepareExactBuildUpdateTransaction(
+		&verifiedRelease{}, "https://example.workers.dev", "", "", "",
+		&localInstallReceipt{}, verifiedLocalTransportDescriptor{},
+	)
+	if err != nil || transaction != nil {
+		t.Fatalf("unselected requester transport = %+v, %v", transaction, err)
+	}
+}
+
 func TestPartialStageErrorAbortsAndRemovesPreparedJournal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	const origin = "https://example.workers.dev"
 	if err := os.MkdirAll(filepath.Join(home, userAgentDirectoryName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := activateRequesterSlot(origin, "11111111-2222-4333-8444-555555555555"); err != nil {
 		t.Fatal(err)
 	}
 	mayPath := filepath.Join(home, "may")
@@ -426,7 +451,7 @@ func TestPartialStageErrorAbortsAndRemovesPreparedJournal(t *testing.T) {
 		abortStagedTransport = oldAbort
 	})
 	_, err := prepareExactBuildUpdateTransaction(
-		release, "https://example.workers.dev", mayPath, adapterPath, helperPath, previous,
+		release, origin, mayPath, adapterPath, helperPath, previous,
 		verifiedLocalTransportDescriptor{
 			MaySHA256: mayDigest, AdapterSHA256: adapterDigest, HelperSHA256: helperDigest,
 			MayIdentity: testExactBuildRuntimeIdentity(), AdapterIdentity: testExactBuildRuntimeIdentity(),
@@ -444,6 +469,7 @@ func TestPartialStageErrorAbortsAndRemovesPreparedJournal(t *testing.T) {
 func TestStagedJournalWriteAndAbortFailurePreservesNextRunRecovery(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	const origin = "https://example.workers.dev"
 	root := filepath.Join(home, userAgentDirectoryName)
 	for _, directory := range []string{
 		filepath.Join(root, "bin"),
@@ -455,6 +481,9 @@ func TestStagedJournalWriteAndAbortFailurePreservesNextRunRecovery(t *testing.T)
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := activateRequesterSlot(origin, "11111111-2222-4333-8444-555555555555"); err != nil {
+		t.Fatal(err)
 	}
 	oldTargets := managedReleaseTargets("0.0.1", "0.0.1")
 	for name, stable := range map[string]string{
@@ -560,7 +589,7 @@ func TestStagedJournalWriteAndAbortFailurePreservesNextRunRecovery(t *testing.T)
 	})
 
 	_, err := prepareExactBuildUpdateTransaction(
-		release, "https://example.workers.dev", mayPath, adapterPath, "", previous,
+		release, origin, mayPath, adapterPath, "", previous,
 		verifiedLocalTransportDescriptor{
 			MaySHA256: mayDigest, AdapterSHA256: adapterDigest, HelperSHA256: helperDigest,
 			MayIdentity: testExactBuildRuntimeIdentity(), AdapterIdentity: testExactBuildRuntimeIdentity(),

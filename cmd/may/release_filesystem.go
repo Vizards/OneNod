@@ -17,6 +17,12 @@ import (
 )
 
 func preserveImmutableReceipt(receipt localInstallReceipt) error {
+	receipt.SchemaVersion = localReceiptSchema
+	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
+	if err != nil {
+		return err
+	}
+	receipt.Channel = string(channel)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return errors.New("resolve home for immutable install receipt failed")

@@ -258,6 +258,7 @@ function insertRequest(
     idempotency_key: `idem-${input.id}`,
     item_id: ssh ? "ssh-item" : "item-a",
     item_title: ssh ? "GitHub SSH Key" : "Sentry",
+    legacy_ssh_signed_consume: 0,
     requester_device_id: REQUESTER_ID,
     requester_name: "Codex on Mac",
     secret_grant_id: ssh ? null : input.grantId,

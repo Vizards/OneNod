@@ -3,14 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -22,6 +27,8 @@ const (
 	keychainHelperTimeout         = 15 * time.Second
 	keychainHelperCeremonyTimeout = 5 * time.Minute
 )
+
+var currentExecutablePath = os.Executable
 
 type keychainHelperRequest struct {
 	ApplicationEvidence               string `json:"application_evidence,omitempty"`
@@ -213,7 +220,7 @@ func closeExactTransportCandidates(files []*os.File) {
 }
 
 func currentTransportCandidatePaths() (string, string, error) {
-	mayPath, err := os.Executable()
+	mayPath, err := currentExecutablePath()
 	if err != nil {
 		return "", "", errors.New("resolve running may executable failed")
 	}
@@ -224,8 +231,21 @@ func currentTransportCandidatePaths() (string, string, error) {
 	return mayPath, filepath.Join(home, userAgentDirectoryName, "bin", gitSignAdapterBinaryName), nil
 }
 
-func transportCandidateDigest(path string) (string, error) {
-	return regularFileSHA256(path, maxReleaseArtifactBytes)
+func transportCandidateDigest(file *os.File) (string, error) {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxReleaseArtifactBytes {
+		return "", errors.New("exact-build transport candidate is not a bounded regular file")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.NewSectionReader(file, 0, info.Size())); err != nil {
+		return "", errors.New("hash exact-build transport candidate failed")
+	}
+	infoAfter, err := file.Stat()
+	if err != nil || !os.SameFile(info, infoAfter) || info.Size() != infoAfter.Size() ||
+		info.ModTime() != infoAfter.ModTime() {
+		return "", errors.New("exact-build transport candidate changed while hashing")
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCredential, error) {
@@ -233,11 +253,16 @@ func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCr
 	if err != nil {
 		return nil, err
 	}
-	mayDigest, err := transportCandidateDigest(mayPath)
+	files, err := openExactTransportCandidates(mayPath, adapterPath)
 	if err != nil {
 		return nil, err
 	}
-	adapterDigest, err := transportCandidateDigest(adapterPath)
+	defer closeExactTransportCandidates(files)
+	mayDigest, err := transportCandidateDigest(files[0])
+	if err != nil {
+		return nil, err
+	}
+	adapterDigest, err := transportCandidateDigest(files[1])
 	if err != nil {
 		return nil, err
 	}
@@ -249,11 +274,6 @@ func bootstrapRequesterTransport(origin, slot, displayName string) (*requesterCr
 		adapterDigest != receipt.Files["bin/"+gitSignAdapterBinaryName] {
 		return nil, errors.New("running requester transport differs from its verified install receipt")
 	}
-	files, err := openExactTransportCandidates(mayPath, adapterPath)
-	if err != nil {
-		return nil, err
-	}
-	defer closeExactTransportCandidates(files)
 	response, err := callKeychainHelperWithFiles(keychainHelperRequest{
 		Operation: "transport-bootstrap", Origin: origin, Slot: slot,
 		DisplayName: displayName, CandidateMaySHA256: mayDigest,
@@ -403,10 +423,12 @@ func runInternalTransportFinalize(args []string) error {
 func runExactTransportStatus(
 	mayPath, origin, slot, transactionID string,
 ) (transportHelperStatus, error) {
-	command := exec.Command(
+	command, err := newExactBuildMayCommand(
 		mayPath, "__transport-finalize", "status", origin, slot, transactionID,
 	)
-	command.Env = []string{}
+	if err != nil {
+		return transportHelperStatus{}, err
+	}
 	command.Stdin = nil
 	command.Stderr = io.Discard
 	output, err := command.Output()
@@ -436,6 +458,16 @@ func runStagedTransportFinalize(
 	if len(capability) != 32 {
 		return errors.New("exact-build transport capability is invalid")
 	}
+	operation := "commit"
+	if helperChanged {
+		operation = "bootstrap-helper"
+	}
+	command, err := newExactBuildMayCommand(
+		mayPath, "__transport-finalize", operation, origin, slot, transactionID,
+	)
+	if err != nil {
+		return err
+	}
 	readPipe, writePipe, err := os.Pipe()
 	if err != nil {
 		return errors.New("create exact-build transport capability pipe failed")
@@ -448,14 +480,6 @@ func runStagedTransportFinalize(
 	if err := writePipe.Close(); err != nil {
 		return errors.New("seal exact-build transport capability pipe failed")
 	}
-	operation := "commit"
-	if helperChanged {
-		operation = "bootstrap-helper"
-	}
-	command := exec.Command(
-		mayPath, "__transport-finalize", operation, origin, slot, transactionID,
-	)
-	command.Env = []string{}
 	command.ExtraFiles = []*os.File{readPipe}
 	command.Stdin = nil
 	command.Stdout = io.Discard
@@ -467,10 +491,12 @@ func runStagedTransportFinalize(
 }
 
 func runCurrentTransportAbort(mayPath, origin, slot, transactionID string) error {
-	command := exec.Command(
+	command, err := newExactBuildMayCommand(
 		mayPath, "__transport-finalize", "abort", origin, slot, transactionID,
 	)
-	command.Env = []string{}
+	if err != nil {
+		return err
+	}
 	command.Stdin = nil
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
@@ -478,6 +504,30 @@ func runCurrentTransportAbort(mayPath, origin, slot, transactionID string) error
 		return errors.New("current exact-build may could not abort transport trust")
 	}
 	return nil
+}
+
+func newExactBuildMayCommand(mayPath string, arguments ...string) (*exec.Cmd, error) {
+	environment, err := exactBuildMayEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	command := exec.Command(mayPath, arguments...)
+	command.Env = environment
+	return command, nil
+}
+
+func exactBuildMayEnvironment() ([]string, error) {
+	if os.Getuid() != os.Geteuid() {
+		return nil, errors.New("resolve canonical account home for exact-build may failed")
+	}
+	current, err := user.Current()
+	if err != nil || current == nil || current.Uid != strconv.Itoa(os.Geteuid()) ||
+		current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) ||
+		filepath.Clean(current.HomeDir) != current.HomeDir ||
+		strings.IndexByte(current.HomeDir, 0) >= 0 {
+		return nil, errors.New("resolve canonical account home for exact-build may failed")
+	}
+	return []string{"HOME=" + current.HomeDir}, nil
 }
 
 func helperResponseCredential(

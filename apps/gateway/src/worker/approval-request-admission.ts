@@ -47,6 +47,7 @@ import { ApprovalRequestStore } from "./approval-request-store.js";
 import { ApprovalExecutor } from "./approval-executor.js";
 import { ApprovalNotifications } from "./approval-notifications.js";
 import { HumanAccess } from "./human-access.js";
+import { legacySshSignedConsumeEligible } from "./legacy-consume-bridge.js";
 import {
   encryptPendingPayload,
   type EncryptedPendingPayload,
@@ -196,6 +197,14 @@ export class ApprovalRequestAdmission {
         request,
         requester,
       );
+      const legacySshSignedConsume =
+        legacySshSignedConsumeEligible(body) &&
+        Boolean(this.first<{ device_id: string }>(
+          `SELECT device_id FROM legacy_bearerless_ssh_requesters
+           WHERE device_id = ? AND expires_at > ?`,
+          requester.deviceId,
+          Date.now(),
+        ));
       if (
         body.action === "item.create" ||
         body.action === "item.patch" ||
@@ -204,7 +213,12 @@ export class ApprovalRequestAdmission {
         return await this.createItemMutationRequest(body, requester, context);
       }
       if (body.action === "ssh.sign") {
-        return await this.createSshSignRequest(body, requester, context);
+        return await this.createSshSignRequest(
+          body,
+          requester,
+          context,
+          legacySshSignedConsume,
+        );
       }
       if (body.action !== "secret.read") {
         throw new GatewayHttpError("unsupported_action", 400);
@@ -316,6 +330,7 @@ export class ApprovalRequestAdmission {
           idempotency_key: idempotencyKey,
           item_id: itemId,
           item_title: metadata.item_title,
+          legacy_ssh_signed_consume: 0,
           requester_device_id: requester.deviceId,
           requester_name: requester.displayName,
           secret_grant_id: grant?.id ?? null,
@@ -488,6 +503,7 @@ export class ApprovalRequestAdmission {
         idempotency_key: body.idempotency_key,
         item_id: description.itemId,
         item_title: description.itemTitle,
+        legacy_ssh_signed_consume: 0,
         requester_device_id: requester.deviceId,
         requester_name: requester.displayName,
         secret_grant_id: null,
@@ -543,6 +559,7 @@ export class ApprovalRequestAdmission {
     rawBody: SshSignCreateRequest,
     requester: RequesterIdentity,
     context: ValidatedClientObservation,
+    legacySshSignedConsume: boolean,
   ): Promise<Response> {
     let body: SshSignCreateRequest;
     try {
@@ -675,6 +692,7 @@ export class ApprovalRequestAdmission {
         idempotency_key: body.idempotency_key,
         item_id: description.itemId,
         item_title: description.itemTitle,
+        legacy_ssh_signed_consume: legacySshSignedConsume ? 1 : 0,
         requester_device_id: requester.deviceId,
         requester_name: requester.displayName,
         secret_grant_id: null,

@@ -109,10 +109,11 @@ func (unavailableKeychainBackend) Save(string, string, []byte) error {
 }
 
 type keychainStore struct {
-	backend keychainBackend
-	origin  string
-	service string
-	slot    string
+	backend  keychainBackend
+	origin   string
+	selected bool
+	service  string
+	slot     string
 }
 
 func requesterKeychainService(origin string) (string, error) {
@@ -174,6 +175,9 @@ func (store keychainStore) Load() (*requesterCredential, error) {
 
 func (store keychainStore) LoadIfPresent() (*requesterCredential, bool, error) {
 	if store.backend == nil && store.origin != "" {
+		if !store.selected {
+			return nil, false, nil
+		}
 		identity, found, err := loadRequesterFromHelper(store.origin, store.slot)
 		if err != nil {
 			return nil, false, err
