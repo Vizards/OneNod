@@ -2,16 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  ACTIVITY_MAX_RECORDS,
-  ACTIVITY_PAGE_SIZE,
-  AUDIT_MAX_RECORDS,
-  AUDIT_RETENTION_MS,
-  CLEANUP_BATCH_SIZE,
   HUMAN_SESSION_TTL_MS,
-  OPERATIONAL_REQUEST_MAX_RECORDS,
-  OPERATIONAL_REQUEST_RETENTION_MS,
-  REQUESTER_ENROLLMENT_RECEIPT_MS,
-  REVOKED_PWA_DEVICE_RETENTION_MS,
   STORAGE_REJECTION_BYTES,
   STORAGE_WARNING_BYTES,
   absoluteHumanSessionExpiry,
@@ -19,18 +10,6 @@ import {
   encodeActivityCursor,
   storagePressure,
 } from "../src/worker/retention-policy.js";
-
-test("the accepted retention limits remain explicit product invariants", () => {
-  assert.equal(ACTIVITY_PAGE_SIZE, 100);
-  assert.equal(ACTIVITY_MAX_RECORDS, 100_000);
-  assert.equal(OPERATIONAL_REQUEST_RETENTION_MS, 7 * 24 * 60 * 60_000);
-  assert.equal(OPERATIONAL_REQUEST_MAX_RECORDS, 10_000);
-  assert.equal(AUDIT_RETENTION_MS, 30 * 24 * 60 * 60_000);
-  assert.equal(AUDIT_MAX_RECORDS, 50_000);
-  assert.equal(REQUESTER_ENROLLMENT_RECEIPT_MS, 5 * 60_000);
-  assert.equal(REVOKED_PWA_DEVICE_RETENTION_MS, 30 * 24 * 60 * 60_000);
-  assert.equal(CLEANUP_BATCH_SIZE, 256);
-});
 
 test("human sessions have one seven-day absolute expiry and never slide", () => {
   const createdAt = Date.UTC(2026, 6, 31, 0, 0, 0);

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,15 +15,19 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+
+	jsoncanonicalizer "github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 )
 
 const (
-	helperProtocol          = 1
-	maxRequestBytes         = 128 * 1024
-	maxCanonicalMessageSize = 64 * 1024
-	keychainAccount         = "may"
-	keychainServicePrefix   = "com.github.vizards.onenod.requester.target."
+	applicationAttestationProtocol = "onenod-application-attestation-v1"
+	helperProtocol                 = 3
+	maxRequestBytes                = 128 * 1024
+	maxCanonicalMessageSize        = 64 * 1024
+	keychainAccount                = "may"
+	keychainServicePrefix          = "com.github.vizards.onenod.requester.target."
 )
 
 var (
@@ -32,11 +37,26 @@ var (
 )
 
 type helperRequest struct {
-	DisplayName string `json:"display_name,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Operation   string `json:"operation"`
-	Origin      string `json:"origin,omitempty"`
-	Slot        string `json:"slot,omitempty"`
+	ApplicationEvidence          string `json:"application_evidence,omitempty"`
+	CandidateAdapterArchitecture string `json:"candidate_adapter_architecture,omitempty"`
+	CandidateAdapterCDHash       string `json:"candidate_adapter_cdhash,omitempty"`
+	CandidateAdapterDRSHA256     string `json:"candidate_adapter_designated_requirement_data_sha256,omitempty"`
+	CandidateAdapterSHA256       string `json:"candidate_adapter_sha256,omitempty"`
+	CandidateHelperArchitecture  string `json:"candidate_helper_architecture,omitempty"`
+	CandidateHelperCDHash        string `json:"candidate_helper_cdhash,omitempty"`
+	CandidateHelperDRSHA256      string `json:"candidate_helper_designated_requirement_data_sha256,omitempty"`
+	CandidateHelperSHA256        string `json:"candidate_helper_sha256,omitempty"`
+	CandidateMayArchitecture     string `json:"candidate_may_architecture,omitempty"`
+	CandidateMayCDHash           string `json:"candidate_may_cdhash,omitempty"`
+	CandidateMayDRSHA256         string `json:"candidate_may_designated_requirement_data_sha256,omitempty"`
+	CandidateMaySHA256           string `json:"candidate_may_sha256,omitempty"`
+	CanonicalBody                string `json:"canonical_body,omitempty"`
+	DisplayName                  string `json:"display_name,omitempty"`
+	Message                      string `json:"message,omitempty"`
+	Operation                    string `json:"operation"`
+	Origin                       string `json:"origin,omitempty"`
+	Slot                         string `json:"slot,omitempty"`
+	TransactionID                string `json:"transaction_id,omitempty"`
 }
 
 type publicIdentity struct {
@@ -48,26 +68,70 @@ type publicIdentity struct {
 
 type storedIdentity struct {
 	publicIdentity
-	PrivateKey string `json:"private_key"`
+	PrivateKey string                `json:"private_key"`
+	Transport  *storedTransportTrust `json:"transport,omitempty"`
 }
 
 type helperResponse struct {
-	Error     string          `json:"error,omitempty"`
-	Found     *bool           `json:"found,omitempty"`
-	Identity  *publicIdentity `json:"identity,omitempty"`
-	OK        bool            `json:"ok"`
-	Protocol  int             `json:"protocol,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	Source    string          `json:"source_commit,omitempty"`
-	Version   string          `json:"version,omitempty"`
+	Application            *helperClientObservation `json:"application,omitempty"`
+	ApplicationAttestation string                   `json:"application_attestation,omitempty"`
+	Error                  string                   `json:"error,omitempty"`
+	Found                  *bool                    `json:"found,omitempty"`
+	Identity               *publicIdentity          `json:"identity,omitempty"`
+	OK                     bool                     `json:"ok"`
+	Protocol               int                      `json:"protocol,omitempty"`
+	Role                   string                   `json:"role,omitempty"`
+	Signature              string                   `json:"signature,omitempty"`
+	Source                 string                   `json:"source_commit,omitempty"`
+	Version                string                   `json:"version,omitempty"`
+	TransactionID          string                   `json:"transaction_id,omitempty"`
+	TransactionState       string                   `json:"transaction_state,omitempty"`
+}
+
+type helperClientObservation struct {
+	Application string                    `json:"application"`
+	Identity    helperApplicationIdentity `json:"identity"`
+	Source      string                    `json:"source"`
+}
+
+type helperApplicationIdentity struct {
+	Assurance         string `json:"assurance"`
+	Platform          string `json:"platform"`
+	PrincipalScheme   string `json:"principal_scheme,omitempty"`
+	PrincipalID       string `json:"principal_id,omitempty"`
+	SignerName        string `json:"signer_name,omitempty"`
+	SigningIdentifier string `json:"signing_identifier,omitempty"`
+	TeamIdentifier    string `json:"team_identifier,omitempty"`
 }
 
 type credentialStore interface {
-	Create(account, service string, value []byte) error
+	Create(account, service string, value, metadata []byte, access keychainAccessPolicy) error
+	Inspect(account, service string) ([]byte, bool, error)
 	Load(account, service string) ([]byte, bool, error)
+	Replace(
+		account,
+		service string,
+		expectedMetadata,
+		value,
+		metadata []byte,
+		access keychainAccessPolicy,
+	) error
+	Constrain(account, service string, expectedMetadata []byte, access keychainAccessPolicy) error
 }
 
-var errIdentityExists = errors.New("requester identity already exists")
+type keychainAccessPolicy uint8
+
+const (
+	keychainAccessInvalid keychainAccessPolicy = iota
+	keychainAccessPreserve
+	keychainAccessPromptRequired
+	keychainAccessSelfOnly
+)
+
+var (
+	errIdentityChanged = errors.New("requester identity changed concurrently")
+	errIdentityExists  = errors.New("requester identity already exists")
+)
 
 func main() {
 	versionJSON := flag.Bool("json", false, "print machine-readable version information")
@@ -129,7 +193,7 @@ func handleRequest(request helperRequest, store credentialStore) (helperResponse
 		return helperResponse{}, errors.New("credential store is unavailable")
 	}
 	if request.Operation == "hello" {
-		if request.Origin != "" || request.DisplayName != "" || request.Message != "" || request.Slot != "" {
+		if request.Origin != "" || request.Slot != "" || !noTransportRequestPayload(request) {
 			return helperResponse{}, errors.New("hello does not accept identity fields")
 		}
 		return helperResponse{
@@ -145,67 +209,117 @@ func handleRequest(request helperRequest, store credentialStore) (helperResponse
 		return helperResponse{}, err
 	}
 	switch request.Operation {
-	case "ensure":
-		if strings.TrimSpace(request.DisplayName) == "" || len(request.DisplayName) > 128 ||
-			strings.ContainsAny(request.DisplayName, "\x00\r\n") {
-			return helperResponse{}, errors.New("display_name is invalid")
+	case "transport-bootstrap":
+		return handleTransportBootstrap(request, store, service)
+	case "transport-stage":
+		return handleTransportStage(request, store, service)
+	case "transport-status":
+		return handleTransportStatus(request, store, service)
+	case "transport-commit":
+		return handleTransportFinalize(request, store, service, false)
+	case "transport-bootstrap-helper":
+		return handleTransportFinalize(request, store, service, true)
+	case "transport-abort":
+		return handleTransportAbort(request, store, service)
+	case "application":
+		if request.DisplayName != "" || request.Message != "" || request.CanonicalBody != "" ||
+			request.TransactionID != "" {
+			return helperResponse{}, errors.New("application does not accept signing or identity fields")
 		}
-		identity, found, err := loadIdentity(store, service)
+		if err := digestFieldPresentOnlyFor(request); err != nil {
+			return helperResponse{}, err
+		}
+		_, authorized, err := loadAuthenticatedMetadata(store, service)
 		if err != nil {
 			return helperResponse{}, err
 		}
-		if found {
-			if identity.DisplayName != request.DisplayName {
-				return helperResponse{}, errors.New("the identity slot already has a different display name")
-			}
-			return helperResponse{OK: true, Identity: &identity.publicIdentity}, nil
+		observation := observeApplication(request.ApplicationEvidence, authorized)
+		return helperResponse{OK: true, Application: &observation}, nil
+	case "ensure":
+		if request.ApplicationEvidence != "" || request.CanonicalBody != "" || request.Message != "" ||
+			request.TransactionID != "" {
+			return helperResponse{}, errors.New("ensure does not accept application or signing fields")
 		}
-		identity, err = newIdentity(request.DisplayName)
+		if err := digestFieldPresentOnlyFor(request); err != nil {
+			return helperResponse{}, err
+		}
+		if err := validateDisplayName(request.DisplayName); err != nil {
+			return helperResponse{}, err
+		}
+		identity, _, err := loadAuthenticatedIdentity(store, service)
 		if err != nil {
-			return helperResponse{}, errors.New("requester identity generation failed")
+			return helperResponse{}, err
 		}
-		encoded, err := json.Marshal(identity)
-		if err != nil {
-			return helperResponse{}, errors.New("requester identity encoding failed")
-		}
-		defer zero(encoded)
-		if err := store.Create(keychainAccount, service, encoded); errors.Is(err, errIdentityExists) {
-			identity, found, loadErr := loadIdentity(store, service)
-			if loadErr != nil || !found {
-				return helperResponse{}, errors.New("concurrent requester identity creation could not be reconciled")
-			}
-			if identity.DisplayName != request.DisplayName {
-				return helperResponse{}, errors.New("the identity slot was concurrently created with a different display name")
-			}
-			return helperResponse{OK: true, Identity: &identity.publicIdentity}, nil
-		} else if err != nil {
-			return helperResponse{}, errors.New("requester identity Keychain write failed")
+		if identity.DisplayName != request.DisplayName {
+			return helperResponse{}, errors.New("the identity slot already has a different display name")
 		}
 		return helperResponse{OK: true, Identity: &identity.publicIdentity}, nil
 	case "public":
-		identity, found, err := loadIdentity(store, service)
+		if request.ApplicationEvidence != "" || request.CanonicalBody != "" ||
+			request.DisplayName != "" || request.Message != "" || request.TransactionID != "" {
+			return helperResponse{}, errors.New("public does not accept application or signing fields")
+		}
+		if err := digestFieldPresentOnlyFor(request); err != nil {
+			return helperResponse{}, err
+		}
+		metadata, encodedMetadata, found, err := inspectCredentialMetadata(store, service)
 		if err != nil {
 			return helperResponse{}, err
 		}
+		defer zero(encodedMetadata)
 		if !found {
 			return helperResponse{OK: true, Found: boolPointer(false)}, nil
 		}
-		return helperResponse{OK: true, Found: boolPointer(true), Identity: &identity.publicIdentity}, nil
+		if metadata.Transport.BootstrapPending {
+			return helperResponse{}, errors.New("requester transport trust requires explicit bootstrap")
+		}
+		if err := authenticateCurrentTransport(&metadata.Transport); err != nil {
+			return helperResponse{}, err
+		}
+		identity := metadata.Identity
+		return helperResponse{OK: true, Found: boolPointer(true), Identity: &identity}, nil
 	case "sign":
+		if request.DisplayName != "" || request.TransactionID != "" {
+			return helperResponse{}, errors.New("sign does not accept identity or transport transaction fields")
+		}
+		if err := digestFieldPresentOnlyFor(request); err != nil {
+			return helperResponse{}, err
+		}
+		identity, authorized, err := loadAuthenticatedIdentity(store, service)
+		if err != nil {
+			return helperResponse{}, err
+		}
 		message, err := base64.RawURLEncoding.Strict().DecodeString(request.Message)
 		if err != nil || len(message) == 0 || len(message) > maxCanonicalMessageSize {
 			return helperResponse{}, errors.New("message is invalid or exceeds the signing limit")
 		}
 		defer zero(message)
-		if err := validateCanonicalRequest(message, origin); err != nil {
-			return helperResponse{}, err
-		}
-		identity, found, err := loadIdentity(store, service)
+		fields, err := canonicalRequestFields(message, origin)
 		if err != nil {
 			return helperResponse{}, err
 		}
-		if !found {
-			return helperResponse{}, errors.New("requester identity was not found")
+		if fields[5] != identity.DeviceID {
+			return helperResponse{}, errors.New("canonical OneNod request selected a different requester identity")
+		}
+		var observation *helperClientObservation
+		if request.ApplicationEvidence == "" {
+			if request.CanonicalBody != "" {
+				return helperResponse{}, errors.New("canonical_body requires application evidence")
+			}
+		} else {
+			canonicalBody, err := decodeCanonicalApplicationBody(
+				request.CanonicalBody,
+				fields,
+			)
+			if err != nil {
+				return helperResponse{}, err
+			}
+			defer zero(canonicalBody)
+			resolved := observeApplication(request.ApplicationEvidence, authorized)
+			if err := validateApplicationRequestBody(canonicalBody, resolved); err != nil {
+				return helperResponse{}, err
+			}
+			observation = &resolved
 		}
 		privateKey, err := decodePrivateKey(identity)
 		if err != nil {
@@ -214,9 +328,21 @@ func handleRequest(request helperRequest, store credentialStore) (helperResponse
 		defer zero(privateKey)
 		signature := ed25519.Sign(privateKey, message)
 		defer zero(signature)
-		return helperResponse{
+		response := helperResponse{
 			OK: true, Signature: base64.RawURLEncoding.EncodeToString(signature),
-		}, nil
+		}
+		if observation != nil && observation.Identity.Assurance == applicationIdentityAssurance {
+			material := applicationAttestationMaterial(
+				message,
+				observation.Identity.PrincipalScheme,
+				observation.Identity.PrincipalID,
+			)
+			attestation := ed25519.Sign(privateKey, material)
+			defer zero(attestation)
+			response.ApplicationAttestation =
+				base64.RawURLEncoding.EncodeToString(attestation)
+		}
+		return response, nil
 	default:
 		return helperResponse{}, errors.New("unsupported helper operation")
 	}
@@ -274,23 +400,43 @@ func randomUUID() (string, error) {
 		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
 }
 
-func loadIdentity(store credentialStore, service string) (storedIdentity, bool, error) {
-	encoded, found, err := store.Load(keychainAccount, service)
+func loadAuthenticatedIdentity(
+	store credentialStore,
+	service string,
+) (storedIdentity, authorizedTransportSet, error) {
+	metadata, authorized, err := loadAuthenticatedMetadata(store, service)
 	if err != nil {
-		return storedIdentity{}, false, errors.New("requester identity Keychain read failed")
+		return storedIdentity{}, authorizedTransportSet{}, err
+	}
+	identity, encoded, err := loadIdentityForMetadata(store, service, metadata)
+	defer zero(encoded)
+	if err != nil {
+		return storedIdentity{}, authorizedTransportSet{}, err
+	}
+	return identity, authorized, nil
+}
+
+func loadAuthenticatedMetadata(
+	store credentialStore,
+	service string,
+) (credentialMetadata, authorizedTransportSet, error) {
+	metadata, encodedMetadata, found, err := inspectCredentialMetadata(store, service)
+	defer zero(encodedMetadata)
+	if err != nil {
+		return credentialMetadata{}, authorizedTransportSet{}, err
 	}
 	if !found {
-		return storedIdentity{}, false, nil
+		return credentialMetadata{}, authorizedTransportSet{},
+			errors.New("requester identity was not found; explicit transport bootstrap is required")
 	}
-	defer zero(encoded)
-	var identity storedIdentity
-	if err := json.Unmarshal(encoded, &identity); err != nil {
-		return storedIdentity{}, false, errors.New("requester identity in Keychain is invalid")
+	if metadata.Transport.BootstrapPending {
+		return credentialMetadata{}, authorizedTransportSet{},
+			errors.New("requester transport trust requires explicit bootstrap")
 	}
-	if _, err := decodePrivateKey(identity); err != nil {
-		return storedIdentity{}, false, err
+	if err := authenticateCurrentTransport(&metadata.Transport); err != nil {
+		return credentialMetadata{}, authorizedTransportSet{}, err
 	}
-	return identity, true, nil
+	return metadata, currentAuthorizedSet(&metadata.Transport), nil
 }
 
 func decodePrivateKey(identity storedIdentity) (ed25519.PrivateKey, error) {
@@ -310,21 +456,149 @@ func decodePrivateKey(identity storedIdentity) (ed25519.PrivateKey, error) {
 }
 
 func validateCanonicalRequest(message []byte, origin string) error {
+	_, err := canonicalRequestFields(message, origin)
+	return err
+}
+
+func canonicalRequestFields(message []byte, origin string) ([]string, error) {
 	parsed, err := url.Parse(origin)
 	if err != nil || len(message) > maxCanonicalMessageSize ||
 		!strings.HasPrefix(string(message), "onenod-request-v1\n"+parsed.Host+"\n") {
-		return errors.New("helper signs only canonical OneNod requests for its Origin")
+		return nil, errors.New("helper signs only canonical OneNod requests for its Origin")
 	}
 	lines := strings.Split(string(message), "\n")
 	if len(lines) != 8 {
-		return errors.New("canonical OneNod request has an invalid field count")
+		return nil, errors.New("canonical OneNod request has an invalid field count")
 	}
 	for _, line := range lines {
 		if line == "" || strings.ContainsAny(line, "\r\x00") {
-			return errors.New("canonical OneNod request contains an invalid field")
+			return nil, errors.New("canonical OneNod request contains an invalid field")
+		}
+	}
+	return lines, nil
+}
+
+func observeApplication(
+	evidence string,
+	authorized authorizedTransportSet,
+) helperClientObservation {
+	resolved, err := authorizedApplicationResolver(evidence, authorized)
+	if err != nil {
+		platform := "unsupported"
+		if runtime.GOOS == "darwin" {
+			platform = "macos"
+		}
+		return helperClientObservation{
+			Application: "Unknown local client",
+			Identity: helperApplicationIdentity{
+				Assurance: "unverified",
+				Platform:  platform,
+			},
+			Source: "unavailable",
+		}
+	}
+	return helperClientObservation{
+		Application: resolved.Application,
+		Identity: helperApplicationIdentity{
+			Assurance:         resolved.Assurance,
+			Platform:          resolved.Platform,
+			PrincipalScheme:   resolved.PrincipalScheme,
+			PrincipalID:       resolved.PrincipalID,
+			SignerName:        resolved.SignerName,
+			SigningIdentifier: resolved.SigningIdentifier,
+			TeamIdentifier:    resolved.TeamIdentifier,
+		},
+		Source: resolved.Source,
+	}
+}
+
+func decodeCanonicalApplicationBody(
+	encoded string,
+	canonicalFields []string,
+) ([]byte, error) {
+	if len(canonicalFields) != 8 || canonicalFields[2] != "POST" ||
+		canonicalFields[3] != "/v1/requests" {
+		return nil, errors.New("application evidence is valid only for request creation")
+	}
+	body, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(body) == 0 || len(body) > maxCanonicalMessageSize {
+		return nil, errors.New("canonical_body is invalid or exceeds the signing limit")
+	}
+	canonical, err := jsoncanonicalizer.Transform(body)
+	if err != nil || !bytes.Equal(canonical, body) {
+		zero(body)
+		return nil, errors.New("canonical_body is not canonical JSON")
+	}
+	digest := sha256.Sum256(body)
+	if base64.RawURLEncoding.EncodeToString(digest[:]) != canonicalFields[4] {
+		zero(body)
+		return nil, errors.New("canonical_body does not match the signed request")
+	}
+	return body, nil
+}
+
+func validateApplicationRequestBody(
+	canonicalBody []byte,
+	observed helperClientObservation,
+) error {
+	type scope struct {
+		ScopeID   string `json:"scope_id"`
+		ScopeKind string `json:"scope_kind"`
+	}
+	var body struct {
+		Action               string                   `json:"action"`
+		AuthorizationScope   *scope                   `json:"authorization_scope"`
+		AuthorizationSession *scope                   `json:"authorization_session"`
+		Client               *helperClientObservation `json:"client"`
+	}
+	if err := json.Unmarshal(canonicalBody, &body); err != nil ||
+		body.Client == nil || body.Action == "" {
+		return errors.New("canonical_body has no application-bound request")
+	}
+	if !sameClientObservation(*body.Client, observed) {
+		return errors.New("request application identity does not match verified process evidence")
+	}
+	verified := observed.Identity.Assurance == applicationIdentityAssurance
+	for _, authorization := range []*scope{
+		body.AuthorizationScope,
+		body.AuthorizationSession,
+	} {
+		if authorization == nil {
+			continue
+		}
+		if !verified || authorization.ScopeKind != "application" ||
+			authorization.ScopeID != observed.Identity.PrincipalID {
+			return errors.New("request authorization scope does not match verified application identity")
 		}
 	}
 	return nil
+}
+
+func sameClientObservation(left, right helperClientObservation) bool {
+	return left.Application == right.Application &&
+		left.Source == right.Source &&
+		left.Identity.Assurance == right.Identity.Assurance &&
+		left.Identity.Platform == right.Identity.Platform &&
+		left.Identity.PrincipalScheme == right.Identity.PrincipalScheme &&
+		left.Identity.PrincipalID == right.Identity.PrincipalID &&
+		left.Identity.SignerName == right.Identity.SignerName &&
+		left.Identity.SigningIdentifier == right.Identity.SigningIdentifier &&
+		left.Identity.TeamIdentifier == right.Identity.TeamIdentifier
+}
+
+func applicationAttestationMaterial(
+	requesterCanonical []byte,
+	principalScheme,
+	principalID string,
+) []byte {
+	material := make([]byte, 0, len(requesterCanonical)+len(principalScheme)+len(principalID)+64)
+	material = append(material, applicationAttestationProtocol...)
+	material = append(material, '\n')
+	material = append(material, requesterCanonical...)
+	material = append(material, '\n')
+	material = append(material, principalScheme...)
+	material = append(material, '\n')
+	return append(material, principalID...)
 }
 
 func boolPointer(value bool) *bool { return &value }

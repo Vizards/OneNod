@@ -140,6 +140,73 @@ export function readArtifactIdentity(files) {
   if (typeof kind !== "string" || roots[kind] !== releaseEntries[0][0]) {
     fail("release archive kind differs from its archive root");
   }
+  let codeIdentity;
+  let codeIdentities;
+  let exactCodeIdentity;
+  let exactCodeIdentities;
+  let binarySha256;
+  if (kind === "local") {
+    codeIdentities = descriptor.code_identities;
+    exactCodeIdentities = descriptor.exact_code_identities;
+    binarySha256 = descriptor.binary_sha256;
+    for (const [label, identity] of [
+      ["may", codeIdentities?.may],
+      ["may-ssh-sign", codeIdentities?.may_ssh_sign],
+    ]) {
+      if (
+        identity?.scheme !== "apple-cdhash" ||
+        identity?.signing !== "adhoc" ||
+        typeof identity?.identifier !== "string" ||
+        identity?.hardened_runtime !== true
+      ) {
+        fail(`native release archive has no exact-build ${label} identity contract`);
+      }
+    }
+    for (const [label, digest, archivePath] of [
+      ["may", binarySha256?.may, "onenod/bin/may"],
+      ["may-ssh-sign", binarySha256?.may_ssh_sign, "onenod/bin/may-ssh-sign"],
+    ]) {
+      if (
+        typeof digest !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/u.test(digest) ||
+        `sha256:${files.get(archivePath)?.sha256 ?? ""}` !== digest
+      ) {
+        fail(`native release archive has an invalid ${label} exact-build digest`);
+      }
+    }
+    for (const [label, identity] of [
+      ["may", exactCodeIdentities?.may],
+      ["may-ssh-sign", exactCodeIdentities?.may_ssh_sign],
+    ]) {
+      validateExactCodeIdentity(identity, descriptor.architecture, label);
+    }
+  }
+  if (kind === "keychain_helper") {
+    codeIdentity = descriptor.code_identity;
+    exactCodeIdentity = descriptor.exact_code_identity;
+    binarySha256 = descriptor.binary_sha256;
+    if (
+      codeIdentity?.scheme !== "apple-cdhash" ||
+      codeIdentity?.signing !== "adhoc" ||
+      typeof codeIdentity?.identifier !== "string" ||
+      codeIdentity?.hardened_runtime !== true
+    ) {
+      fail("native release archive has no exact-build code identity contract");
+    }
+    if (
+      typeof binarySha256 !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(binarySha256) ||
+      `sha256:${files.get("onenod-keychain-helper/bin/onenod-keychain-helper")?.sha256 ?? ""}` !==
+        binarySha256
+    ) {
+      fail("native release archive has an invalid Keychain helper exact-build digest");
+    }
+    validateExactCodeIdentity(
+      exactCodeIdentity,
+      descriptor.architecture,
+      "Keychain helper",
+    );
+  }
   const helper = kind === "keychain_helper";
   const version = helper ? descriptor.helper_version : descriptor.release_version;
   const parsedVersion = helper
@@ -167,12 +234,32 @@ export function readArtifactIdentity(files) {
     }
   }
   return {
+    binarySha256,
+    codeIdentity,
+    codeIdentities,
+    exactCodeIdentity,
+    exactCodeIdentities,
     helperProtocol,
     helperSourceDigest,
     kind,
     sourceCommit: descriptor.source_commit,
     version,
   };
+}
+
+function validateExactCodeIdentity(identity, architecture, label) {
+  if (
+    (architecture !== "arm64" && architecture !== "amd64") ||
+    identity?.architecture !== architecture ||
+    typeof identity?.cdhash !== "string" ||
+    !/^[A-Za-z0-9_-]{27,86}$/u.test(identity.cdhash) ||
+    typeof identity?.designated_requirement_data_sha256 !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(
+      identity.designated_requirement_data_sha256,
+    )
+  ) {
+    fail(`native release archive has an invalid ${label} exact code identity`);
+  }
 }
 
 function normalizeEntries(entries) {

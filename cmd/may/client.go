@@ -19,14 +19,36 @@ import (
 )
 
 const (
-	headerDeviceID         = "x-onenod-device-id"
-	headerRequestNonce     = "x-onenod-request-nonce"
-	headerRequestSignature = "x-onenod-request-signature"
-	headerRequestTimestamp = "x-onenod-request-timestamp"
-	maxResponseBytes       = 1 << 20
+	headerDeviceID               = "x-onenod-device-id"
+	headerRequestNonce           = "x-onenod-request-nonce"
+	headerRequestSignature       = "x-onenod-request-signature"
+	headerRequestTimestamp       = "x-onenod-request-timestamp"
+	headerApplicationAttestation = "x-onenod-application-attestation"
+	headerGatewayErrorCode       = "x-onenod-error-code"
+	maxResponseBytes             = 1 << 20
 )
 
 var workersDevHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.workers\.dev$`)
+var safeGatewayErrorCodes = map[string]int{
+	"onepassword_rate_limited": http.StatusTooManyRequests,
+	"requester_not_found":      http.StatusNotFound,
+}
+
+type gatewayHTTPError struct {
+	Code   string
+	Status int
+}
+
+func (value *gatewayHTTPError) Error() string {
+	return fmt.Sprintf("gateway returned %s (HTTP %d)", value.Code, value.Status)
+}
+
+func isGatewayErrorCode(err error, code string) bool {
+	var gatewayError *gatewayHTTPError
+	expectedStatus, supported := safeGatewayErrorCodes[code]
+	return supported && errors.As(err, &gatewayError) &&
+		gatewayError.Code == code && gatewayError.Status == expectedStatus
+}
 
 type apiClient struct {
 	credential *requesterCredential
@@ -114,6 +136,47 @@ func (client *apiClient) doJSON(
 	body any,
 	result any,
 ) error {
+	return client.doJSONInternal(ctx, method, path, body, result, nil, "")
+}
+
+func (client *apiClient) doApplicationJSON(
+	ctx context.Context,
+	method string,
+	path string,
+	body any,
+	result any,
+	application localClientContext,
+) error {
+	return client.doJSONInternal(
+		ctx, method, path, body, result, &application.Evidence, "",
+	)
+}
+
+func (client *apiClient) doCapabilityJSON(
+	ctx context.Context,
+	method string,
+	path string,
+	body any,
+	result any,
+	pollToken string,
+) error {
+	if !validPollingCapability(pollToken) {
+		return errors.New("gateway returned an invalid polling capability")
+	}
+	return client.doJSONInternal(
+		ctx, method, path, body, result, nil, pollToken,
+	)
+}
+
+func (client *apiClient) doJSONInternal(
+	ctx context.Context,
+	method string,
+	path string,
+	body any,
+	result any,
+	applicationEvidence *applicationEvidence,
+	bearerToken string,
+) error {
 	var canonicalBody []byte
 	var requestBody io.Reader
 	if body == nil {
@@ -146,7 +209,10 @@ func (client *apiClient) doJSON(
 		request.Header.Set("content-type", "application/json")
 	}
 	request.Header.Set("accept", "application/json")
-	if err := client.sign(request, path, canonicalBody); err != nil {
+	if bearerToken != "" {
+		request.Header.Set("authorization", "Bearer "+bearerToken)
+	}
+	if err := client.sign(request, path, canonicalBody, applicationEvidence); err != nil {
 		return err
 	}
 	return client.executeJSON(request, result)
@@ -161,15 +227,8 @@ func (client *apiClient) doPollingJSON(
 	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\r\n") {
 		return errors.New("request path must be absolute and contain no query or fragment")
 	}
-	if len(pollToken) != 43 {
+	if !validPollingCapability(pollToken) {
 		return errors.New("gateway returned an invalid polling capability")
-	}
-	for _, value := range pollToken {
-		if !(value >= 'A' && value <= 'Z') &&
-			!(value >= 'a' && value <= 'z') &&
-			!(value >= '0' && value <= '9') && value != '_' && value != '-' {
-			return errors.New("gateway returned an invalid polling capability")
-		}
 	}
 	request, err := http.NewRequestWithContext(
 		ctx,
@@ -183,6 +242,20 @@ func (client *apiClient) doPollingJSON(
 	request.Header.Set("accept", "application/json")
 	request.Header.Set("authorization", "Bearer "+pollToken)
 	return client.executeJSON(request, result)
+}
+
+func validPollingCapability(pollToken string) bool {
+	if len(pollToken) != 43 {
+		return false
+	}
+	for _, value := range pollToken {
+		if !(value >= 'A' && value <= 'Z') &&
+			!(value >= 'a' && value <= 'z') &&
+			!(value >= '0' && value <= '9') && value != '_' && value != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (client *apiClient) executeJSON(request *http.Request, result any) error {
@@ -203,6 +276,10 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// Gateway error bodies may contain request metadata or secret-shaped
 		// upstream diagnostics. Do not attach them to CLI errors.
+		code := response.Header.Get(headerGatewayErrorCode)
+		if isSafeGatewayErrorCode(code, response.StatusCode) {
+			return &gatewayHTTPError{Code: code, Status: response.StatusCode}
+		}
 		return fmt.Errorf("gateway returned HTTP %d", response.StatusCode)
 	}
 	if mediaType := strings.ToLower(response.Header.Get("content-type")); mediaType != "" &&
@@ -218,10 +295,16 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 	return nil
 }
 
+func isSafeGatewayErrorCode(code string, status int) bool {
+	expected, ok := safeGatewayErrorCodes[code]
+	return ok && expected == status
+}
+
 func (client *apiClient) sign(
 	request *http.Request,
 	path string,
 	canonicalBody []byte,
+	applicationEvidence *applicationEvidence,
 ) error {
 	nonceBytes := make([]byte, 16)
 	if _, err := io.ReadFull(client.random, nonceBytes); err != nil {
@@ -241,7 +324,10 @@ func (client *apiClient) sign(
 	if err != nil {
 		return err
 	}
-	signature, err := client.credential.signCanonical([]byte(canonical))
+	signature, applicationAttestation, err :=
+		client.credential.signCanonicalWithApplication(
+			[]byte(canonical), canonicalBody, applicationEvidence,
+		)
 	if err != nil {
 		return err
 	}
@@ -252,6 +338,12 @@ func (client *apiClient) sign(
 		headerRequestSignature,
 		base64.RawURLEncoding.EncodeToString(signature),
 	)
+	if len(applicationAttestation) > 0 {
+		request.Header.Set(
+			headerApplicationAttestation,
+			base64.RawURLEncoding.EncodeToString(applicationAttestation),
+		)
+	}
 	return nil
 }
 

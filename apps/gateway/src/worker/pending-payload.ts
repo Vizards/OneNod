@@ -4,6 +4,8 @@ import {
   encodeBase64Url,
 } from "@onenod/protocol";
 
+import { ownedBytes } from "../shared/owned-bytes.js";
+
 const AEAD_INFO = "pending-payload-aead-v1";
 const DIGEST_INFO = "payload-digest-hmac-v1";
 
@@ -139,10 +141,4 @@ async function deriveKeys(
     ),
   ]);
   return { aeadKey, digestKey };
-}
-
-function ownedBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
-  const copy = new Uint8Array(value.byteLength);
-  copy.set(value);
-  return copy;
 }

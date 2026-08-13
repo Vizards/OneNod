@@ -5,112 +5,37 @@ import type {
   RegistrationResponseJSON,
 } from "@simplewebauthn/browser";
 import type {
-  ApprovalAction,
-  ApprovalStatus,
   RequestDetail,
-  RequestListResponse,
-  RequestSummary,
   SshAuthorizationDuration,
-  SystemHealthResponse,
 } from "@onenod/protocol";
 
-import type { GatewayReleaseChannel } from "../release";
+import { DEFAULT_PASSKEY_LABEL } from "../passkey-identity";
 
 const CSRF_STORAGE_KEY = "onepassword-remote.csrf";
 
-export type ApprovalDecision = "approve" | "reject";
-
-export interface HumanState {
-  authenticated: boolean;
-  bootstrapRequestId?: string;
-  currentDeviceId?: string;
-  deviceTrusted: boolean;
-  initialized: boolean;
-  locked: boolean;
-}
-
-export interface HumanCredentialSummary {
-  backedUp: boolean;
-  createdAt: string;
-  current: boolean;
-  deviceType: string;
-  id: string;
-  label: string;
-  lastUsedAt?: string;
-}
-
-export interface HumanDeviceSummary {
-  createdAt: string;
-  current: boolean;
-  id: string;
-  label: string;
-  lastSeenAt: string;
-  platform: string;
-  pushEnabled: boolean;
-}
-
-export interface HumanManagement {
-  credentials: HumanCredentialSummary[];
-  devices: HumanDeviceSummary[];
-  requesters: RequesterSummary[];
-  sshAuthorizations: SshAuthorizationSummary[];
-}
-
-export interface SshAuthorizationSummary {
-  application: string;
-  createdAt: string;
-  duration: SshAuthorizationDuration;
-  expiresAt?: string;
-  fingerprint: string;
-  id: string;
-  itemId: string;
-  itemTitle: string;
-  itemVersion: number;
-  requesterDeviceId: string;
-  scopeKind: "application" | "terminal-session";
-}
-
-export interface DeviceRegistrationInput {
-  device_id: string;
-  label: string;
-  platform: string;
-  public_key: JsonWebKey;
-}
-
-export interface RequesterEnrollment {
-  createdAt: string;
-  deviceId: string;
-  displayName: string;
-  expiresAt: string;
-  id: string;
-  publicKeyFingerprint: string;
-  status: string;
-}
-
-export interface RequesterSummary {
-  createdAt: string;
-  deviceId: string;
-  displayName: string;
-  publicKeyFingerprint: string;
-}
-
-export interface VerifyDecisionResponse {
-  ok: true;
-  status: string;
-}
-
-export interface GatewaySystemHealthResponse extends SystemHealthResponse {
-  channel: GatewayReleaseChannel;
-}
-
-export interface PaginatedRequestListResponse extends RequestListResponse {
-  nextCursor?: string;
-}
-
-interface WebAuthnOptionsEnvelope<TOptions> {
-  challenge_id: string;
-  options: TOptions;
-}
+export type {
+  ApprovalDecision, DeviceRegistrationInput, GatewaySystemHealthResponse,
+  HumanCredentialSummary, HumanDeviceSummary, HumanManagement, HumanState,
+  PaginatedRequestListResponse, RequesterEnrollment, RequesterSummary,
+  SecretAuthorizationSummary, SshAuthorizationSummary, VerifyDecisionResponse,
+} from "./api-types";
+import type {
+  ApprovalDecision,
+  DeviceRegistrationInput,
+  GatewaySystemHealthResponse,
+  HumanManagement,
+  HumanState,
+  PaginatedRequestListResponse,
+  RequesterEnrollment,
+  VerifyDecisionResponse,
+  WebAuthnOptionsEnvelope,
+} from "./api-types";
+import {
+  normalizeHumanManagement,
+  normalizeHumanState,
+  normalizeRequestDetail,
+  normalizeRequestSummary,
+} from "./api-normalizers";
 
 export class ApiError extends Error {
   readonly code: string | undefined;
@@ -127,40 +52,11 @@ export class ApiError extends Error {
 }
 
 export async function getHumanState(): Promise<HumanState> {
-  const response = await fetchJson<unknown>("/v1/human/state");
-  const record = asRecord(response);
-  const session = isRecord(record.session) ? record.session : undefined;
-  const bootstrapRequestId = readString(
-    record,
-    "bootstrap_request_id",
-    "bootstrapRequestId",
-  );
-
-  return {
-    authenticated:
-      readBoolean(record, "authenticated") ??
-      readBoolean(session, "authenticated") ??
-      false,
-    ...(bootstrapRequestId ? { bootstrapRequestId } : {}),
-    initialized:
-      readBoolean(record, "initialized", "has_human_credential") ??
-      false,
-    ...(readString(record, "current_device_id", "currentDeviceId")
-      ? {
-          currentDeviceId: readString(
-            record,
-            "current_device_id",
-            "currentDeviceId",
-          )!,
-        }
-      : {}),
-    deviceTrusted: readBoolean(record, "device_trusted", "deviceTrusted") ?? false,
-    locked: readBoolean(record, "locked") ?? false,
-  };
+  return normalizeHumanState(await fetchJson<unknown>("/v1/human/state"));
 }
 
 export function beginBootstrapRegistration(
-  label = "Mac passkey",
+  label = DEFAULT_PASSKEY_LABEL,
 ): Promise<WebAuthnOptionsEnvelope<PublicKeyCredentialCreationOptionsJSON>> {
   return postJson("/v1/bootstrap/registration/options", { label });
 }
@@ -230,83 +126,7 @@ export function verifyDeviceRegistration(
 }
 
 export async function getHumanManagement(): Promise<HumanManagement> {
-  const value = asRecord(await fetchJson("/v1/human/management"));
-  const credentials = Array.isArray(value.credentials) ? value.credentials : [];
-  const devices = Array.isArray(value.devices) ? value.devices : [];
-  const requesters = Array.isArray(value.requesters) ? value.requesters : [];
-  const sshAuthorizations = Array.isArray(value.ssh_authorizations)
-    ? value.ssh_authorizations
-    : [];
-  return {
-    credentials: credentials.map((entry) => {
-      const item = asRecord(entry);
-      const lastUsedAt = readString(item, "last_used_at");
-      return {
-        backedUp: readBoolean(item, "backed_up") ?? false,
-        createdAt: readRequiredString(item, "created_at"),
-        current: readBoolean(item, "current") ?? false,
-        deviceType: readRequiredString(item, "device_type"),
-        id: readRequiredString(item, "id"),
-        label: readRequiredString(item, "label"),
-        ...(lastUsedAt ? { lastUsedAt } : {}),
-      };
-    }),
-    devices: devices.map((entry) => {
-      const item = asRecord(entry);
-      return {
-        createdAt: readRequiredString(item, "created_at"),
-        current: readBoolean(item, "current") ?? false,
-        id: readRequiredString(item, "id"),
-        label: readRequiredString(item, "label"),
-        lastSeenAt: readRequiredString(item, "last_seen_at"),
-        platform: readRequiredString(item, "platform"),
-        pushEnabled: readBoolean(item, "push_enabled") ?? false,
-      };
-    }),
-    requesters: requesters.map((entry) => {
-      const item = asRecord(entry);
-      return {
-        createdAt: readRequiredString(item, "created_at"),
-        deviceId: readRequiredString(item, "device_id"),
-        displayName: readRequiredString(item, "display_name"),
-        publicKeyFingerprint: readRequiredString(
-          item,
-          "public_key_fingerprint",
-        ),
-      };
-    }),
-    sshAuthorizations: sshAuthorizations.map((entry) => {
-      const item = asRecord(entry);
-      const scopeKind = readRequiredString(item, "scope_kind");
-      if (scopeKind !== "application" && scopeKind !== "terminal-session") {
-        throw new Error("The server returned an unknown SSH authorization scope.");
-      }
-      const duration = readRequiredString(item, "duration");
-      if (
-        duration !== "until-lock" &&
-        duration !== "until-agent-quits" &&
-        duration !== "4-hours" &&
-        duration !== "12-hours" &&
-        duration !== "24-hours"
-      ) {
-        throw new Error("The server returned an unknown SSH authorization duration.");
-      }
-      const expiresAt = readString(item, "expires_at");
-      return {
-        application: readRequiredString(item, "client_application"),
-        createdAt: readRequiredString(item, "created_at"),
-        duration,
-        ...(expiresAt ? { expiresAt } : {}),
-        fingerprint: readRequiredString(item, "fingerprint"),
-        id: readRequiredString(item, "id"),
-        itemId: readRequiredString(item, "item_id"),
-        itemTitle: readRequiredString(item, "item_title"),
-        itemVersion: readRequiredNumber(item, "item_version"),
-        requesterDeviceId: readRequiredString(item, "requester_device_id"),
-        scopeKind,
-      };
-    }),
-  };
+  return normalizeHumanManagement(await fetchJson("/v1/human/management"));
 }
 
 export function getPushConfig(): Promise<{
@@ -467,12 +287,8 @@ export function verifyApprovalDecision(
   challengeId: string,
   decision: ApprovalDecision,
   response: AuthenticationResponseJSON,
-  authorizationDuration?: SshAuthorizationDuration,
 ): Promise<VerifyDecisionResponse> {
   return postJson(`/v1/human/approvals/${encodeURIComponent(requestId)}/verify`, {
-    ...(authorizationDuration
-      ? { authorization_duration: authorizationDuration }
-      : {}),
     challenge_id: challengeId,
     decision,
     response,
@@ -504,6 +320,22 @@ export function revokeSshAuthorization(
 ): Promise<{ ok: true; status: "revoked" }> {
   return fetchJson(
     `/v1/human/ssh-authorizations/${encodeURIComponent(grantId)}`,
+    {
+      body: "{}",
+      headers: {
+        "content-type": "application/json",
+        "x-csrf-token": readCsrfToken(),
+      },
+      method: "DELETE",
+    },
+  );
+}
+
+export function revokeSecretAuthorization(
+  grantId: string,
+): Promise<{ ok: true; status: "revoked" }> {
+  return fetchJson(
+    `/v1/human/secret-authorizations/${encodeURIComponent(grantId)}`,
     {
       body: "{}",
       headers: {
@@ -613,8 +445,8 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = isRecord(body) ? body : undefined;
-    const code = readString(errorBody, "code", "error_code");
-    const requestId = readString(errorBody, "request_id", "requestId");
+    const code = readString(errorBody, "code");
+    const requestId = readString(errorBody, "request_id");
     const message =
       readString(errorBody, "message") ??
       defaultErrorMessage(response.status, code);
@@ -631,11 +463,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 function persistCsrfToken(response: Response, body: unknown): void {
   const bodyRecord = isRecord(body) ? body : undefined;
-  const session = bodyRecord && isRecord(bodyRecord.session) ? bodyRecord.session : undefined;
   const token =
     response.headers.get("x-csrf-token") ??
-    readString(bodyRecord, "csrf_token", "csrfToken") ??
-    readString(session, "csrf_token", "csrfToken");
+    readString(bodyRecord, "csrf_token");
 
   if (!token) return;
 
@@ -662,68 +492,6 @@ function clearCsrfToken(): void {
   }
 }
 
-function normalizeRequestSummary(value: unknown): RequestSummary {
-  const record = asRecord(value);
-  const client = asRecord(record.client);
-  const source = readRequiredString(client, "source");
-  if (
-    source !== "process-ancestry" &&
-    source !== "unavailable"
-  ) {
-    throw new Error("The server returned an unknown client observation source.");
-  }
-  return {
-    action: readRequiredString(record, "action") as ApprovalAction,
-    ...(isRecord(record.authorization_session)
-      ? {
-          authorizationSession: {
-            scopeKind: readAuthorizationScopeKind(
-              record.authorization_session,
-            ),
-          },
-        }
-      : {}),
-    client: {
-      application: readRequiredString(client, "application"),
-      source,
-    },
-    createdAt: readRequiredString(record, "created_at", "createdAt"),
-    expiresAt: readRequiredString(record, "expires_at", "expiresAt"),
-    requestId: readRequiredString(record, "request_id", "requestId"),
-    requesterName: readRequiredString(record, "requester_name", "requesterName"),
-    status: readRequiredString(record, "status") as ApprovalStatus,
-    targetLabel: readRequiredString(record, "target_label", "targetLabel"),
-    verifiedVersion: readRequiredNumber(record, "verified_version", "verifiedVersion"),
-  };
-}
-
-function readAuthorizationScopeKind(
-  value: Record<string, unknown>,
-): "application" | "terminal-session" {
-  const kind = readRequiredString(value, "scope_kind", "scopeKind");
-  if (kind !== "application" && kind !== "terminal-session") {
-    throw new Error("The server returned an unknown SSH authorization scope.");
-  }
-  return kind;
-}
-
-function normalizeRequestDetail(value: unknown): RequestDetail {
-  const record = asRecord(value);
-  const factsValue = record.verified_facts ?? record.verifiedFacts;
-  const facts = Array.isArray(factsValue) ? factsValue : [];
-
-  return {
-    ...normalizeRequestSummary(record),
-    verifiedFacts: facts.map((fact) => {
-      const factRecord = asRecord(fact);
-      return {
-        label: readRequiredString(factRecord, "label"),
-        value: readRequiredString(factRecord, "value"),
-      };
-    }),
-  };
-}
-
 function defaultErrorMessage(status: number, code?: string): string {
   if (code === "bootstrap_unavailable") {
     return "The one-time setup code is invalid, unavailable, or already used.";
@@ -734,6 +502,9 @@ function defaultErrorMessage(status: number, code?: string): string {
   if (code === "gateway_locked") {
     return "The gateway is in Lock mode. This request was rejected without notifying an approver.";
   }
+  if (code === "onepassword_rate_limited") {
+    return "The 1Password Service Account rate limit has been reached. Try again after its quota resets.";
+  }
   if (status === 401) return "Your session has expired. Sign in again with a passkey.";
   if (status === 403) return "This action failed its security check. Reload the page and try again.";
   if (status === 404) return "The request does not exist or has already been removed.";
@@ -742,55 +513,15 @@ function defaultErrorMessage(status: number, code?: string): string {
   return code ? `Request failed (${code})` : `Request failed (HTTP ${status})`;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error("The server returned unrecognized data.");
-  return value;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readRequiredString(
-  record: Record<string, unknown>,
-  ...keys: string[]
-): string {
-  const value = readString(record, ...keys);
-  if (value === undefined) throw new Error(`Server response is missing field: ${keys[0]}`);
-  return value;
-}
-
-function readRequiredNumber(
-  record: Record<string, unknown>,
-  ...keys: string[]
-): number {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  throw new Error(`Server response is missing numeric field: ${keys[0]}`);
-}
-
 function readString(
   record: Record<string, unknown> | undefined,
-  ...keys: string[]
+  key: string,
 ): string | undefined {
   if (!record) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string") return value;
-  }
-  return undefined;
-}
-
-function readBoolean(
-  record: Record<string, unknown> | undefined,
-  ...keys: string[]
-): boolean | undefined {
-  if (!record) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "boolean") return value;
-  }
-  return undefined;
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }

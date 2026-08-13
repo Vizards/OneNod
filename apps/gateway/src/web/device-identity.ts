@@ -1,3 +1,5 @@
+import { encodeBase64Url } from "@onenod/protocol";
+
 const DATABASE_NAME = "onepassword-remote-device";
 const STORE_NAME = "identity";
 const IDENTITY_KEY = "current";
@@ -114,10 +116,4 @@ function writeIdentity(database: IDBDatabase, identity: StoredIdentity): Promise
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error ?? new Error("Unable to save the device credential."));
   });
-}
-
-function encodeBase64Url(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }

@@ -26,6 +26,7 @@
     "oxlint": "catalog:",
     "semver": "7.8.5",
     "tar-stream": "3.2.0",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "yaml": "2.9.0"
   }
 }

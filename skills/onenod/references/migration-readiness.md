@@ -11,9 +11,11 @@ Require:
    normal setup acceptance with disposable data. Web Push is optional.
 2. The installed CLI's read-only full-stack update check reports a supported
    Release and compatible remote deployment.
-3. The operator ceremony verified that its temporary Cloudflare profile was
-   revoked on the Mac that deployed it. The human confirms no other ordinary
-   Agent Mac was ever authorized for the dedicated account.
+3. The operator receipt reports current-Mac Cloudflare authority revoked, or a
+   later `may operator revoke-cloudflare` run has verified that no local
+   Wrangler profile on the deploying Mac still exposes the dedicated account.
+   The human confirms no other ordinary Agent Mac was authorized for that
+   account.
 4. The Executor Service Account can access only `Agent` with the intended
    `read_items` and `write_items` scope and cannot access `OneNod Recovery` or
    source human Vaults.

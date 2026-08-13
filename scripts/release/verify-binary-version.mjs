@@ -1,10 +1,17 @@
-import { lstat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { parseProductVersion, parseStableVersion } from "./release-version.mjs";
 
 const options = parseOptions(process.argv.slice(2));
+const contract = parseRecord(
+  await readFile(resolve(import.meta.dirname, "release-contract.json"), "utf8"),
+  "release contract",
+);
+if (options.helperVersion !== contract.components?.keychain_helper?.version) {
+  fail("Keychain helper version differs from the release contract");
+}
 await assertExecutable(options.may, "may");
 await assertExecutable(options.helper, "Keychain helper");
 
@@ -13,10 +20,10 @@ if (
   may.version !== options.version ||
   may.release_tag !== options.tag ||
   may.source_commit !== options.commit ||
-  may.repository !== "Vizards/OneNod" ||
+  may.repository !== contract.repository ||
   may.release_channel !== options.channel ||
   may.supported_release !== true ||
-  may.client_protocol !== 1
+  may.client_protocol !== contract.components?.may?.client_protocol
 ) {
   fail("may reports release metadata that differs from the tagged build");
 }
@@ -31,7 +38,9 @@ if (
   helper.version !== options.helperVersion ||
   typeof helper.source_commit !== "string" ||
   !/^[0-9a-f]{40}$/u.test(helper.source_commit) ||
-  helper.protocol !== 1
+  !Number.isSafeInteger(helper.protocol) ||
+  helper.protocol < contract.components?.keychain_helper?.helper_protocol?.min ||
+  helper.protocol > contract.components?.keychain_helper?.helper_protocol?.max
 ) {
   fail("Keychain helper reports metadata that differs from the tagged build");
 }
@@ -63,6 +72,19 @@ function runJSON(command, args, label) {
     if (error instanceof SyntaxError) fail(`${label} did not return valid JSON`);
     throw error;
   }
+}
+
+function parseRecord(value, label) {
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail(`${label} is not valid JSON`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fail(`${label} must be a JSON object`);
+  }
+  return parsed;
 }
 
 async function assertExecutable(path, label) {

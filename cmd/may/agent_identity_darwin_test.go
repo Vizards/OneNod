@@ -4,71 +4,54 @@ package main
 
 import "testing"
 
-func TestKnownAgentLabelRecognizesPaseoAndSpecificAgents(t *testing.T) {
+func TestVerifiedHelperObservationBecomesApplicationScope(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		command string
-		label   string
-	}{
-		{command: "Paseo Daemon", label: "Paseo"},
-		{command: "/Applications/Paseo.app/Contents/MacOS/Paseo", label: "Paseo"},
-		{command: "/opt/homebrew/bin/codex app-server", label: "Codex"},
-		{command: "claude --print", label: "Claude Code"},
+	context := resolveObservedApplication(
+		func(_ string, _ string, evidence applicationEvidence) (localClientContext, error) {
+			if evidence.Kind != applicationEvidenceParent {
+				t.Fatalf("evidence kind = %q", evidence.Kind)
+			}
+			return localClientContext{
+				Observation: clientObservation{
+					Application: "Signed Editor",
+					Identity: applicationIdentity{
+						Assurance:         applicationAssuranceVerified,
+						Platform:          "macos",
+						PrincipalScheme:   macOSPrincipalScheme,
+						PrincipalID:       "verified-principal",
+						SigningIdentifier: "com.example.editor",
+						TeamIdentifier:    "EXAMPLETEAM",
+					},
+					Source: "process-ancestry",
+				},
+				ScopeID:   "verified-principal",
+				ScopeKind: "application",
+			}, nil
+		},
+		"https://onenod.example.workers.dev",
+		"active",
+		applicationEvidence{Kind: applicationEvidenceParent},
+	)
+	if context.ScopeID != "verified-principal" || context.ScopeKind != "application" {
+		t.Fatalf("verified application context = %+v", context)
 	}
-	for _, test := range tests {
-		if actual := knownAgentLabel(test.command); actual != test.label {
-			t.Fatalf("knownAgentLabel(%q) = %q, want %q", test.command, actual, test.label)
-		}
+	if context.Observation.Identity.SigningIdentifier != "com.example.editor" {
+		t.Fatalf("verified observation = %+v", context.Observation)
 	}
 }
 
-func TestParseMacOSApplicationLabelNormalizesPaseoHelpers(t *testing.T) {
+func TestUnavailableResolverCannotProduceRememberedScope(t *testing.T) {
 	t.Parallel()
-	output := `"CFBundleIdentifier"="sh.paseo.desktop.helper"
-"LSDisplayName"="Paseo Daemon"
-`
-	if actual := parseMacOSApplicationLabel(output); actual != "Paseo" {
-		t.Fatalf("parseMacOSApplicationLabel() = %q, want Paseo", actual)
+	context := resolveObservedApplication(
+		nil,
+		"https://onenod.example.workers.dev",
+		"active",
+		applicationEvidence{Kind: applicationEvidenceParent},
+	)
+	if context.ScopeID != "" || context.ScopeKind != "" {
+		t.Fatalf("unavailable resolver produced scope %+v", context)
 	}
-}
-
-func TestParseMacOSApplicationLabelUsesLaunchServicesName(t *testing.T) {
-	t.Parallel()
-	output := `"CFBundleIdentifier"="com.apple.Terminal"
-"LSDisplayName"="Terminal"
-`
-	if actual := parseMacOSApplicationLabel(output); actual != "Terminal" {
-		t.Fatalf("parseMacOSApplicationLabel() = %q, want Terminal", actual)
-	}
-}
-
-func TestProcessScopeBindsExactProcessLifetime(t *testing.T) {
-	t.Parallel()
-	process := localProcessIdentity{
-		pid:          412,
-		startSeconds: 1_722_000_000,
-		startMicros:  125,
-		terminal:     9,
-	}
-	kind, first := processScope("terminal-session", process)
-	if kind != "terminal-session" || first == "" {
-		t.Fatalf("unexpected process scope: %q %q", kind, first)
-	}
-	_, repeated := processScope("terminal-session", process)
-	if repeated != first {
-		t.Fatal("the same process lifetime produced a different scope")
-	}
-	process.startMicros++
-	_, restarted := processScope("terminal-session", process)
-	if restarted == first {
-		t.Fatal("a reused PID with a new start time retained the old scope")
-	}
-}
-
-func TestAuthorizationScopeFailsClosedWithoutObservedProcess(t *testing.T) {
-	t.Parallel()
-	kind, identifier := authorizationScope(nil, unknownLocalClient())
-	if kind != "" || identifier != "" {
-		t.Fatalf("unavailable process identity produced scope %q %q", kind, identifier)
+	if context.Observation.Identity.Assurance != applicationAssuranceUnverified {
+		t.Fatalf("unavailable identity = %+v", context.Observation.Identity)
 	}
 }

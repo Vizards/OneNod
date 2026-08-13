@@ -369,11 +369,19 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     mutation = false,
   ): Promise<T> {
     let operationEntered = false;
+    const invocationCounts = new Map<string, number>();
+    let upstreamRequests = 0;
     const lifecycle = await runWithOnePasswordClient(
       this.runtime,
       {
         accountHost: this.env.OP_ACCOUNT,
         deadlineAt: Date.now() + OPERATION_TIMEOUT_MS,
+        observeInvocation: (kind) => {
+          invocationCounts.set(kind, (invocationCounts.get(kind) ?? 0) + 1);
+        },
+        observeUpstreamRequest: () => {
+          upstreamRequests += 1;
+        },
         serviceAccountToken: this.env.OP_SERVICE_ACCOUNT_TOKEN!,
         signal,
       },
@@ -382,6 +390,24 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         return operation(client);
       },
     );
+    if (invocationCounts.size > 0 || upstreamRequests > 0) {
+      console.log(
+        JSON.stringify({
+          coreInvocations: [...invocationCounts.values()].reduce(
+            (sum, count) => sum + count,
+            0,
+          ),
+          event: "executor_onepassword_usage",
+          operations: Object.fromEntries(
+            [...invocationCounts.entries()].sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+          outcome: lifecycle.ok ? "completed" : "failed",
+          upstreamRequests,
+        }),
+      );
+    }
     if (lifecycle.ok) return lifecycle.value;
     if (lifecycle.operationCompleted) {
       console.error(
@@ -418,6 +444,9 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       lifecycle.error instanceof CoreAdapterError &&
       (lifecycle.error.code === "operation_aborted" ||
         lifecycle.error.code === "operation_deadline_exceeded");
+    const rateLimited =
+      lifecycle.error instanceof CoreAdapterError &&
+      lifecycle.error.code === "onepassword_rate_limited";
     if (mutation && operationEntered) {
       throw new GatewayOperationError(
         "onepassword_write_outcome_unknown",
@@ -425,8 +454,12 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       );
     }
     throw new GatewayOperationError(
-      timedOut ? "onepassword_timeout" : "onepassword_operation_failed",
-      timedOut ? 504 : 502,
+      timedOut
+        ? "onepassword_timeout"
+        : rateLimited
+          ? "onepassword_rate_limited"
+          : "onepassword_operation_failed",
+      timedOut ? 504 : rateLimited ? 429 : 502,
     );
   }
 

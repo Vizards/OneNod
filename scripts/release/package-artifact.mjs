@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmod,
   copyFile,
@@ -11,11 +12,18 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { writeArtifactArchive } from "./artifact-tar.mjs";
 import { parseProductVersion, parseStableVersion } from "./release-version.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
+const releaseContract = JSON.parse(
+  await readFile(
+    resolve(repositoryRoot, "scripts/release/release-contract.json"),
+    "utf8",
+  ),
+);
 const options = parseOptions(process.argv.slice(2));
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "onenod-release-"));
 
@@ -53,13 +61,28 @@ async function stageLocalArtifact(temporaryRoot, values) {
   const root = join(temporaryRoot, "onenod");
   const binaryDirectory = join(root, "bin");
   await mkdir(binaryDirectory, { recursive: true, mode: 0o755 });
-  await copyExecutable(values.binary, join(binaryDirectory, "may"));
-  await copyExecutable(values.binary, join(binaryDirectory, "may-ssh-sign"));
+  const mayPath = join(binaryDirectory, "may");
+  const adapterPath = join(binaryDirectory, "may-ssh-sign");
+  await copyExecutable(values.binary, mayPath);
+  await copyExecutable(values.adapterBinary, adapterPath);
   await copyRequiredFile(resolve(repositoryRoot, "LICENSE"), join(root, "LICENSE"));
   await stageThirdPartyInventory(root, values);
   await writeReleaseMetadata(root, {
     architecture: values.arch,
     artifact_kind: "local",
+    code_identities: {
+      may: releaseContract.components?.may?.code_identity,
+      may_ssh_sign:
+        releaseContract.components?.may?.adapter_code_identity,
+    },
+    binary_sha256: {
+      may: await sha256File(mayPath),
+      may_ssh_sign: await sha256File(adapterPath),
+    },
+    exact_code_identities: {
+      may: await exactCodeIdentity(mayPath, values.arch),
+      may_ssh_sign: await exactCodeIdentity(adapterPath, values.arch),
+    },
     release_version: values.version,
     source_commit: values.commit,
   });
@@ -67,19 +90,31 @@ async function stageLocalArtifact(temporaryRoot, values) {
 }
 
 async function stageHelperArtifact(temporaryRoot, values) {
+  const helperProtocol =
+    releaseContract.components?.keychain_helper?.helper_protocol;
+  if (
+    !Number.isSafeInteger(helperProtocol?.min) ||
+    helperProtocol.min !== helperProtocol.max
+  ) {
+    fail("release contract must select one Keychain helper protocol");
+  }
   const root = join(temporaryRoot, "onenod-keychain-helper");
   const binaryDirectory = join(root, "bin");
   await mkdir(binaryDirectory, { recursive: true, mode: 0o755 });
+  const helperPath = join(binaryDirectory, "onenod-keychain-helper");
   await copyExecutable(
     values.binary,
-    join(binaryDirectory, "onenod-keychain-helper"),
+    helperPath,
   );
   await copyRequiredFile(resolve(repositoryRoot, "LICENSE"), join(root, "LICENSE"));
   await stageThirdPartyInventory(root, values);
   await writeReleaseMetadata(root, {
     architecture: values.arch,
     artifact_kind: "keychain_helper",
-    helper_protocol: 1,
+    binary_sha256: await sha256File(helperPath),
+    code_identity: releaseContract.components?.keychain_helper?.code_identity,
+    exact_code_identity: await exactCodeIdentity(helperPath, values.arch),
+    helper_protocol: helperProtocol.min,
     helper_source_digest: values.helperSourceDigest,
     helper_version: values.helperVersion,
     source_commit: values.commit,
@@ -317,9 +352,71 @@ async function assertRegularFile(path, label) {
   if (info.size <= 0) fail(`${label} is empty: ${path}`);
 }
 
+async function sha256File(path) {
+  return `sha256:${createHash("sha256").update(await readFile(path)).digest("hex")}`;
+}
+
+async function exactCodeIdentity(path, architecture) {
+  const expectedMachOArchitecture = architecture === "amd64" ? "x86_64" : architecture;
+  const architectures = spawnSync("/usr/bin/lipo", ["-archs", path], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const slices = (architectures.stdout ?? "").trim().split(/\s+/u).filter(Boolean);
+  if (
+    architectures.status !== 0 ||
+    slices.length !== 1 ||
+    slices[0] !== expectedMachOArchitecture
+  ) {
+    fail(`release binary does not contain exactly the declared architecture: ${path}`);
+  }
+  const details = spawnSync(
+    "/usr/bin/codesign",
+    ["-d", "--verbose=4", "-r-", path],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const output = `${details.stdout ?? ""}\n${details.stderr ?? ""}`;
+  if (details.status !== 0) fail(`cannot inspect exact code identity: ${path}`);
+  const cdhashHex = /^CDHash=([0-9a-f]+)$/imu.exec(output)?.[1]?.toLowerCase();
+  const requirement = /^(?:# )?designated => (.+)$/mu.exec(output)?.[1];
+  if (
+    cdhashHex === undefined ||
+    cdhashHex.length < 40 ||
+    cdhashHex.length > 128 ||
+    cdhashHex.length % 2 !== 0 ||
+    requirement === undefined ||
+    requirement.length === 0
+  ) {
+    fail(`exact code identity is incomplete: ${path}`);
+  }
+  const requirementPath = join(
+    temporaryDirectory,
+    `.requirement-${createHash("sha256").update(path).digest("hex")}`,
+  );
+  const compiled = spawnSync(
+    "/usr/bin/csreq",
+    [`-r=${requirement}`, "-b", requirementPath],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (compiled.status !== 0) fail(`cannot compile exact designated requirement: ${path}`);
+  const requirementData = await readFile(requirementPath);
+  await rm(requirementPath, { force: true });
+  if (requirementData.length === 0 || requirementData.length > 64 * 1024) {
+    fail(`compiled designated requirement is invalid: ${path}`);
+  }
+  return {
+    architecture,
+    cdhash: Buffer.from(cdhashHex, "hex").toString("base64url"),
+    designated_requirement_data_sha256: `sha256:${createHash("sha256")
+      .update(requirementData)
+      .digest("hex")}`,
+  };
+}
+
 function parseOptions(args) {
   const values = {
     arch: "",
+    adapterBinary: "",
     binary: "",
     commit: "",
     components: "",
@@ -339,6 +436,9 @@ function parseOptions(args) {
     switch (name) {
       case "--arch":
         values.arch = value;
+        break;
+      case "--adapter-binary":
+        values.adapterBinary = resolve(value);
         break;
       case "--binary":
         values.binary = resolve(value);
@@ -383,6 +483,9 @@ function parseOptions(args) {
     if (!["arm64", "amd64"].includes(values.arch) || values.binary === "") {
       fail("local and helper artifacts require a binary and supported architecture");
     }
+  }
+  if (values.kind === "local" && values.adapterBinary === "") {
+    fail("local artifacts require the exact may SSH signing adapter binary");
   }
   if (values.kind === "helper") {
     requireStableVersion(values.helperVersion, "helper version");

@@ -2,23 +2,21 @@
 
 package main
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
-func detectLocalClient(_ net.Conn) clientObservation {
-	return detectLocalClientFromPID(0)
+func sshPeerApplicationEvidence(net.Conn) (applicationEvidence, error) {
+	return applicationEvidence{}, errors.New("verified application identity is unavailable on this platform")
 }
 
-func detectLocalClientContext(_ net.Conn) localClientContext {
-	return unknownLocalClientContext()
-}
-
-func detectLocalClientFromPID(_ int) clientObservation {
-	return clientObservation{
-		Application: "Unknown local client",
-		Source:      "unavailable",
-	}
-}
+func runtimeApplicationPlatform() string { return "unsupported" }
 
 func unknownLocalClientContext() localClientContext {
-	return localClientContext{Observation: detectLocalClientFromPID(0)}
+	return localClientContext{Observation: clientObservation{
+		Application: "Unknown local client",
+		Identity:    unknownApplicationIdentity(),
+		Source:      "unavailable",
+	}}
 }

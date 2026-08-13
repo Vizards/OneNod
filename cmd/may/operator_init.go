@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,10 +16,11 @@ import (
 
 const (
 	defaultAgentVaultName         = "Agent"
-	defaultExecutorWorkerName     = "onenod-executor"
-	defaultGatewayWorkerName      = "onenod"
+	defaultExecutorWorkerBaseName = "onenod-executor"
+	defaultGatewayWorkerBaseName  = "onenod"
 	defaultRecoveryVaultName      = "OneNod Recovery"
 	defaultServiceAccountName     = "onenod-executor"
+	deploymentIDBytes             = 5
 	productionInitializationTag   = "onenod-production"
 	productionInitializationTitle = "OneNod production recovery"
 	serviceAccountTokenItemTitle  = "OneNod Executor Service Account"
@@ -76,7 +77,6 @@ type productionTargetIdentity struct {
 }
 
 type operatorConsole struct {
-	input  *bufio.Reader
 	stdin  io.Reader
 	stderr io.Writer
 	stdout io.Writer
@@ -97,17 +97,33 @@ func runProductionInitialization(args []string, deps dependencies) error {
 		return errors.New("usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
 	}
 	fallback := releaseChannelStable
+	trustedBootstrap := false
 	if receipt, found, err := readInitializerInstallReceipt(); err != nil {
 		return err
 	} else if found {
 		fallback = releaseChannel(receipt.Channel)
+		trustedBootstrap = true
+	}
+	if _, found, err := readLocalInstallReceipt(); err != nil {
+		return err
+	} else if found {
+		trustedBootstrap = true
 	}
 	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, fallback)
 	if err != nil {
 		return err
 	}
+	if !trustedBootstrap {
+		if err := confirmFirstExecutionCeremony(
+			deps.stdin,
+			deps.stdout,
+			firstExecutionOperatorInit,
+			"may operator init will establish the local initializer trust before any Cloudflare or 1Password production mutation",
+		); err != nil {
+			return err
+		}
+	}
 	console := operatorConsole{
-		input:  bufio.NewReader(deps.stdin),
 		stdin:  deps.stdin,
 		stderr: deps.stderr,
 		stdout: deps.stdout,
@@ -119,6 +135,9 @@ func newProductionInitializationMaterial(
 	provisioning onePasswordProvisioning,
 	identity productionTargetIdentity,
 ) (*productionInitializationMaterial, error) {
+	if err := validateProductionInitializationInputs(provisioning, identity); err != nil {
+		return nil, err
+	}
 	executorAuthToken, err := randomBase64URL(32)
 	if err != nil {
 		return nil, errors.New("generate executor authentication token failed")
@@ -139,7 +158,7 @@ func newProductionInitializationMaterial(
 	if err != nil {
 		return nil, errors.New("generate initialization ID failed")
 	}
-	material := &productionInitializationMaterial{
+	return &productionInitializationMaterial{
 		AccountID:                      identity.AccountID,
 		AccountSubdomain:               identity.AccountSubdomain,
 		AgentVaultID:                   provisioning.AgentVault.ID,
@@ -159,11 +178,7 @@ func newProductionInitializationMaterial(
 		ReleaseStage:                   "production",
 		RPID:                           identity.RPID,
 		VAPID:                          vapid,
-	}
-	if err := validateProductionInitializationMaterial(material); err != nil {
-		return nil, err
-	}
-	return material, nil
+	}, nil
 }
 
 func validateProductionTargetIdentity(
@@ -215,6 +230,19 @@ func randomBase64URL(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func newDeploymentID() (string, error) {
+	return deploymentIDFromReader(rand.Reader)
+}
+
+func deploymentIDFromReader(source io.Reader) (string, error) {
+	value := make([]byte, deploymentIDBytes)
+	defer zeroBytes(value)
+	if _, err := io.ReadFull(source, value); err != nil {
+		return "", err
+	}
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(value)), nil
 }
 
 func serviceAccountTokenItemTemplate(
@@ -370,45 +398,23 @@ func concealedRecoveryField(id string, label string, value string) map[string]an
 	}
 }
 
-func validateProductionInitializationMaterial(
-	material *productionInitializationMaterial,
+func validateProductionInitializationInputs(
+	provisioning onePasswordProvisioning,
+	identity productionTargetIdentity,
 ) error {
-	if material == nil ||
-		material.ReleaseStage != "production" ||
-		material.InitializationID == "" ||
-		material.RecoveryVault == "" ||
-		material.AgentVaultName != defaultAgentVaultName ||
-		!onePasswordVaultIDPattern.MatchString(material.AgentVaultID) ||
-		!onePasswordVaultIDPattern.MatchString(material.RecoveryVault) ||
-		material.OnePasswordServiceAccountName == "" ||
-		material.OnePasswordServiceAccountItem == "" ||
-		!onePasswordAccountPattern.MatchString(material.OnePasswordAccount) ||
-		!validServiceAccountToken(material.OnePasswordServiceAccountToken) {
+	if provisioning.AgentVault.Name != defaultAgentVaultName ||
+		!onePasswordVaultIDPattern.MatchString(provisioning.AgentVault.ID) ||
+		!onePasswordVaultIDPattern.MatchString(provisioning.RecoveryVault.ID) ||
+		provisioning.ServiceAccountName == "" ||
+		provisioning.ServiceAccountTokenItem == "" ||
+		!onePasswordAccountPattern.MatchString(provisioning.Account) ||
+		!validServiceAccountToken(provisioning.ServiceAccountToken) {
 		return errors.New("invalid production initialization material")
 	}
-	validatedIdentity, err := validateProductionTargetIdentity(productionTargetIdentity{
-		AccountID:        material.AccountID,
-		AccountSubdomain: material.AccountSubdomain,
-		ExecutorName:     material.ExecutorName,
-		GatewayName:      material.GatewayName,
-		Origin:           material.Origin,
-		RPID:             material.RPID,
-	})
-	if err != nil || validatedIdentity.Origin != material.Origin {
+	if _, err := validateProductionTargetIdentity(identity); err != nil {
 		return errors.New("invalid production target identity")
 	}
-	for _, value := range []string{
-		material.BootstrapToken,
-		material.ExecutorAuthToken,
-		material.GatewayMasterKey,
-	} {
-		decoded, err := base64.RawURLEncoding.DecodeString(value)
-		if err != nil || len(decoded) != 32 {
-			return errors.New("invalid generated production secret")
-		}
-		zeroBytes(decoded)
-	}
-	return validateVapidCredential(&material.VAPID)
+	return nil
 }
 
 func validServiceAccountToken(value string) bool {
@@ -429,7 +435,7 @@ func destroyProductionInitializationSecrets(
 
 func (console *operatorConsole) readLine(prompt string) (string, error) {
 	fmt.Fprint(console.stderr, prompt)
-	value, err := console.input.ReadString('\n')
+	value, err := readPromptLine(console.stdin)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
@@ -470,6 +476,21 @@ func (console *operatorConsole) confirmDefaultYes(prompt string) (bool, error) {
 	case "", "y", "yes":
 		return true, nil
 	case "n", "no":
+		return false, nil
+	default:
+		return false, errors.New("enter y or n")
+	}
+}
+
+func (console *operatorConsole) confirmDefaultNo(prompt string) (bool, error) {
+	value, err := console.readLine(prompt + " [y/N]: ")
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "y", "yes":
+		return true, nil
+	case "", "n", "no":
 		return false, nil
 	default:
 		return false, errors.New("enter y or n")

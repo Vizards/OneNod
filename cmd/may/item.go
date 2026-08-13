@@ -136,15 +136,17 @@ func runItemCreate(args []string, config cliConfig, deps dependencies) error {
 	if err != nil {
 		return err
 	}
+	localClient := callingApplicationContext(config, deps)
+	defer localClient.Evidence.close()
 	request := itemCreateRequest{
 		Action:         "item.create",
 		Category:       spec.Category,
 		Fields:         fields,
 		IdempotencyKey: idempotencyKey,
-		Client:         detectLocalClientFromPID(os.Getppid()),
+		Client:         localClient.Observation,
 		Title:          spec.Title,
 	}
-	return submitAndConsumeItemMutation(request, config, deps)
+	return submitAndConsumeItemMutation(request, localClient, config, deps)
 }
 
 func runItemPatch(args []string, config cliConfig, deps dependencies) error {
@@ -177,15 +179,17 @@ func runItemPatch(args []string, config cliConfig, deps dependencies) error {
 	if err != nil {
 		return err
 	}
+	localClient := callingApplicationContext(config, deps)
+	defer localClient.Evidence.close()
 	request := itemPatchRequest{
 		Action:          "item.patch",
 		ExpectedVersion: version,
 		IdempotencyKey:  idempotencyKey,
-		Client:          detectLocalClientFromPID(os.Getppid()),
+		Client:          localClient.Observation,
 		ItemID:          *itemID,
 		Operations:      spec.Operations,
 	}
-	return submitAndConsumeItemMutation(request, config, deps)
+	return submitAndConsumeItemMutation(request, localClient, config, deps)
 }
 
 func runItemArchive(args []string, config cliConfig, deps dependencies) error {
@@ -210,14 +214,16 @@ func runItemArchive(args []string, config cliConfig, deps dependencies) error {
 	if err != nil {
 		return err
 	}
+	localClient := callingApplicationContext(config, deps)
+	defer localClient.Evidence.close()
 	request := itemArchiveRequest{
 		Action:          "item.archive",
 		ExpectedVersion: version,
 		IdempotencyKey:  idempotencyKey,
-		Client:          detectLocalClientFromPID(os.Getppid()),
+		Client:          localClient.Observation,
 		ItemID:          *itemID,
 	}
-	return submitAndConsumeItemMutation(request, config, deps)
+	return submitAndConsumeItemMutation(request, localClient, config, deps)
 }
 
 func readStrictSpec(path string, stdin io.Reader, result any) error {
@@ -384,6 +390,7 @@ func mutationExpectedVersion(
 
 func submitAndConsumeItemMutation(
 	request any,
+	localClient localClientContext,
 	config cliConfig,
 	deps dependencies,
 ) error {
@@ -397,7 +404,14 @@ func submitAndConsumeItemMutation(
 	}
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
-	err = client.doJSON(createContext, http.MethodPost, "/v1/requests", request, &created)
+	err = client.doApplicationJSON(
+		createContext,
+		http.MethodPost,
+		"/v1/requests",
+		request,
+		&created,
+		localClient,
+	)
 	cancelCreate()
 	if err != nil {
 		return err
@@ -435,7 +449,14 @@ func submitAndConsumeItemMutation(
 	consumePath := "/v1/requests/" + url.PathEscape(created.RequestID) + "/consume"
 	var consumed itemMutationResponse
 	consumeContext, cancelConsume := context.WithTimeout(context.Background(), gatewayRequestTimeout)
-	err = client.doJSON(consumeContext, http.MethodPost, consumePath, consumeRequest{}, &consumed)
+	err = client.doCapabilityJSON(
+		consumeContext,
+		http.MethodPost,
+		consumePath,
+		consumeRequest{},
+		&consumed,
+		created.PollToken,
+	)
 	cancelConsume()
 	if err != nil {
 		return fmt.Errorf("consume item request %s: %w", created.RequestID, err)

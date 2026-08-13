@@ -108,6 +108,28 @@ test("invoke errors are stable, release once, poison the plugin, and never leak 
   assert.doesNotMatch(outcome.error.message, /ops_/);
 });
 
+test("an observed upstream 429 becomes a stable 1Password rate-limit error", async () => {
+  const runtime = new ReusableExtismRuntime(
+    async (_accountHost, _generation, getActiveLease) =>
+      fakePlugin(async (name) => {
+        if (name === "init_client") return output("9");
+        if (name === "invoke") {
+          getActiveLease()!.upstreamRateLimited = true;
+          throw new Error("untrusted upstream response");
+        }
+        return output("null");
+      }),
+  );
+
+  const outcome = await runWithOnePasswordClient(runtime, runOptions, (client) =>
+    client.invoke({ kind: "vault.list" }),
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.ok(outcome.error instanceof CoreAdapterError);
+  assert.equal(outcome.error.code, "onepassword_rate_limited");
+});
+
 test("init failure skips release; release failure reports completed-but-unclean", async () => {
   const initCalls: string[] = [];
   const failedInit = fakePlugin(

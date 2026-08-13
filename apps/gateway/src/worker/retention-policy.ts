@@ -1,3 +1,5 @@
+import { decodeBase64Url, encodeBase64Url } from "@onenod/protocol";
+
 export const HUMAN_SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export const ACTIVITY_PAGE_SIZE = 100;
@@ -65,19 +67,4 @@ export function decodeActivityCursor(value: string): ActivityCursor {
     throw new TypeError("activity_cursor_invalid");
   }
   return { createdAt: parsed[0], requestId: parsed[1] };
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
-}
-
-function decodeBase64Url(value: string): Uint8Array {
-  const padded = value.replace(/-/gu, "+").replace(/_/gu, "/").padEnd(
-    Math.ceil(value.length / 4) * 4,
-    "=",
-  );
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

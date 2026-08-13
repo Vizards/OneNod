@@ -10,6 +10,7 @@ import (
 )
 
 func TestRequesterPreflightChecksCoreWithoutRequiringEnrollment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := healthyPreflightServer(t)
 	defer server.Close()
 	var output strings.Builder
@@ -36,12 +37,15 @@ func TestRequesterPreflightChecksCoreWithoutRequiringEnrollment(t *testing.T) {
 		report.GatewayCrypto != "not_checked_anonymously" ||
 		report.HumanIdentity != "not_checked_anonymously" ||
 		report.Executor.Declared != true || report.Executor.Version != "0.2.0" ||
+		report.LocalFallback.Configured || report.LocalFallback.AgentConfig != "not detected" ||
+		report.LocalFallback.SSHAgent != "not detected" ||
 		report.Requester.LocalCredential != "absent" {
 		t.Fatalf("unexpected preflight report %+v", report)
 	}
 }
 
 func TestRequesterPreflightReportsOnlyPublicRequesterIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := healthyPreflightServer(t)
 	defer server.Close()
 	credential, err := credentialFromSeed("test-agent-device")
@@ -83,6 +87,7 @@ func TestRequesterPreflightReportsOnlyPublicRequesterIdentity(t *testing.T) {
 }
 
 func TestRequesterPreflightFailsClosedOnUndeclaredExecutor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("content-type", "application/json")
 		switch request.URL.Path {
@@ -112,6 +117,7 @@ func TestRequesterPreflightFailsClosedOnUndeclaredExecutor(t *testing.T) {
 }
 
 func TestRequesterPreflightFailsClosedOnReleaseChannelMismatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("content-type", "application/json")
 		switch request.URL.Path {
@@ -171,7 +177,7 @@ func staticVersionResponse(executorDeclared bool) string {
 			"gateway": map[string]any{
 				"channel":                  "stable",
 				"version":                  "0.2.0",
-				"accepted_client_protocol": map[string]int{"min": 1, "max": 1},
+				"accepted_client_protocol": map[string]int{"min": 1, "max": 2},
 			},
 			"executor": map[string]any{
 				"declared": executorDeclared,

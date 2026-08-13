@@ -19,6 +19,7 @@
     "src/worker/executor-envelope.ts",
     "src/worker/executor-run-lease.ts",
     "src/worker/web-push.ts",
+    "src/web/push-registration.ts",
     "test/**/*.ts"
   ]
 }

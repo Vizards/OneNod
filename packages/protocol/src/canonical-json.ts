@@ -51,8 +51,8 @@ function assertCanonicalDomain(value: unknown, ancestors: Set<object>): void {
   }
 
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      throw new TypeError("Canonical JSON only permits finite numbers.");
+    if (!Number.isSafeInteger(value)) {
+      throw new TypeError("Canonical JSON only permits safe integers.");
     }
     return;
   }
@@ -115,7 +115,7 @@ function assertCanonicalDomain(value: unknown, ancestors: Set<object>): void {
  *
  * The result follows the RFC 8785 rules used by this protocol: ECMAScript
  * primitive serialization, UTF-16 property ordering, no insignificant
- * whitespace, and rejection of values that are not valid I-JSON.
+ * whitespace, and the OneNod protocol's cross-runtime safe-integer domain.
  */
 export function canonicalizeJson(value: unknown): string {
   assertCanonicalDomain(value, new Set());

@@ -1,5 +1,7 @@
 import { decodeBase64Url, encodeBase64Url } from "@onenod/protocol";
 
+import { ownedBytes } from "../shared/owned-bytes.js";
+
 const POLLING_TOKEN_CONTEXT = "onenod-request-poll-v1";
 const POLLING_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
@@ -57,10 +59,4 @@ export function pollingTokensMatch(
     difference |= left[index]! ^ right[index]!;
   }
   return difference === 0;
-}
-
-function ownedBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
-  const copy = new Uint8Array(value.byteLength);
-  copy.set(value);
-  return copy;
 }

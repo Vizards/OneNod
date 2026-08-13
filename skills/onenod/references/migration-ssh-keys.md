@@ -19,20 +19,36 @@ Do not reveal private material or infer a role from an item title alone.
 
 ## Refresh and reconcile
 
-On every requester Mac, run the fixed requester's preflight, refresh the SSH
-Agent's public inventory, and inspect Agent status. Compare fingerprints with
-the human-selected batch. Missing, duplicate, unsupported, or changed keys stop
-automatic cutover only for the affected consumer.
+On every requester Mac, run the fixed requester's preflight, run
+`may agent refresh` after the selected SSH Key batch is copied or changed, and
+inspect Agent status. The verified public inventory remains local until an
+explicit refresh; normal identity listing does not contact 1Password merely
+because time passed. Compare fingerprints with the human-selected batch.
+Missing, duplicate, unsupported, or changed keys stop automatic cutover only
+for the affected consumer.
 
 OpenSSH authentication and Git commit/tag SSH signing are independent opt-ins.
 Use the CLI's corresponding status and apply capabilities only for consumers
 selected by the human. For Git signing, use the CLI's public-key export
 operation for the selected item; private-key export is never permitted.
 
+Treat socket cutover and public-key selector migration as separate steps.
+`may configure ssh` owns only the effective `IdentityAgent`; existing
+`IdentityFile`, `IdentitiesOnly`, and `Include` behavior remains active. Inspect
+`may configure ssh status`, then use `ssh -G <host>` for every selected Host.
+For a selector that still names an old product path, match the intended Agent
+item by public fingerprint, export a new public-key file, and update only that
+Host. Do not guess mappings or delete old public-key files before acceptance.
+
 Each apply operation must display current and proposed settings and wait for the
 human's default-no decision. Preserve unrelated Host blocks and Git values.
 OneNod configures Git's SSH signature format, not traditional GPG/OpenPGP, and
 must not enable agent forwarding.
+
+After global Git setup, run `may configure git-signing status` from each real
+repository used for acceptance. A repository or worktree value can override the
+global signer; OneNod reports its effective scope but never removes that local
+policy automatically.
 
 ## Agent-led acceptance
 

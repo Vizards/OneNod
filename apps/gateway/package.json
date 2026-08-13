@@ -10,7 +10,7 @@
     "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
     "dev:web": "vite",
     "dev:worker": "wrangler dev",
-    "test": "node --import tsx --test test/*.test.*",
+    "test": "node --experimental-sqlite --import tsx --test test/*.test.*",
     "typecheck": "pnpm typecheck:web && pnpm typecheck:worker",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",

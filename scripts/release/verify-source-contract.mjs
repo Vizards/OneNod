@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
@@ -8,8 +9,10 @@ import {
   releaseTrainTarget,
   validateReleaseChannelContract,
 } from "./release-version.mjs";
+import { validateReleaseWorkflow } from "./release-workflow-contract.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
+const sourceCommit = parseOptions(process.argv.slice(2));
 const manifest = await readJSON(".release-please-manifest.json");
 const config = await readJSON("release-please-config.json");
 const contract = await readJSON("scripts/release/release-contract.json");
@@ -58,76 +61,11 @@ if (
 ) {
   fail("canonical release identity is inconsistent");
 }
-const releaseWorkflow = await readFile(
-  resolve(repositoryRoot, contract.workflow),
-  "utf8",
-);
-for (const jobName of [
-  "local-artifacts",
-  "deployment-artifacts",
-  "sbom",
-  "publish",
-]) {
-  const job = workflowJob(releaseWorkflow, jobName);
-  if (
-    !job.includes("uses: pnpm/action-setup@") ||
-    !job.includes("cache: pnpm") ||
-    !job.includes("run: pnpm install --frozen-lockfile")
-  ) {
-    fail(`release job ${jobName} does not install the frozen Node dependency set`);
-  }
-}
-const prepareJob = workflowJob(releaseWorkflow, "prepare");
-if (
-  !prepareJob.includes("name: Check out the reviewed release controller") ||
-  !prepareJob.includes("branches-where-head") ||
-  !prepareJob.includes("--source-sha \"$SOURCE_SHA_INPUT\"") ||
-  !prepareJob.includes("github.ref == 'refs/heads/main'") ||
-  !prepareJob.includes("Require a GitHub-verified source commit signature") ||
-  !prepareJob.includes("GITHUB_STEP_SUMMARY") ||
-  prepareJob.includes("contents: write") ||
-  prepareJob.includes("Create or verify the exact lightweight tag")
-) {
-  fail(
-    "prepare job must produce a read-only, signed-source plan through the reviewed main controller",
-  );
-}
-const authorizeJob = workflowJob(releaseWorkflow, "authorize");
-if (
-  !authorizeJob.includes("needs: prepare") ||
-  !authorizeJob.includes("github.ref == 'refs/heads/main'") ||
-  !authorizeJob.includes("name: ${{ github.event_name == 'workflow_dispatch'") ||
-  !authorizeJob.includes("contents: write") ||
-  !authorizeJob.includes("Create or verify the exact lightweight tag")
-) {
-  fail("authorize job must gate and bind the exact reviewed release plan");
-}
-for (const jobName of ["local-artifacts", "deployment-artifacts"]) {
-  if (!workflowJob(releaseWorkflow, jobName).includes("- authorize")) {
-    fail(`release build job ${jobName} must wait for release authorization`);
-  }
-}
-const publishJob = workflowJob(releaseWorkflow, "publish");
-if (
-  !publishJob.includes("name: Check out the reviewed release controller") ||
-  !publishJob.includes("ref: ${{ github.sha }}") ||
-  !publishJob.includes("- authorize") ||
-  !publishJob.includes("needs.authorize.result == 'success'") ||
-  !publishJob.includes("github.ref == 'refs/heads/main'") ||
-  !publishJob.includes('run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"') ||
-  !publishJob.includes(
-    'gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId',
-  ) ||
-  publishJob.includes('releases/tags/$RELEASE_TAG" --jq .id') ||
-  publishJob.includes("refs/tags/${{ needs.prepare.outputs.tag }}") ||
-  publishJob.includes(".release-controller") ||
-  (publishJob.match(
-    /node scripts\/release\/verify-github-release\.mjs/gu,
-  )?.length ?? 0) !== 2
-) {
-  fail(
-    "publish job must execute only the reviewed main controller while handling candidate artifacts",
-  );
+const releaseWorkflowText = await readSourceText(contract.workflow);
+try {
+  validateReleaseWorkflow(releaseWorkflowText);
+} catch (error) {
+  fail(error instanceof Error ? error.message : "release workflow is invalid");
 }
 const helperSourceDigest = await digestHelperSources();
 if (contract.components?.keychain_helper?.source_digest !== helperSourceDigest) {
@@ -136,28 +74,18 @@ if (contract.components?.keychain_helper?.source_digest !== helperSourceDigest) 
   );
 }
 const coreEvidence = await readJSON("apps/executor/evidence/expected-core.json");
-const coreLicense = await readFile(
-  resolve(
-    repositoryRoot,
-    "apps/executor/third_party/licenses/onepassword-sdk-go-0.4.1.txt",
-  ),
+const coreLicense = await readSourceBytes(
+  "apps/executor/third_party/licenses/onepassword-sdk-go-0.4.1.txt",
 );
-const ssh2License = await readFile(
-  resolve(repositoryRoot, "apps/executor/third_party/licenses/ssh2-1.17.0.txt"),
+const ssh2License = await readSourceBytes(
+  "apps/executor/third_party/licenses/ssh2-1.17.0.txt",
 );
-const saferBufferLicense = await readFile(
-  resolve(
-    repositoryRoot,
-    "apps/executor/third_party/licenses/safer-buffer-2.1.2.txt",
-  ),
+const saferBufferLicense = await readSourceBytes(
+  "apps/executor/third_party/licenses/safer-buffer-2.1.2.txt",
 );
-const ssh2Patch = await readFile(
-  resolve(repositoryRoot, "patches/ssh2@1.17.0.patch"),
-  "utf8",
-);
-const saferBufferAdapter = await readFile(
-  resolve(repositoryRoot, "apps/executor/src/safer-buffer-worker.cjs"),
-  "utf8",
+const ssh2Patch = await readSourceText("patches/ssh2@1.17.0.patch");
+const saferBufferAdapter = await readSourceText(
+  "apps/executor/src/safer-buffer-worker.cjs",
 );
 if (
   coreEvidence.repository !== "https://github.com/1Password/onepassword-sdk-go" ||
@@ -179,13 +107,14 @@ if (
   fail("vendored Worker source attribution or license material is inconsistent");
 }
 
-const goModule = await readFile(resolve(repositoryRoot, "cmd/may/go.mod"), "utf8");
+const goModule = await readSourceText("cmd/may/go.mod");
 if (!goModule.startsWith("module github.com/Vizards/OneNod/cmd/may\n")) {
   fail("may Go module does not use the canonical repository identity");
 }
-const helperMain = resolve(repositoryRoot, "cmd/may/keychainhelper/main.go");
-const helperInfo = await stat(helperMain).catch(() => null);
-if (helperInfo === null || !helperInfo.isFile() || helperInfo.size <= 0) {
+const helperMain = await readSourceBytes("cmd/may/keychainhelper/main.go").catch(
+  () => null,
+);
+if (helperMain === null || helperMain.byteLength === 0) {
   fail("the independently versioned Keychain helper source is missing");
 }
 
@@ -194,13 +123,14 @@ process.stdout.write(
     event: "release_source_contract_verified",
     packages: versionedPackages.length,
     release_train_target: releaseTrainTargetVersion,
+    source_commit: sourceCommit ?? "working_tree",
     version: expectedVersion,
   })}\n`,
 );
 
 async function readJSON(path) {
   try {
-    const parsed = JSON.parse(await readFile(resolve(repositoryRoot, path), "utf8"));
+    const parsed = JSON.parse(await readSourceText(path));
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       fail(`${path} must contain a JSON object`);
     }
@@ -212,15 +142,24 @@ async function readJSON(path) {
 }
 
 async function digestHelperSources() {
-  const directory = resolve(repositoryRoot, "cmd/may/keychainhelper");
-  const names = (await readdir(directory))
-    .filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"))
+  const directory = "cmd/may/keychainhelper";
+  const names = (await listSourceNames(directory))
+    .filter(
+      (name) =>
+        (name.endsWith(".go") && !name.endsWith("_test.go")) ||
+        name.endsWith(".c") ||
+        name.endsWith(".h"),
+    )
     .sort((left, right) => left.localeCompare(right, "en"));
-  if (names.length === 0) fail("Keychain helper has no production Go sources");
+  if (names.length === 0) fail("Keychain helper has no production sources");
   const hash = createHash("sha256");
-  for (const name of names) {
-    const content = await readFile(resolve(directory, name));
-    hash.update(name);
+  for (const path of [
+    ...names.map((name) => `${directory}/${name}`),
+    `${directory}/go.mod`,
+    `${directory}/go.sum`,
+  ]) {
+    const content = await readSourceBytes(path);
+    hash.update(path);
     hash.update("\0");
     hash.update(String(content.byteLength));
     hash.update("\0");
@@ -229,13 +168,52 @@ async function digestHelperSources() {
   return `sha256:${hash.digest("hex")}`;
 }
 
-function workflowJob(workflow, name) {
-  const marker = `  ${name}:\n`;
-  const start = workflow.indexOf(marker);
-  if (start === -1) fail(`release workflow job ${name} is missing`);
-  const remainder = workflow.slice(start + marker.length);
-  const nextJob = remainder.search(/^  [a-z][a-z0-9-]*:\n/mu);
-  return nextJob === -1 ? remainder : remainder.slice(0, nextJob);
+async function readSourceText(path) {
+  return (await readSourceBytes(path)).toString("utf8");
+}
+
+async function readSourceBytes(path) {
+  if (sourceCommit === null) {
+    return readFile(resolve(repositoryRoot, path));
+  }
+  return gitBytes(["show", `${sourceCommit}:${path}`], `read ${path}`);
+}
+
+async function listSourceNames(path) {
+  if (sourceCommit === null) {
+    return readdir(resolve(repositoryRoot, path));
+  }
+  const output = gitBytes(
+    ["ls-tree", "-z", "--name-only", `${sourceCommit}:${path}`],
+    `list ${path}`,
+  );
+  return output
+    .toString("utf8")
+    .split("\0")
+    .filter((name) => name !== "");
+}
+
+function gitBytes(arguments_, label) {
+  const result = spawnSync("git", arguments_, {
+    cwd: repositoryRoot,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error !== undefined || result.status !== 0) {
+    fail(`cannot ${label} from selected source commit`);
+  }
+  return result.stdout;
+}
+
+function parseOptions(arguments_) {
+  if (arguments_.length === 0) return null;
+  if (
+    arguments_.length !== 2 ||
+    arguments_[0] !== "--source-sha" ||
+    !/^[0-9a-f]{40}$/u.test(arguments_[1])
+  ) {
+    fail("usage: verify-source-contract.mjs [--source-sha <40-lowercase-hex>]");
+  }
+  return arguments_[1];
 }
 
 function strictVersion(value, label) {

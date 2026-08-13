@@ -2,6 +2,10 @@ import { canonicalizeJson } from "./canonical-json.js";
 import { decodeBase64Url, sha256Base64Url } from "./encoding.js";
 
 export const REQUESTER_SIGNATURE_PROTOCOL = "onenod-request-v1";
+export const APPLICATION_ATTESTATION_PROTOCOL =
+  "onenod-application-attestation-v1";
+export const APPLICATION_ATTESTATION_HEADER =
+  "x-onenod-application-attestation";
 
 export const REQUESTER_HEADER_NAMES = {
   deviceId: "x-onenod-device-id",
@@ -29,6 +33,12 @@ export interface RequesterSigningMaterial {
   body_canonical_json: string;
   body_sha256: string;
   canonical_string: string;
+}
+
+export interface ApplicationAttestationFields {
+  principal_id: string;
+  principal_scheme: string;
+  requester_canonical_string: string;
 }
 
 function assertCanonicalLine(name: string, value: string): void {
@@ -72,6 +82,28 @@ export function formatRequesterCanonicalString(
     fields.device_id,
     String(fields.unix_seconds),
     fields.nonce,
+  ].join("\n");
+}
+
+export function formatApplicationAttestationString(
+  fields: ApplicationAttestationFields,
+): string {
+  assertCanonicalLine("principal_id", fields.principal_id);
+  assertCanonicalLine("principal_scheme", fields.principal_scheme);
+  if (
+    !fields.requester_canonical_string.startsWith(
+      `${REQUESTER_SIGNATURE_PROTOCOL}\n`,
+    ) ||
+    fields.requester_canonical_string.includes("\r") ||
+    fields.requester_canonical_string.includes("\0")
+  ) {
+    throw new TypeError("requester_canonical_string is invalid.");
+  }
+  return [
+    APPLICATION_ATTESTATION_PROTOCOL,
+    fields.requester_canonical_string,
+    fields.principal_scheme,
+    fields.principal_id,
   ].join("\n");
 }
 

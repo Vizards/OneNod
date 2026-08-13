@@ -64,7 +64,7 @@ test("pending payload encryption rejects changed context, ciphertext, and digest
 test("pending payload encryption requires a canonical 32-byte master key", async () => {
   await assert.rejects(
     encryptPendingPayload("not-base64url!", CONTEXT, { value: "dummy" }),
-    /Expected unpadded base64url/u,
+    /unpadded base64url/u,
   );
   await assert.rejects(
     encryptPendingPayload(encodeBase64Url(new Uint8Array(31)), CONTEXT, { value: "dummy" }),

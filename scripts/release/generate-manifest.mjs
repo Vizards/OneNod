@@ -114,6 +114,8 @@ const manifest = {
     may: {
       version: options.version,
       client_protocol: contract.components.may.client_protocol,
+      code_identity: contract.components.may.code_identity,
+      adapter_code_identity: contract.components.may.adapter_code_identity,
     },
     ssh_agent: { version: options.version },
     keychain_helper: contract.components.keychain_helper,
@@ -205,6 +207,28 @@ function validateContract(value, values) {
     )
   ) {
     fail("Keychain helper source digest is invalid");
+  }
+  for (const [label, identity, expectedIdentifier] of [
+    ["may", value.components?.may?.code_identity, "com.github.vizards.onenod.may"],
+    [
+      "may SSH signing adapter",
+      value.components?.may?.adapter_code_identity,
+      "com.github.vizards.onenod.may-ssh-sign",
+    ],
+    [
+      "Keychain helper",
+      value.components?.keychain_helper?.code_identity,
+      "com.github.vizards.onenod.keychain-helper",
+    ],
+  ]) {
+    if (
+      identity?.scheme !== "apple-cdhash" ||
+      identity?.signing !== "adhoc" ||
+      identity?.identifier !== expectedIdentifier ||
+      identity?.hardened_runtime !== true
+    ) {
+      fail(`${label} exact-build code identity is invalid`);
+    }
   }
   if (
     compareProductVersions(value.upgrade.minimum_safe_version, values.version) > 0

@@ -83,7 +83,7 @@ func TestLocalInstallChoiceDefaultsToYesAndAcceptsNo(t *testing.T) {
 		expected bool
 	}{{"\n", true}, {"yes\n", true}, {"n\n", false}} {
 		input := strings.NewReader(fixture.input)
-		console := operatorConsole{input: newBufferedReader(input), stdin: input, stderr: io.Discard, stdout: io.Discard}
+		console := operatorConsole{stdin: input, stderr: io.Discard, stdout: io.Discard}
 		actual, err := console.confirmDefaultYes("Install")
 		if err != nil || actual != fixture.expected {
 			t.Fatalf("%q: %v %v", fixture.input, actual, err)

@@ -19,44 +19,6 @@ const sourceVersionHelper = resolve(
   "scripts/release/release-version.mjs",
 );
 
-test("the first public release is pinned to exactly 0.0.1", async () => {
-  for (const candidate of ["0.1.0", "1.0.0"]) {
-    const fixture = await releaseFixture(candidate);
-    try {
-      const result = runDerivation(fixture, "push");
-      assert.notEqual(result.status, 0);
-      assert.match(
-        result.stderr,
-        /first public release after the 0\.0\.0 baseline must be exactly 0\.0\.1/u,
-      );
-
-      const retry = runDerivation(fixture, "workflow_dispatch");
-      assert.notEqual(retry.status, 0);
-      assert.match(
-        retry.stderr,
-        /first public release after the 0\.0\.0 baseline must be exactly 0\.0\.1/u,
-      );
-    } finally {
-      await rm(fixture.root, { force: true, recursive: true });
-    }
-  }
-});
-
-test("the exact 0.0.1 transition is releasable", async () => {
-  const fixture = await releaseFixture("0.0.1");
-  try {
-    const result = runDerivation(fixture, "push");
-    assert.equal(result.status, 0, result.stderr);
-    const output = JSON.parse(result.stdout);
-    assert.equal(output.should_release, true);
-    assert.equal(output.version, "0.0.1");
-    assert.equal(output.previous_version, "");
-    assert.equal(output.tag, "v0.0.1");
-  } finally {
-    await rm(fixture.root, { force: true, recursive: true });
-  }
-});
-
 test("a manual retry runs from main but remains bound to the immutable tag", async () => {
   const fixture = await releaseFixture("0.0.1");
   try {

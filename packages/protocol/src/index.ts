@@ -28,13 +28,30 @@ export type ApprovalAction =
 
 export interface ClientObservation {
   application: string;
+  identity: ApplicationIdentity;
   source: "process-ancestry" | "unavailable";
 }
 
+export type ApplicationIdentity =
+  | {
+      assurance: "verified-code-signature";
+      platform: "macos";
+      principalId: string;
+      principalScheme: "macos-designated-requirement-v1";
+      signerName?: string;
+      signingIdentifier: string;
+      teamIdentifier?: string;
+    }
+  | {
+      assurance: "unverified";
+      platform: "macos" | "unsupported";
+    };
+
 export interface RequestSummary {
   action: ApprovalAction;
-  authorizationSession?: {
-    scopeKind: "application" | "terminal-session";
+  authorizationScope?: {
+    kind: "application";
+    resource: "secret" | "ssh";
   };
   client: ClientObservation;
   createdAt: string;

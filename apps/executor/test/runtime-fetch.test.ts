@@ -108,6 +108,7 @@ test("restricted fetch keeps deadline enforcement active while buffering the bod
     deadlineAt: Date.now() + 10_000,
     generation: 1,
     signal: leaseController.signal,
+    upstreamRateLimited: false,
   };
   const responseStarted = deferred<void>();
   const restricted = createRestrictedFetch(
@@ -140,11 +141,36 @@ test("restricted fetch keeps deadline enforcement active while buffering the bod
   assert.equal(bodyCancelled, true);
 });
 
+test("restricted fetch records a 1Password rate-limit response on the active lease", async () => {
+  const lease = activeLease();
+  let upstreamRequests = 0;
+  lease.observeUpstreamRequest = () => {
+    upstreamRequests += 1;
+  };
+  const restricted = createRestrictedFetch(
+    "my.1password.com",
+    1,
+    () => lease,
+    (async () => new Response("limited", { status: 429 })) as typeof fetch,
+  );
+
+  const response = await restricted("https://events.1password.com");
+  assert.equal(response.status, 429);
+  assert.equal(lease.upstreamRateLimited, true);
+  assert.equal(upstreamRequests, 1);
+});
+
 function activeLease(
   deadlineAt = Date.now() + 10_000,
   generation = 1,
 ): ActivePluginLease {
-  return { aborted: false, deadlineAt, generation, signal: new AbortController().signal };
+  return {
+    aborted: false,
+    deadlineAt,
+    generation,
+    signal: new AbortController().signal,
+    upstreamRateLimited: false,
+  };
 }
 
 function deferred<T>(): {

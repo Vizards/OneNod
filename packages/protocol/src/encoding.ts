@@ -13,20 +13,11 @@ export function encodeBase64Url(value: ArrayBuffer | Uint8Array): string {
 }
 
 export function decodeBase64Url(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
-    throw new TypeError("Expected unpadded base64url.");
-  }
-  let decoded: Uint8Array;
   try {
-    decoded = base64urlnopad.decode(value);
+    return base64urlnopad.decode(value);
   } catch {
     throw new TypeError("Expected canonical unpadded base64url.");
   }
-  if (encodeBase64Url(decoded) !== value) {
-    throw new TypeError("Expected canonical unpadded base64url.");
-  }
-
-  return decoded;
 }
 
 function utf8(value: string): Uint8Array {

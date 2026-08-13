@@ -3,16 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-)
-
-const (
-	testTargetWorkerVersion = "11111111-1111-4111-8111-111111111111"
-	testPriorWorkerVersion  = "22222222-2222-4222-8222-222222222222"
 )
 
 func TestDeployWorkerVersionAcceptsVerifiedSuccessAfterWranglerError(t *testing.T) {
@@ -93,7 +89,8 @@ if [ "$1 $2" = "versions upload" ]; then
 fi
 exit 1
 `)
-	console := &operatorConsole{stdin: strings.NewReader(""), stdout: io.Discard, stderr: io.Discard}
+	var stderr strings.Builder
+	console := &operatorConsole{stdin: strings.NewReader(""), stdout: io.Discard, stderr: &stderr}
 	_, uploadErr := uploadWorkerVersion(wrangler, "temporary", t.TempDir(), "worker.jsonc", "gateway", "test", console)
 	triggerErr := deployWorkerTriggers(wrangler, "temporary", t.TempDir(), "worker.jsonc", "gateway", console)
 	for _, err := range []error{uploadErr, triggerErr} {
@@ -113,81 +110,77 @@ exit 1
 	if strings.Count(string(calls), "versions upload") != 1 || strings.Count(string(calls), "triggers deploy") != 1 {
 		t.Fatalf("Wrangler mutation was retried: %s", calls)
 	}
+	if !strings.Contains(stderr.String(), "Wrangler diagnostic (the operation will not be retried)") {
+		t.Fatal("failed upload omitted the bounded Wrangler diagnostic")
+	}
 }
 
-func TestParseWranglerProfilesAcceptsExperimentalOutputAndANSIWarnings(t *testing.T) {
-	output := []byte("\x1b[33mWARNING experimental\x1b[0m\n" +
-		"┌──────────────────────────┬────────────────────┐\n" +
-		"│ Profile                  │ Bound Directories  │\n" +
-		"├──────────────────────────┼────────────────────┤\n" +
-		"│ default                  │ -                  │\n" +
-		"├──────────────────────────┼────────────────────┤\n" +
-		"│ onenod-operator-deadbeef │ /tmp/project       │\n" +
-		"└──────────────────────────┴────────────────────┘\n")
-	profiles, err := parseWranglerProfiles(output)
-	if err != nil {
+func TestDeployPrivateWorkerScaffoldReportsConfirmedAbsence(t *testing.T) {
+	directory := t.TempDir()
+	config := filepath.Join(directory, "worker.jsonc")
+	if err := os.WriteFile(config, []byte(`{"workers_dev":true,"preview_urls":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(profiles, ",") != "default,onenod-operator-deadbeef" {
-		t.Fatalf("unexpected profiles: %v", profiles)
-	}
-}
-
-func TestParseWranglerProfilesFailsClosedOnUnknownShapeAndDuplicates(t *testing.T) {
-	for _, output := range []string{
-		"default\n",
-		"│ Profile │ Bound Directories │\n│ default │ - │\n│ default │ /tmp │\n",
-		"│ Profile │ Bound Directories │\n│ unsafe profile │ - │\n",
-	} {
-		if profiles, err := parseWranglerProfiles([]byte(output)); err == nil {
-			t.Fatalf("unsafe profile output was accepted: %v", profiles)
-		}
-	}
-}
-
-func TestOtherWranglerProfileForDedicatedAccountFailsClosed(t *testing.T) {
 	wrangler := writeWranglerFixture(t, `
-if [ "$1 $2" = "auth list" ]; then
-  printf '%s\n' '│ Profile │ Bound Directories │'
-  printf '%s\n' '│ default │ - │'
-  printf '%s\n' '│ onenod-operator-test │ /tmp/project │'
-  exit 0
+if [ "$1" = "deploy" ]; then
+  printf '%s\n' 'You cannot create this Worker in the selected account.' >&2
+  exit 1
 fi
-if [ "$1" = "whoami" ] && [ "$3" = "default" ]; then
-  printf '%s\n' '{"loggedIn":true,"accounts":[{"id":"0123456789abcdef0123456789abcdef","name":"Dedicated"}]}'
-  exit 0
+if [ "$1 $2" = "deployments status" ]; then
+  printf '%s\n' 'This Worker does not exist [code: 10007]' >&2
+  exit 1
 fi
 exit 2
 `)
-	err := assertNoOtherWranglerProfileAccess(
-		wrangler, "onenod-operator-test", "0123456789abcdef0123456789abcdef", true,
+	var stderr strings.Builder
+	console := &operatorConsole{stdin: strings.NewReader(""), stdout: io.Discard, stderr: &stderr}
+	_, err := deployPrivateWorkerScaffold(
+		wrangler, "temporary", config, "gateway", "test", console,
 	)
-	if err == nil || !strings.Contains(err.Error(), "default") {
-		t.Fatalf("same-account profile did not block the ceremony: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Cloudflare confirms that the Worker is absent") {
+		t.Fatalf("confirmed absence was not reported as a known failure: %v", err)
+	}
+	var unknown *remoteOutcomeUnknownError
+	if errors.As(err, &unknown) {
+		t.Fatalf("confirmed absence was mislabeled outcome_unknown: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "You cannot create this Worker") {
+		t.Fatal("actionable Wrangler diagnostic was hidden")
 	}
 }
 
 func TestFirstDeploymentAppliesTriggersOnlyAfterFinalSecretBearingVersions(t *testing.T) {
 	directory := t.TempDir()
 	logPath := filepath.Join(directory, "calls")
-	counterPath := filepath.Join(directory, "counter")
 	wrangler := writeWranglerFixture(t, `
 worker=''
+config=''
 previous=''
 for argument in "$@"; do
   if [ "$previous" = "--name" ]; then worker="$argument"; fi
+  if [ "$previous" = "--config" ]; then config="$argument"; fi
   previous="$argument"
 done
+if [ "$1" = "deploy" ]; then
+  if grep -q '"workers_dev":[[:space:]]*true' "$config" ||
+     grep -q '"preview_urls":[[:space:]]*true' "$config" ||
+     grep -q '"routes"' "$config" || grep -q '"triggers"' "$config"; then
+    exit 7
+  fi
+  case "$worker" in
+    onenod-executor) version='11111111-1111-4111-8111-111111111111' ;;
+    onenod) version='33333333-3333-4333-8333-333333333333' ;;
+    *) exit 9 ;;
+  esac
+  printf '%s' "$version" > "`+directory+`/state-$worker"
+  printf 'scaffold %s %s\n' "$worker" "$version" >> "`+logPath+`"
+  printf 'Worker Version ID: %s\n' "$version"
+  exit 0
+fi
 if [ "$1 $2" = "versions upload" ]; then
-  count=0
-  if [ -f "`+counterPath+`" ]; then count=$(cat "`+counterPath+`"); fi
-  count=$((count + 1))
-  printf '%s' "$count" > "`+counterPath+`"
-  case "$count" in
-    1) version='11111111-1111-4111-8111-111111111111' ;;
-    2) version='22222222-2222-4222-8222-222222222222' ;;
-    3) version='33333333-3333-4333-8333-333333333333' ;;
-    4) version='44444444-4444-4444-8444-444444444444' ;;
+  case "$worker" in
+    onenod-executor) version='22222222-2222-4222-8222-222222222222' ;;
+    onenod) version='44444444-4444-4444-8444-444444444444' ;;
     *) exit 9 ;;
   esac
   printf 'upload %s %s\n' "$worker" "$version" >> "`+logPath+`"
@@ -226,6 +219,15 @@ if [ "$1 $2" = "triggers deploy" ]; then
 fi
 exit 8
 `)
+	for name, workersDev := range map[string]bool{
+		"executor.jsonc": false,
+		"gateway.jsonc":  true,
+	} {
+		encoded := []byte(`{"workers_dev":` + fmt.Sprint(workersDev) + `,"preview_urls":true,"routes":[{"pattern":"unsafe.example"}],"triggers":{"crons":["0 0 * * *"]}}`)
+		if err := os.WriteFile(filepath.Join(directory, name), encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	bundle := &stagedDeploymentBundle{Root: directory}
 	bundle.Descriptor.Executor.Config = "executor.jsonc"
 	bundle.Descriptor.Gateway.Config = "gateway.jsonc"
@@ -253,10 +255,12 @@ exit 8
 	}
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
 	for _, expected := range []string{
+		"scaffold onenod-executor 11111111-1111-4111-8111-111111111111",
 		"secret onenod-executor EXECUTOR_AUTH_TOKEN",
 		"secret onenod-executor OP_SERVICE_ACCOUNT_TOKEN",
 		"deploy onenod-executor 22222222-2222-4222-8222-222222222222",
 		"trigger onenod-executor 22222222-2222-4222-8222-222222222222",
+		"scaffold onenod 33333333-3333-4333-8333-333333333333",
 		"secret onenod BOOTSTRAP_TOKEN",
 		"deploy onenod 44444444-4444-4444-8444-444444444444",
 		"trigger onenod 44444444-4444-4444-8444-444444444444",
@@ -271,22 +275,4 @@ exit 8
 			indexOfString(lines, "deploy onenod 44444444-4444-4444-8444-444444444444") {
 		t.Fatalf("trigger was applied before its final version:\n%s", calls)
 	}
-}
-
-func indexOfString(values []string, expected string) int {
-	for index, value := range values {
-		if value == expected {
-			return index
-		}
-	}
-	return -1
-}
-
-func writeWranglerFixture(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "wrangler")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

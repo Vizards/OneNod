@@ -12,7 +12,9 @@ export interface ActivePluginLease {
   aborted: boolean;
   deadlineAt: number;
   generation: number;
+  observeUpstreamRequest?: () => void;
   signal: AbortSignal;
+  upstreamRateLimited: boolean;
 }
 
 export type CachedExtismPlugin = Pick<
@@ -49,6 +51,7 @@ export interface PluginLeaseOptions {
   accountHost: string;
   credentialDigest?: string;
   deadlineAt: number;
+  observeUpstreamRequest?: () => void;
   signal?: AbortSignal;
 }
 
@@ -226,7 +229,11 @@ export class ReusableExtismRuntime implements PluginRuntime {
       aborted: options.signal.aborted,
       deadlineAt: options.deadlineAt,
       generation,
+      ...(options.observeUpstreamRequest === undefined
+        ? {}
+        : { observeUpstreamRequest: options.observeUpstreamRequest }),
       signal: options.signal,
+      upstreamRateLimited: false,
     };
     const markAborted = (): void => {
       activeLease.aborted = true;
@@ -310,7 +317,7 @@ export class ReusableExtismRuntime implements PluginRuntime {
         );
       }
 
-      const lease = new RuntimePluginLease(entry.plugin);
+      const lease = new RuntimePluginLease(entry.plugin, activeLease);
       let value: T;
       try {
         value = await operation(lease);
@@ -436,13 +443,15 @@ export class ReusableExtismRuntime implements PluginRuntime {
 }
 
 class RuntimePluginLease implements PluginLease {
+  #activeLease: ActivePluginLease;
   #inFlight = new Set<Promise<unknown>>();
   #plugin: CachedExtismPlugin;
   #poisoned = false;
   #revoked = false;
 
-  constructor(plugin: CachedExtismPlugin) {
+  constructor(plugin: CachedExtismPlugin, activeLease: ActivePluginLease) {
     this.#plugin = plugin;
+    this.#activeLease = activeLease;
   }
 
   get poisoned(): boolean {
@@ -458,6 +467,7 @@ class RuntimePluginLease implements PluginLease {
     input: Uint8Array,
   ): Promise<Uint8Array> {
     this.#assertActive();
+    this.#activeLease.upstreamRateLimited = false;
     return this.#track(async () => {
       try {
         const output = await this.#plugin.call(name, input);
@@ -473,7 +483,11 @@ class RuntimePluginLease implements PluginLease {
           }),
         );
         this.markPoisoned();
-        throw new Error("plugin_call_failed");
+        throw new Error(
+          this.#activeLease.upstreamRateLimited
+            ? "onepassword_rate_limited"
+            : "plugin_call_failed",
+        );
       }
     });
   }

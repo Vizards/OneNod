@@ -20,23 +20,62 @@ const mergeNoticesScript = resolve(
 );
 const version = "0.0.2-beta.1";
 const previousVersion = "0.0.2-alpha.1";
-const helperVersion = "1.0.0";
 const releaseContract = JSON.parse(
-  await readFile(resolve(repositoryRoot, "scripts/release/release-contract.json"), "utf8"),
+  await readFile(
+    resolve(repositoryRoot, "scripts/release/release-contract.json"),
+    "utf8",
+  ),
 );
+const helperVersion = releaseContract.components.keychain_helper.version;
 const helperSourceDigest = releaseContract.components.keychain_helper.source_digest;
 const commit = "a".repeat(40);
 const helperCommit = "d".repeat(40);
 
-test("release packager is deterministic and the verifier enforces the exact set", async () => {
+test("release packager is deterministic and the verifier enforces the exact set", async (context) => {
+  if (process.platform !== "darwin") {
+    context.skip("requires macOS codesign, lipo, and csreq");
+    return;
+  }
   const temporaryRoot = await mkdtemp(join(tmpdir(), "onenod-release-test-"));
   const releaseDirectory = join(temporaryRoot, "release");
-  const dummyBinary = join(temporaryRoot, "dummy-binary");
+  const dummySource = join(temporaryRoot, "dummy.go");
+  const dummyBinaries = Object.fromEntries(
+    ["arm64", "amd64"].map((architecture) => [
+      architecture,
+      join(temporaryRoot, `dummy-${architecture}`),
+    ]),
+  );
   const noticesPath = join(temporaryRoot, "artifact-notices.txt");
   const componentsPath = join(temporaryRoot, "artifact-components.json");
   const helperNoticesPath = join(temporaryRoot, "helper-notices.txt");
   const helperComponentsPath = join(temporaryRoot, "helper-components.json");
-  await writeFile(dummyBinary, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await writeFile(dummySource, "package main\nfunc main() {}\n");
+  for (const [architecture, binary] of Object.entries(dummyBinaries)) {
+    execFileSync("go", ["build", "-o", binary, dummySource], {
+      env: {
+        ...process.env,
+        CGO_ENABLED: "0",
+        GOARCH: architecture,
+        GOOS: "darwin",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    execFileSync(
+      "/usr/bin/codesign",
+      [
+        "--force",
+        "--sign",
+        "-",
+        "--options",
+        "runtime",
+        "--identifier",
+        `com.github.vizards.onenod.fixture-${architecture}`,
+        binary,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  }
+  const dummyBinary = dummyBinaries.arm64;
   await writeFile(
     noticesPath,
     [
@@ -95,6 +134,8 @@ test("release packager is deterministic and the verifier enforces the exact set"
     packageArtifact("local", [
       "--binary",
       dummyBinary,
+      "--adapter-binary",
+      dummyBinary,
       "--arch",
       "arm64",
       "--version",
@@ -111,6 +152,8 @@ test("release packager is deterministic and the verifier enforces the exact set"
     packageArtifact("local", [
       "--binary",
       dummyBinary,
+      "--adapter-binary",
+      dummyBinary,
       "--arch",
       "arm64",
       "--version",
@@ -125,11 +168,38 @@ test("release packager is deterministic and the verifier enforces the exact set"
       second,
     ]);
     assert.equal(await digest(first), await digest(second));
+    const localDescriptor = JSON.parse(
+      execFileSync("tar", ["-xOzf", first, "onenod/RELEASE.json"], {
+        encoding: "utf8",
+      }),
+    );
+    assert.deepEqual(
+      localDescriptor.code_identities,
+      {
+        may: releaseContract.components.may.code_identity,
+        may_ssh_sign: releaseContract.components.may.adapter_code_identity,
+      },
+    );
+    assert.match(localDescriptor.binary_sha256.may, /^sha256:[0-9a-f]{64}$/u);
+    assert.match(
+      localDescriptor.binary_sha256.may_ssh_sign,
+      /^sha256:[0-9a-f]{64}$/u,
+    );
+    for (const identity of Object.values(localDescriptor.exact_code_identities)) {
+      assert.equal(identity.architecture, "arm64");
+      assert.match(identity.cdhash, /^[A-Za-z0-9_-]{27,86}$/u);
+      assert.match(
+        identity.designated_requirement_data_sha256,
+        /^sha256:[0-9a-f]{64}$/u,
+      );
+    }
 
     for (const arch of ["arm64", "amd64"]) {
       packageArtifact("local", [
         "--binary",
-        dummyBinary,
+        dummyBinaries[arch],
+        "--adapter-binary",
+        dummyBinaries[arch],
         "--arch",
         arch,
         "--version",
@@ -145,7 +215,7 @@ test("release packager is deterministic and the verifier enforces the exact set"
       ]);
       packageArtifact("helper", [
         "--binary",
-        dummyBinary,
+        dummyBinaries[arch],
         "--arch",
         arch,
         "--helper-version",
@@ -179,6 +249,16 @@ test("release packager is deterministic and the verifier enforces the exact set"
         ),
       );
       assert.equal(helperDescriptor.helper_source_digest, helperSourceDigest);
+      assert.match(helperDescriptor.binary_sha256, /^sha256:[0-9a-f]{64}$/u);
+      assert.equal(helperDescriptor.exact_code_identity.architecture, arch);
+      assert.match(
+        helperDescriptor.exact_code_identity.designated_requirement_data_sha256,
+        /^sha256:[0-9a-f]{64}$/u,
+      );
+      assert.deepEqual(
+        helperDescriptor.code_identity,
+        releaseContract.components.keychain_helper.code_identity,
+      );
     }
     packageArtifact("deployment", [
       "--version",
@@ -210,6 +290,28 @@ test("release packager is deterministic and the verifier enforces the exact set"
     );
     assert.equal(deploymentDescriptor.gateway.template, undefined);
     assert.equal(deploymentDescriptor.executor.template, undefined);
+    for (const worker of ["gateway", "executor"]) {
+      const config = JSON.parse(
+        execFileSync(
+          "tar",
+          [
+            "-xOzf",
+            join(releaseDirectory, `onenod-deployment-${version}.tar.gz`),
+            `onenod-deployment/${worker}/wrangler.jsonc`,
+          ],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.deepEqual(config.observability, {
+        enabled: true,
+        head_sampling_rate: 1,
+        logs: {
+          enabled: true,
+          invocation_logs: true,
+          persist: true,
+        },
+      });
+    }
     packageArtifact("skill", [
       "--version",
       version,
@@ -302,7 +404,7 @@ test("release packager is deterministic and the verifier enforces the exact set"
     );
     assert.throws(
       () => verify(releaseDirectory, "assembled"),
-      /Keychain helper identity differs from the release manifest/u,
+      /release component contract is invalid/u,
     );
     await writeFile(manifestPath, originalManifest);
     await writeFile(checksumsPath, originalChecksums);

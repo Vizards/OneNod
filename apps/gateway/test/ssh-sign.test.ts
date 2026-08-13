@@ -4,6 +4,8 @@ import test from "node:test";
 import { encodeBase64Url } from "@onenod/protocol";
 
 import {
+  applicationBoundSshAuthorizationSession,
+  describeAuthorizedSshSign,
   describeSshSign,
   parseSshSignRequest,
   sshAuthorizationProofMaterial,
@@ -62,6 +64,35 @@ test("parses a closed opaque SSH request and keeps bytes out of its description"
     expected_version: 3,
     item_id: "item-1",
   });
+});
+
+test("describes an authorized SSH request from its exact stored grant", () => {
+  const request = requestWith({ kind: "ssh.opaque-signature" });
+  const description = describeAuthorizedSshSign(
+    request,
+    {
+      fingerprint: FINGERPRINT,
+      itemId: "item-1",
+      itemTitle: "GitHub SSH Key",
+      itemVersion: 3,
+    },
+    "keyed-payload-digest",
+  );
+  assert.equal(description.itemTitle, "GitHub SSH Key");
+  assert.equal(description.signatureAlgorithm, "ssh-ed25519");
+  assert.equal(JSON.stringify(description).includes(request.data), false);
+  assert.throws(() =>
+    describeAuthorizedSshSign(
+      request,
+      {
+        fingerprint: FINGERPRINT,
+        itemId: "another-item",
+        itemTitle: "GitHub SSH Key",
+        itemVersion: 3,
+      },
+      "keyed-payload-digest",
+    ),
+  );
 });
 
 test("describes verified native SSH authentication facts", () => {
@@ -148,7 +179,7 @@ test("SSH authorization proof binds the exact Agent instance, scope, and request
       agent_instance_public_key: encodeBase64Url(publicKey),
       proof: encodeBase64Url(new Uint8Array(64)),
       scope_id: encodeBase64Url(new Uint8Array(32).fill(7)),
-      scope_kind: "terminal-session",
+      scope_kind: "application",
     },
     client: CLIENT,
     data: encodeBase64Url(new TextEncoder().encode("dummy-signing-payload")),
@@ -238,5 +269,75 @@ test("SSH authorization session parser fails closed on malformed capability fiel
         unexpected: true,
       },
     }),
+  );
+});
+
+test("legacy unverified clients cannot reuse an SSH authorization session", () => {
+  const applicationSession = {
+    agent_instance_public_key: encodeBase64Url(new Uint8Array(32)),
+    proof: encodeBase64Url(new Uint8Array(64)),
+    scope_id: encodeBase64Url(new Uint8Array(32).fill(7)),
+    scope_kind: "application" as const,
+  };
+  const terminalSession = {
+    ...applicationSession,
+    scope_kind: "terminal-session" as const,
+  };
+  const request = {
+    action: "ssh.sign",
+    algorithm: "ssh-ed25519",
+    authorization_session: terminalSession,
+    client: CLIENT,
+    data: encodeBase64Url(new Uint8Array([1, 2, 3])),
+    expected_fingerprint: FINGERPRINT,
+    expected_version: 3,
+    idempotency_key: "legacy-request-1",
+    item_id: "item-1",
+    operation: { kind: "ssh.opaque-signature" },
+  };
+  assert.doesNotThrow(() => parseSshSignRequest(request));
+  assert.equal(
+    applicationBoundSshAuthorizationSession(
+      { assurance: "unverified", platform: "unsupported" },
+      terminalSession,
+    ),
+    undefined,
+  );
+  assert.equal(
+    applicationBoundSshAuthorizationSession(
+      {
+        assurance: "verified-code-signature",
+        platform: "macos",
+        principal_id: applicationSession.scope_id,
+        principal_scheme: "macos-designated-requirement-v1",
+        signing_identifier: "com.example.client",
+      },
+      applicationSession,
+    ),
+    applicationSession,
+  );
+  assert.throws(() =>
+    applicationBoundSshAuthorizationSession(
+      {
+        assurance: "verified-code-signature",
+        platform: "macos",
+        principal_id: terminalSession.scope_id,
+        principal_scheme: "macos-designated-requirement-v1",
+        signing_identifier: "com.example.client",
+      },
+      terminalSession,
+    ),
+  );
+  assert.throws(() =>
+    applicationBoundSshAuthorizationSession(
+      {
+        assurance: "verified-code-signature",
+        platform: "macos",
+        principal_id: encodeBase64Url(new Uint8Array(32).fill(8)),
+        principal_scheme: "macos-designated-requirement-v1",
+        signing_identifier: "com.example.client",
+      },
+      applicationSession,
+    ),
   );
 });

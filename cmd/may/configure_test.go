@@ -35,21 +35,36 @@ func TestSSHConfigurationDetectsIdentityAgentConflicts(t *testing.T) {
 	}
 }
 
-func TestNormalizedSigningKeyUsesGitKeyLiteral(t *testing.T) {
-	public, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+func TestSSHConfigurationReportsHostSelectorsWithoutGuessingMappings(t *testing.T) {
+	content := []byte(strings.Join([]string{
+		"Include ~/.ssh/conf.d/*",
+		"Host github.com",
+		"  IdentityFile ~/.1p-agent/ssh/github.pub",
+		"Host server.example",
+		"  IdentityFile ~/.ssh/server.pub",
+		"# IdentityFile ~/.1password/ignored.pub",
+	}, "\n"))
+	settings := inspectSSHIdentityFileSettings(content)
+	if len(settings) != 2 || settings[0].Line != 3 || !settings[0].LegacyLooking ||
+		settings[1].Line != 5 || settings[1].LegacyLooking {
+		t.Fatalf("unexpected IdentityFile inventory: %#v", settings)
 	}
-	sshPublic, err := ssh.NewPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
+	includes := inspectSSHIncludeSettings(content)
+	if len(includes) != 1 || includes[0].Line != 1 {
+		t.Fatalf("unexpected Include inventory: %#v", includes)
 	}
-	value, err := normalizedSigningKey(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPublic))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(value, "key::ssh-ed25519 ") || strings.Contains(value, "\n") {
-		t.Fatalf("Git signing key was not normalized as a key:: literal: %q", value)
+	var output strings.Builder
+	writeSSHSelectorAdvisory(&output, settings, includes)
+	for _, expected := range []string{
+		"legacy-looking path",
+		"included files require separate review",
+		"does not rewrite IdentityFile or IdentitiesOnly",
+		"may ssh public-key export",
+		"never guess",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("selector advisory omitted %q:\n%s", expected, output.String())
+		}
 	}
 }
 
@@ -128,7 +143,7 @@ func TestSSHConfigurationShowsAndConfirmsEffectiveIdentityAgentOverride(t *testi
 		t.Fatal(err)
 	}
 	path := filepath.Join(sshDirectory, "config")
-	original := []byte("Host *\n  IdentityAgent ~/.1password/agent.sock\nHost github.com\n  User git\n")
+	original := []byte("Host *\n  IdentityAgent ~/.1password/agent.sock\nHost github.com\n  User git\n  IdentityFile ~/.1p-agent/ssh/github.pub\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +157,7 @@ func TestSSHConfigurationShowsAndConfirmsEffectiveIdentityAgentOverride(t *testi
 	}
 	if !strings.Contains(deniedOutput.String(), "IdentityAgent ~/.1password/agent.sock") ||
 		!strings.Contains(deniedOutput.String(), "~/.onenod/agent.sock") ||
+		!strings.Contains(deniedOutput.String(), "legacy-looking path") ||
 		!strings.Contains(deniedOutput.String(), "[y/N]") {
 		t.Fatalf("current setting and default-no decision were not displayed:\n%s", deniedOutput.String())
 	}
@@ -284,11 +300,16 @@ func TestGitSigningConfigurationRefusesConcurrentEditAfterConfirmation(t *testin
 		t.Fatal(err)
 	}
 	publicKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPublic)))
+	answer := strings.NewReader("y\n")
+	changed := false
 	stdin := testReaderFunc(func(buffer []byte) (int, error) {
-		if err := setGitGlobalValue("gpg.format", "changed-during-review"); err != nil {
-			t.Fatal(err)
+		if !changed {
+			changed = true
+			if err := setGitGlobalValue("gpg.format", "changed-during-review"); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return copy(buffer, "y\n"), nil
+		return answer.Read(buffer)
 	})
 	err = runConfigureGitSigning(
 		[]string{"apply", "--signing-key", publicKey},
@@ -316,11 +337,16 @@ func TestSSHConfigurationRefusesAConcurrentEditAfterConfirmation(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	answer := strings.NewReader("y\n")
+	changedOnce := false
 	stdin := testReaderFunc(func(buffer []byte) (int, error) {
-		if err := os.WriteFile(path, changed, 0o600); err != nil {
-			t.Fatal(err)
+		if !changedOnce {
+			changedOnce = true
+			if err := os.WriteFile(path, changed, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return copy(buffer, "y\n"), nil
+		return answer.Read(buffer)
 	})
 	err := runConfigureSSH(
 		[]string{"apply"},

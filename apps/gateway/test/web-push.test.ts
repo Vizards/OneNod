@@ -20,6 +20,18 @@ test("validates and normalizes an HTTPS push subscription", () => {
   assert.equal(value.expirationTime, null);
 });
 
+test("does not interpret nonstandard Web Push expiration aliases", () => {
+  const value = validatePushSubscription({
+    endpoint: "https://example.push.apple.com/value",
+    expiration_time: 123,
+    keys: {
+      auth: "A".repeat(22),
+      p256dh: "B".repeat(87),
+    },
+  });
+  assert.equal(value.expirationTime, null);
+});
+
 test("rejects local, insecure, and credential-bearing push endpoints", () => {
   for (const endpoint of [
     "http://push.example.com/value",
