@@ -12,23 +12,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestApplicationIdentityDarwinClassifiesCurrentAdHocTestProcessAsBarrier(t *testing.T) {
+func TestApplicationIdentityDarwinRejectsCurrentUnprovisionedTestProcess(t *testing.T) {
 	process, err := inspectApplicationProcessByPID(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if process.CodeState != applicationCodeAdHoc {
-		t.Fatalf("test process code state = %d, want ad-hoc", process.CodeState)
+	if process.CodeState != applicationCodeUnsigned && process.CodeState != applicationCodeAdHoc {
+		t.Fatalf("test process code state = %d, want unsigned or ad-hoc", process.CodeState)
 	}
-	if _, continueAncestry, err := applicationProcessDecision(process); err == nil || continueAncestry {
-		t.Fatalf("ad-hoc test process was not an ancestry barrier: continue=%t error=%v",
-			continueAncestry, err)
+	if selectProcess, continueAncestry, err := applicationProcessDecision(process); err == nil ||
+		selectProcess || continueAncestry {
+		t.Fatalf("unprovisioned test process was not an ancestry barrier: select=%t continue=%t error=%v",
+			selectProcess, continueAncestry, err)
 	}
 	if identity, err := currentHelperTransportCodeIdentity(); err == nil {
-		t.Fatalf("linker-generated test helper became a trust root: %+v", identity)
+		t.Fatalf("unprovisioned test helper became a trust root: %+v", identity)
 	}
 	if identity, err := resolveApplicationIdentity(applicationEvidenceParent); err == nil {
-		t.Fatalf("unprovisioned linker-generated helper produced verified identity: %+v", identity)
+		t.Fatalf("unprovisioned test helper produced verified identity: %+v", identity)
 	}
 }
 
