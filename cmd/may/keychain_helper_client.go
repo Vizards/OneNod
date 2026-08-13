@@ -517,17 +517,25 @@ func newExactBuildMayCommand(mayPath string, arguments ...string) (*exec.Cmd, er
 }
 
 func exactBuildMayEnvironment() ([]string, error) {
+	home, err := canonicalExactBuildHome()
+	if err != nil {
+		return nil, err
+	}
+	return []string{"HOME=" + home}, nil
+}
+
+func canonicalExactBuildHome() (string, error) {
 	if os.Getuid() != os.Geteuid() {
-		return nil, errors.New("resolve canonical account home for exact-build may failed")
+		return "", errors.New("resolve canonical account home for exact-build may failed")
 	}
 	current, err := user.Current()
 	if err != nil || current == nil || current.Uid != strconv.Itoa(os.Geteuid()) ||
 		current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) ||
 		filepath.Clean(current.HomeDir) != current.HomeDir ||
 		strings.IndexByte(current.HomeDir, 0) >= 0 {
-		return nil, errors.New("resolve canonical account home for exact-build may failed")
+		return "", errors.New("resolve canonical account home for exact-build may failed")
 	}
-	return []string{"HOME=" + current.HomeDir}, nil
+	return current.HomeDir, nil
 }
 
 func helperResponseCredential(

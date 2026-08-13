@@ -68,7 +68,7 @@
     }
   },
   "upgrade": {
-    "minimum_updater_version": "0.0.1",
+    "minimum_updater_version": "0.0.2-alpha.26",
     "minimum_safe_version": "0.0.1",
     "revoked_artifact_digests": [],
     "order": [

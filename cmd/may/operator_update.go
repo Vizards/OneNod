@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,6 +75,11 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if reexecuted {
 		return nil
 	}
+	if _, err := validateInstalledLocalUpdateHandoff(
+		receipt.Origin, release.Manifest.ReleaseVersion, release.Manifest.Source.Commit,
+	); err != nil {
+		return err
+	}
 	localReceipt, _, err := readLocalInstallReceipt()
 	if err != nil {
 		return err
@@ -88,7 +92,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		}
 		remote, complete := readRemoteRuntimeVersion(receipt.Origin, deps.httpClient)
 		if complete && remote.GatewayVersion == receipt.ReleaseVersion && remote.ExecutorVersion == receipt.ReleaseVersion && remote.PwaVersion == receipt.ReleaseVersion {
-			if localInstallExactlyMatchesRelease(release, receipt.Origin) {
+			if !transportUpdateJournalExists() && localInstallExactlyMatchesRelease(release, receipt.Origin) {
 				if receipt.Channel != string(selectedReleaseChannel(release)) {
 					receipt.Channel = string(selectedReleaseChannel(release))
 					receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -101,16 +105,10 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			}
 			fmt.Fprintf(deps.stdout, "OneNod remote deployment is already on %s; reconciling this Mac without Cloudflare authorization.\n", receipt.ReleaseVersion)
 			writeKeychainHelperUpdatePlan(deps.stdout, helperPlan)
-			if helperPlan.Replace {
-				confirmed, confirmErr := promptYesNo(deps.stdin, deps.stdout, "Update the OneNod Keychain helper while reconciling this Mac?", false)
-				if confirmErr != nil {
-					return confirmErr
-				}
-				if !confirmed {
-					return errors.New("local Keychain helper reconciliation was not approved; Cloudflare was not accessed")
-				}
-			}
-			if err := installVerifiedRelease(ctx, release, receipt.Origin, deps, helperPlan.Replace); err != nil {
+			if err := runInstalledLocalUpdate(
+				ctx, receipt.Origin, release.Manifest.ReleaseVersion,
+				release.Manifest.Source.Commit, deps,
+			); err != nil {
 				return fmt.Errorf("remote deployment is current but local reconciliation failed: %w", err)
 			}
 			receipt.Channel = string(selectedReleaseChannel(release))
@@ -277,17 +275,13 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	if helperPlan.Replace {
-		if confirmErr := confirmPostDeploymentHelperUpdate(
-			console.stdin, console.stdout, release.Manifest.ReleaseVersion,
-		); confirmErr != nil {
-			transaction.Outcome = "remote_complete_local_pending"
-			_ = writeAtomicPrivateJSON(transactionPath, transaction)
-			return confirmErr
-		}
+		fmt.Fprintln(console.stdout, "\nRemote deployment verified. The installed current OneNod release will now own the separate local Keychain helper ceremony.")
+		fmt.Fprintln(console.stdout, "Pause every Agent harness running as this macOS user before approving the helper change.")
 	}
-	if err := installVerifiedRelease(ctx, release, receipt.Origin, deps, helperPlan.Replace); err != nil {
-		transaction.Outcome = "remote_complete_local_pending"
-		_ = writeAtomicPrivateJSON(transactionPath, transaction)
+	if err := runPostDeploymentLocalUpdate(
+		ctx, receipt.Origin, release.Manifest.ReleaseVersion,
+		release.Manifest.Source.Commit, transaction, transactionPath, deps,
+	); err != nil {
 		return err
 	}
 	transaction.Phase = "complete"
@@ -297,31 +291,6 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		transaction.Outcome = "deployment_authority_retained"
 	}
 	return writeAtomicPrivateJSON(transactionPath, transaction)
-}
-
-func confirmPostDeploymentHelperUpdate(
-	input io.Reader,
-	output io.Writer,
-	version string,
-) error {
-	fmt.Fprintln(output, "\nRemote deployment verified. The remaining local Keychain helper change is a separate security ceremony.")
-	fmt.Fprintln(output, "Pause every Agent harness running as this macOS user before continuing, and keep them paused through any macOS authorization dialogs.")
-	confirmed, err := promptYesNo(
-		input,
-		output,
-		"Update the exact OneNod Keychain helper on this Mac now?",
-		false,
-	)
-	if err != nil {
-		return err
-	}
-	if !confirmed {
-		return fmt.Errorf(
-			"remote deployment is complete; local helper update was not approved—after pausing same-user Agent harnesses, run may update --version %s",
-			version,
-		)
-	}
-	return nil
 }
 
 func localInstallExactlyMatchesRelease(release *verifiedRelease, origin string) bool {
@@ -335,6 +304,28 @@ func localInstallExactlyMatchesRelease(release *verifiedRelease, origin string) 
 	}
 	helper, err := inspectInstalledKeychainHelper()
 	return err == nil && helperMatchesRelease(release, receipt, helper)
+}
+
+func transportUpdateJournalExists() bool {
+	_, found, err := readTransportUpdateJournal()
+	return err != nil || found
+}
+
+func runPostDeploymentLocalUpdate(
+	ctx context.Context,
+	operatorOrigin, targetVersion, targetSourceCommit string,
+	transaction *operatorUpdateTransaction,
+	transactionPath string,
+	deps dependencies,
+) error {
+	if err := runInstalledLocalUpdate(
+		ctx, operatorOrigin, targetVersion, targetSourceCommit, deps,
+	); err != nil {
+		transaction.Outcome = "remote_complete_local_pending"
+		_ = writeAtomicPrivateJSON(transactionPath, transaction)
+		return err
+	}
+	return nil
 }
 
 func accountByID(accounts []activeWranglerAccount, id string) (activeWranglerAccount, bool) {

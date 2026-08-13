@@ -351,18 +351,28 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 	var receipt localInstallReceipt
 	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&receipt); err != nil || receipt.SchemaVersion != localReceiptSchema ||
-		ensureDecoderEOF(decoder) != nil || !validProductVersion(receipt.ReleaseVersion) ||
-		!commitPattern.MatchString(receipt.SourceCommit) {
+	if err := decoder.Decode(&receipt); err != nil || ensureDecoderEOF(decoder) != nil {
 		return nil, false, errors.New("local OneNod install receipt is invalid")
+	}
+	if err := validateLocalInstallReceiptShape(&receipt); err != nil {
+		return nil, false, err
+	}
+	return &receipt, true, nil
+}
+
+func validateLocalInstallReceiptShape(receipt *localInstallReceipt) error {
+	if receipt == nil || receipt.SchemaVersion != localReceiptSchema ||
+		!validProductVersion(receipt.ReleaseVersion) ||
+		!commitPattern.MatchString(receipt.SourceCommit) {
+		return errors.New("local OneNod install receipt is invalid")
 	}
 	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
 	if err != nil {
-		return nil, false, errors.New("local OneNod install receipt has an invalid release channel")
+		return errors.New("local OneNod install receipt has an invalid release channel")
 	}
 	receipt.Channel = string(channel)
 	if parsed, err := parseGatewayOrigin(receipt.Origin); err != nil || parsed.String() != receipt.Origin {
-		return nil, false, errors.New("local OneNod install receipt Origin is invalid")
+		return errors.New("local OneNod install receipt Origin is invalid")
 	}
 	localName, localErr := localArtifactName()
 	if localErr != nil || len(receipt.Artifacts) != 3 ||
@@ -380,11 +390,11 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 		!validExactBuildRuntimeIdentity(receipt.ExactCodeIdentities.May) ||
 		!validExactBuildRuntimeIdentity(receipt.ExactCodeIdentities.MaySSHSign) ||
 		!validExactBuildRuntimeIdentity(receipt.ExactCodeIdentities.Helper) {
-		return nil, false, errors.New("local OneNod install receipt has an incomplete component shape")
+		return errors.New("local OneNod install receipt has an incomplete component shape")
 	}
 	for _, digest := range receipt.Artifacts {
 		if !digestPattern.MatchString(digest) {
-			return nil, false, errors.New("local OneNod install receipt contains an invalid digest")
+			return errors.New("local OneNod install receipt contains an invalid digest")
 		}
 	}
 	for _, digest := range []string{
@@ -394,7 +404,7 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 		receipt.Files["bin/may"], receipt.Files["bin/"+gitSignAdapterBinaryName],
 	} {
 		if !digestPattern.MatchString(digest) {
-			return nil, false, errors.New("local OneNod install receipt contains an invalid component digest")
+			return errors.New("local OneNod install receipt contains an invalid component digest")
 		}
 	}
 	home, homeErr := os.UserHomeDir()
@@ -403,10 +413,10 @@ func readLocalInstallReceipt() (*localInstallReceipt, bool, error) {
 		relative, err := filepath.Rel(backupRoot, backup)
 		if homeErr != nil || err != nil || relative == "." || relative == ".." ||
 			strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return nil, false, errors.New("local OneNod install receipt contains an unsafe Skill adoption backup")
+			return errors.New("local OneNod install receipt contains an unsafe Skill adoption backup")
 		}
 	}
-	return &receipt, true, nil
+	return nil
 }
 
 func writeLocalInstallReceipt(path string, receipt localInstallReceipt) error {

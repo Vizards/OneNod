@@ -207,15 +207,25 @@ func TestLowerRiskChannelWaitsForNonDowngradingCandidate(t *testing.T) {
 }
 
 func TestUpdateCheckAndMutationWaitForCompatibleLowerRiskRelease(t *testing.T) {
+	priorCanonical := canonicalLocalUpdateHome
+	canonicalLocalUpdateHome = func() (string, error) { return os.Getenv("HOME"), nil }
+	t.Cleanup(func() { canonicalLocalUpdateHome = priorCanonical })
 	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
 		t.Skip("OneNod local receipts are supported on macOS hosts")
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, userAgentDirectoryName)
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "versions", "fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	fixtureMay := filepath.Join(root, "versions", "fixture", "may")
+	if err := os.WriteFile(fixtureMay, []byte("fixture exact may"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	priorExecutable := currentLocalUpdateExecutable
+	currentLocalUpdateExecutable = func() (string, error) { return fixtureMay, nil }
+	t.Cleanup(func() { currentLocalUpdateExecutable = priorExecutable })
 	currentVersion := "0.0.2-beta.1"
 	localName, err := localArtifactName()
 	if err != nil {
@@ -255,6 +265,28 @@ func TestUpdateCheckAndMutationWaitForCompatibleLowerRiskRelease(t *testing.T) {
 	receipt.Skill.Discovery = []string{"~/.agents/skills/onenod", "~/.claude/skills/onenod"}
 	receipt.Skill.TreeSHA256 = digest
 	receipt.Skill.Version = currentVersion
+	versionMay := filepath.Join(root, "versions", currentVersion, "may")
+	currentLocalUpdateExecutable = func() (string, error) { return versionMay, nil }
+	if err := os.MkdirAll(filepath.Dir(versionMay), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(versionMay, []byte("installed exact may"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mayDigest, err := regularFileSHA256(versionMay, maxReleaseArtifactBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Files["bin/may"] = mayDigest
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		managedReleaseTargets(currentVersion, currentVersion)["may"],
+		filepath.Join(root, "bin", "may"),
+	); err != nil {
+		t.Fatal(err)
+	}
 	receiptPath := filepath.Join(root, "install.json")
 	if err := writeLocalInstallReceipt(receiptPath, receipt); err != nil {
 		t.Fatal(err)

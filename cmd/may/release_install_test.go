@@ -209,28 +209,6 @@ func TestExistingTrustedInstallSkipsOperatorFirstExecutionGate(t *testing.T) {
 	}
 }
 
-func TestPostDeploymentHelperUpdateIsASeparateDefaultNoCeremony(t *testing.T) {
-	var output strings.Builder
-	err := confirmPostDeploymentHelperUpdate(
-		strings.NewReader("\n"),
-		&output,
-		"0.0.2-alpha.21",
-	)
-	if err == nil || !strings.Contains(err.Error(), "remote deployment is complete") ||
-		!strings.Contains(err.Error(), "may update --version 0.0.2-alpha.21") {
-		t.Fatalf("default-no helper ceremony returned %v", err)
-	}
-	if !strings.Contains(output.String(), "Pause every Agent harness") ||
-		!strings.Contains(output.String(), "separate security ceremony") {
-		t.Fatalf("helper ceremony did not state its security boundary: %s", output.String())
-	}
-	if err := confirmPostDeploymentHelperUpdate(
-		strings.NewReader("y\n"), io.Discard, "0.0.2-alpha.21",
-	); err != nil {
-		t.Fatalf("explicit helper ceremony approval failed: %v", err)
-	}
-}
-
 func TestHelperReuseRequiresExactVersionSourceArtifactAndBinaryIdentity(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("OneNod requester artifacts are macOS-only")
