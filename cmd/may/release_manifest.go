@@ -169,9 +169,16 @@ func validExactBuildCodeIdentity(identity exactBuildCodeIdentity, expectedIdenti
 }
 
 func validExactBuildRuntimeIdentity(identity exactBuildRuntimeIdentity) bool {
+	return validExactBuildRuntimeIdentityForArchitecture(identity, runtime.GOARCH)
+}
+
+func validExactBuildRuntimeIdentityForArchitecture(
+	identity exactBuildRuntimeIdentity,
+	expectedArchitecture string,
+) bool {
 	decoded, err := base64.RawURLEncoding.Strict().DecodeString(identity.CodeDirectoryHash)
 	valid := err == nil && len(decoded) >= 20 && len(decoded) <= 64 &&
-		identity.Architecture == runtime.GOARCH &&
+		identity.Architecture == expectedArchitecture &&
 		digestPattern.MatchString(identity.DesignatedRequirementDataSHA256)
 	zeroBytes(decoded)
 	return valid

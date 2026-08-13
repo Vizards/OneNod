@@ -24,8 +24,12 @@ type memoryReleaseSource struct {
 }
 
 func testExactBuildRuntimeIdentity() exactBuildRuntimeIdentity {
+	return testExactBuildRuntimeIdentityForArchitecture(runtime.GOARCH)
+}
+
+func testExactBuildRuntimeIdentityForArchitecture(architecture string) exactBuildRuntimeIdentity {
 	return exactBuildRuntimeIdentity{
-		Architecture:                    runtime.GOARCH,
+		Architecture:                    architecture,
 		CodeDirectoryHash:               base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 20)),
 		DesignatedRequirementDataSHA256: "sha256:" + strings.Repeat("4", 64),
 	}

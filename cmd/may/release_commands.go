@@ -225,10 +225,22 @@ func verifyReleaseArtifactInstallability(
 	defer os.RemoveAll(destination)
 	switch artifact.Kind {
 	case "local":
-		_, err := extractVerifiedLocalArchive(snapshot, destination, manifest)
+		expectedArchitecture, err := releaseArtifactDarwinArchitecture(artifact)
+		if err != nil {
+			return err
+		}
+		_, err = extractVerifiedLocalArchiveForArchitecture(
+			snapshot, destination, manifest, expectedArchitecture,
+		)
 		return err
 	case "keychain_helper":
-		_, err := extractVerifiedHelperArchive(snapshot, destination, manifest)
+		expectedArchitecture, err := releaseArtifactDarwinArchitecture(artifact)
+		if err != nil {
+			return err
+		}
+		_, err = extractVerifiedHelperArchiveForArchitecture(
+			snapshot, destination, manifest, expectedArchitecture,
+		)
 		return err
 	case "deployment":
 		var descriptor deploymentBundleDescriptor
@@ -255,6 +267,14 @@ func verifyReleaseArtifactInstallability(
 	default:
 		return nil
 	}
+}
+
+func releaseArtifactDarwinArchitecture(artifact releaseArtifact) (string, error) {
+	if artifact.Platform == nil || artifact.Platform.OS != "darwin" ||
+		(artifact.Platform.Architecture != "arm64" && artifact.Platform.Architecture != "amd64") {
+		return "", errors.New("native release artifact platform is invalid")
+	}
+	return artifact.Platform.Architecture, nil
 }
 
 type repeatedStringFlag []string
