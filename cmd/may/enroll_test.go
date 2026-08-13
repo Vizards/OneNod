@@ -162,12 +162,21 @@ func TestEnrollDoesNotAdoptPreseededUnregisteredRequester(t *testing.T) {
 		}
 	})
 	var stdout bytes.Buffer
+	restartCalls := 0
 	err = runCLI([]string{
 		"--origin", origin,
 		"--poll-interval", "1ms",
 		"--timeout", "1s",
 		"enroll", "--name", "Test Mac",
 	}, dependencies{
+		approvalAgentActivator: func(plan *userCLIInstallPlan) error {
+			restartCalls++
+			activeSlot, activeErr := activeRequesterSlot(origin)
+			if activeErr != nil || activeSlot == preseededSlot || !validApprovalAgentPlan(plan, home) {
+				t.Fatalf("Approval SSH Agent restarted before the fresh requester slot was active: slot=%q err=%v plan=%+v", activeSlot, activeErr, plan)
+			}
+			return nil
+		},
 		httpClient: &http.Client{Transport: transport},
 		keychain:   keychainStore{backend: backend},
 		stdin:      strings.NewReader("y\n"),
@@ -177,9 +186,9 @@ func TestEnrollDoesNotAdoptPreseededUnregisteredRequester(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requestCount != 3 || enrolledDeviceID == "" ||
+	if requestCount != 3 || restartCalls != 1 || enrolledDeviceID == "" ||
 		strings.Contains(stdout.String(), preseeded.DeviceID) {
-		t.Fatalf("preseeded enrollment isolation failed: requests=%d output=%q", requestCount, stdout.String())
+		t.Fatalf("preseeded enrollment isolation failed: requests=%d restarts=%d output=%q", requestCount, restartCalls, stdout.String())
 	}
 	activeSlot, err := activeRequesterSlot(origin)
 	if err != nil {
@@ -310,9 +319,18 @@ func TestEnrollReusesServerProvenRegisteredRequester(t *testing.T) {
 		}
 	})
 	var stdout bytes.Buffer
+	restartCalls := 0
 	if err := runCLI([]string{
 		"--origin", origin, "enroll", "--name", "Test Mac",
 	}, dependencies{
+		approvalAgentActivator: func(plan *userCLIInstallPlan) error {
+			restartCalls++
+			activeSlot, activeErr := activeRequesterSlot(origin)
+			if activeErr != nil || activeSlot != registeredSlot || !validApprovalAgentPlan(plan, home) {
+				t.Fatalf("Approval SSH Agent restarted before the registered requester slot was active: slot=%q err=%v plan=%+v", activeSlot, activeErr, plan)
+			}
+			return nil
+		},
 		httpClient: &http.Client{Transport: transport},
 		keychain:   keychainStore{backend: backend},
 		stderr:     io.Discard,
@@ -320,12 +338,240 @@ func TestEnrollReusesServerProvenRegisteredRequester(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if requestCount != 2 || len(backend.items) != initialItemCount ||
+	if requestCount != 2 || restartCalls != 1 || len(backend.items) != initialItemCount ||
 		!strings.Contains(stdout.String(), registered.DeviceID) {
-		t.Fatalf("registered requester was not reused: requests=%d output=%q", requestCount, stdout.String())
+		t.Fatalf("registered requester was not reused: requests=%d restarts=%d output=%q", requestCount, restartCalls, stdout.String())
 	}
 	activeSlot, err := activeRequesterSlot(origin)
 	if err != nil || activeSlot != registeredSlot {
 		t.Fatalf("registered requester slot changed: slot=%q err=%v", activeSlot, err)
 	}
+}
+
+func TestEnrollDoesNotActivateOrRestartWithoutStrictApproval(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		status      string
+		wantErrText string
+	}{
+		{name: "rejected", status: "denied", wantErrText: "ended with status"},
+		{name: "noncanonical success", status: "authorized", wantErrText: "unexpected status"},
+		{name: "timeout", status: "pending", wantErrText: "timed out waiting for approval"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			const origin = "https://onenod.example-account.workers.dev"
+			backend := &serviceKeychainBackend{items: make(map[string][]byte)}
+			var deviceID string
+			var fingerprint string
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				switch request.URL.Path {
+				case "/v1/requester-enrollments":
+					var body enrollmentRequest
+					if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					deviceID = body.DeviceID
+					candidate := &requesterCredential{
+						DeviceID: body.DeviceID, DisplayName: body.DisplayName,
+						PublicKey: body.PublicKey, PrivateKey: "test-only", Version: 1,
+					}
+					var err error
+					fingerprint, err = publicKeyFingerprint(candidate)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return jsonHTTPResponse(http.StatusAccepted, `{
+						"enrollment_id":"strict-enrollment",
+						"expires_at":"2099-01-01T00:00:00Z",
+						"public_key_fingerprint":"`+fingerprint+`",
+						"status":"pending"
+					}`), nil
+				case "/v1/requester-enrollments/strict-enrollment":
+					return jsonHTTPResponse(http.StatusOK, `{
+						"device_id":"`+deviceID+`",
+						"public_key_fingerprint":"`+fingerprint+`",
+						"status":"`+testCase.status+`"
+					}`), nil
+				default:
+					t.Fatalf("unexpected enrollment path %s", request.URL.Path)
+					return nil, nil
+				}
+			})
+			restartCalls := 0
+			var stdout bytes.Buffer
+			err := runCLI([]string{
+				"--origin", origin,
+				"--poll-interval", "100ms",
+				"--timeout", "20ms",
+				"enroll", "--name", "Test Mac",
+			}, dependencies{
+				approvalAgentActivator: func(*userCLIInstallPlan) error {
+					restartCalls++
+					return nil
+				},
+				httpClient: &http.Client{Transport: transport},
+				keychain:   keychainStore{backend: backend},
+				stdin:      strings.NewReader("y\n"),
+				stderr:     io.Discard,
+				stdout:     &stdout,
+			})
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErrText) {
+				t.Fatalf("non-approved enrollment returned err=%v output=%q", err, stdout.String())
+			}
+			if restartCalls != 0 || strings.Contains(stdout.String(), `"status"`) {
+				t.Fatalf("non-approved enrollment reported success or restarted: restarts=%d output=%q", restartCalls, stdout.String())
+			}
+			if _, selected, stateErr := selectedRequesterSlot(origin); stateErr != nil || selected {
+				t.Fatalf("non-approved enrollment activated requester state: selected=%t err=%v", selected, stateErr)
+			}
+		})
+	}
+}
+
+func TestApprovedRequesterActivationFailureDoesNotRestartAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, userAgentDirectoryName), []byte("occupied\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restartCalls := 0
+	err := activateApprovedRequester(
+		"https://onenod.example-account.workers.dev",
+		"11111111-2222-4333-8444-555555555555",
+		dependencies{approvalAgentActivator: func(*userCLIInstallPlan) error {
+			restartCalls++
+			return nil
+		}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "activating its non-secret local slot failed") {
+		t.Fatalf("requester activation failure returned %v", err)
+	}
+	if restartCalls != 0 {
+		t.Fatalf("Approval SSH Agent restarted %d times after requester activation failed", restartCalls)
+	}
+}
+
+func TestEnrollRestartFailureRetainsRerunnableApprovedState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const origin = "https://onenod.example-account.workers.dev"
+	backend := &serviceKeychainBackend{items: make(map[string][]byte)}
+	var deviceID string
+	var publicKey string
+	var fingerprint string
+	firstTransport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/v1/requester-enrollments":
+			var body enrollmentRequest
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			deviceID, publicKey = body.DeviceID, body.PublicKey
+			candidate := &requesterCredential{
+				DeviceID: body.DeviceID, DisplayName: body.DisplayName,
+				PublicKey: body.PublicKey, PrivateKey: "test-only", Version: 1,
+			}
+			var err error
+			fingerprint, err = publicKeyFingerprint(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return jsonHTTPResponse(http.StatusAccepted, `{
+				"enrollment_id":"restart-enrollment",
+				"expires_at":"2099-01-01T00:00:00Z",
+				"public_key_fingerprint":"`+fingerprint+`",
+				"status":"pending"
+			}`), nil
+		case "/v1/requester-enrollments/restart-enrollment":
+			return jsonHTTPResponse(http.StatusOK, `{
+				"device_id":"`+deviceID+`",
+				"public_key_fingerprint":"`+fingerprint+`",
+				"status":"approved"
+			}`), nil
+		default:
+			t.Fatalf("unexpected enrollment path %s", request.URL.Path)
+			return nil, nil
+		}
+	})
+	restartFailure := errors.New("test restart failure")
+	var firstOutput bytes.Buffer
+	err := runCLI([]string{
+		"--origin", origin, "--poll-interval", "1ms", "--timeout", "1s",
+		"enroll", "--name", "Test Mac", "--new-identity",
+	}, dependencies{
+		approvalAgentActivator: func(*userCLIInstallPlan) error { return restartFailure },
+		httpClient:             &http.Client{Transport: firstTransport},
+		keychain:               keychainStore{backend: backend},
+		stdin:                  strings.NewReader("y\n"),
+		stderr:                 io.Discard,
+		stdout:                 &firstOutput,
+	})
+	if err == nil || !strings.Contains(err.Error(), restartFailure.Error()) ||
+		!strings.Contains(err.Error(), "without `--new-identity`") {
+		t.Fatalf("restart failure was not recoverably diagnosed: %v", err)
+	}
+	if strings.Contains(firstOutput.String(), `"status"`) {
+		t.Fatalf("restart failure reported enrollment success: %q", firstOutput.String())
+	}
+	activeSlot, err := activeRequesterSlot(origin)
+	if err != nil || !requesterSlotPattern.MatchString(activeSlot) || activeSlot == "active" {
+		t.Fatalf("approved requester slot was not retained for retry: slot=%q err=%v", activeSlot, err)
+	}
+
+	secondTransport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/v1/requester-self":
+			return jsonHTTPResponse(http.StatusOK, `{
+				"device_id":"`+deviceID+`",
+				"public_key_fingerprint":"`+fingerprint+`",
+				"registered":true
+			}`), nil
+		case "/v1/requester-enrollments":
+			var body enrollmentRequest
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.DeviceID != deviceID || body.PublicKey != publicKey {
+				t.Fatal("enrollment retry did not reuse the Gateway-approved requester")
+			}
+			return jsonHTTPResponse(http.StatusOK, `{
+				"already_enrolled":true,
+				"device_id":"`+deviceID+`",
+				"display_name":"Test Mac",
+				"public_key_fingerprint":"`+fingerprint+`",
+				"status":"approved"
+			}`), nil
+		default:
+			t.Fatalf("unexpected enrollment retry path %s", request.URL.Path)
+			return nil, nil
+		}
+	})
+	retryRestarts := 0
+	var retryOutput bytes.Buffer
+	if err := runCLI([]string{
+		"--origin", origin, "enroll", "--name", "Test Mac",
+	}, dependencies{
+		approvalAgentActivator: func(*userCLIInstallPlan) error {
+			retryRestarts++
+			return nil
+		},
+		httpClient: &http.Client{Transport: secondTransport},
+		keychain:   keychainStore{backend: backend},
+		stderr:     io.Discard,
+		stdout:     &retryOutput,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if retryRestarts != 1 || !strings.Contains(retryOutput.String(), `"already_enrolled":true`) {
+		t.Fatalf("approved enrollment retry did not restart and complete: restarts=%d output=%q", retryRestarts, retryOutput.String())
+	}
+}
+
+func validApprovalAgentPlan(plan *userCLIInstallPlan, home string) bool {
+	return plan.binaryPath == filepath.Join(home, userAgentDirectoryName, "bin", "may") &&
+		plan.adapterPath == filepath.Join(home, userAgentDirectoryName, "bin", gitSignAdapterBinaryName) &&
+		plan.launchAgentPath == filepath.Join(home, "Library", "LaunchAgents", oneNodAgentLabel+".plist") &&
+		plan.socketPath == filepath.Join(home, userAgentDirectoryName, "agent.sock")
 }

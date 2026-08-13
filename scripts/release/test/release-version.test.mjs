@@ -9,6 +9,7 @@ import {
   releaseChannelPolicy,
   releaseMatchesTrain,
   releaseTrainTarget,
+  releaseUpgradeVersionPolicy,
   validateReleaseChannelContract,
 } from "../release-version.mjs";
 
@@ -82,6 +83,42 @@ test("product versions use canonical SemVer precedence", () => {
     "1.2.3-beta.2",
     "1.2.3",
   ]);
+});
+
+test("release generation accepts only an already-released exact bridge updater", () => {
+  assert.equal(
+    releaseUpgradeVersionPolicy(
+      {
+        minimum_safe_version: "0.0.1",
+        minimum_updater_version: "0.0.2-alpha.26",
+      },
+      "0.0.2-alpha.27",
+    ),
+    null,
+  );
+  assert.match(
+    releaseUpgradeVersionPolicy(
+      {
+        minimum_safe_version: "0.0.1",
+        minimum_updater_version: "0.0.2-alpha.28",
+      },
+      "0.0.2-alpha.27",
+    ),
+    /cannot exceed/u,
+  );
+  for (const invalid of ["0.0.2-rc.1", "0.0.2-alpha", "not-a-version"]) {
+    assert.match(
+      releaseUpgradeVersionPolicy(
+        {
+          minimum_safe_version: "0.0.1",
+          minimum_updater_version: invalid,
+        },
+        "0.0.2-alpha.27",
+      ),
+      /must be a product version/u,
+      invalid,
+    );
+  }
 });
 
 test("a reviewed release train binds every new channel to one core", () => {

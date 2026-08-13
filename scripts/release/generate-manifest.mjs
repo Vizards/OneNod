@@ -9,6 +9,7 @@ import {
   releaseChannelPolicy,
   releaseMatchesTrain,
   releaseTrainTarget,
+  releaseUpgradeVersionPolicy,
   validateReleaseChannelContract,
 } from "./release-version.mjs";
 
@@ -192,14 +193,15 @@ function validateContract(value, values) {
   ) {
     fail("release contract identity is invalid");
   }
-  const componentVersions = [
-    value.components?.keychain_helper?.version,
-    value.upgrade?.minimum_updater_version,
-    value.upgrade?.minimum_safe_version,
-  ];
-  for (const componentVersion of componentVersions) {
+  const stableComponentVersions = [value.components?.keychain_helper?.version];
+  for (const componentVersion of stableComponentVersions) {
     strictStableVersion(componentVersion, "release contract version");
   }
+  const upgradeVersionError = releaseUpgradeVersionPolicy(
+    value.upgrade,
+    values.version,
+  );
+  if (upgradeVersionError !== null) fail(upgradeVersionError);
   if (
     typeof value.components?.keychain_helper?.source_digest !== "string" ||
     !/^sha256:[0-9a-f]{64}$/u.test(
@@ -229,11 +231,6 @@ function validateContract(value, values) {
     ) {
       fail(`${label} exact-build code identity is invalid`);
     }
-  }
-  if (
-    compareProductVersions(value.upgrade.minimum_safe_version, values.version) > 0
-  ) {
-    fail("minimum safe version cannot exceed the published release");
   }
   if (
     !Array.isArray(value.upgrade.revoked_artifact_digests) ||

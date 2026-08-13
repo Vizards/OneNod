@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -315,8 +316,8 @@ func TestOneNodTransportPolicyRejectsUnsafeOrAmbiguousCode(t *testing.T) {
 		{name: "linker signature", mutate: func(value *applicationProcess) { value.LinkerSigned = true }},
 		{name: "not hardened", mutate: func(value *applicationProcess) { value.HardenedRuntime = false }},
 		{name: "missing runtime version", mutate: func(value *applicationProcess) { value.CodeRuntimeVersion = 0 }},
-		{name: "dangerous entitlement", mutate: func(value *applicationProcess) {
-			value.DangerousEntitlements = dangerousCodeEntitlementDisableLibraryValidation
+		{name: "get-task-allow entitlement", mutate: func(value *applicationProcess) {
+			value.DangerousEntitlements = dangerousCodeEntitlementGetTaskAllow
 		}},
 		{name: "JIT exception", mutate: func(value *applicationProcess) {
 			value.DangerousEntitlements = dangerousCodeEntitlementAllowJIT
@@ -351,6 +352,138 @@ func TestOneNodTransportPolicyRejectsUnsafeOrAmbiguousCode(t *testing.T) {
 	unsafeHelper.DangerousEntitlements = dangerousCodeEntitlementGetTaskAllow
 	if identity, err := helperCodeIdentity(unsafeHelper); err == nil {
 		t.Fatalf("unsafe helper produced exact identity %+v", identity)
+	}
+}
+
+func TestOneNodTransportEntitlementsAreRestrictedByRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		kind         transportCodeKind
+		identifier   string
+		entitlements uint32
+		wantAllowed  bool
+	}{
+		{
+			name: "helper without entitlements", kind: transportCodeKindHelper,
+			identifier: oneNodHelperSigningIdentifier, wantAllowed: true,
+		},
+		{
+			name: "helper with library validation disabled", kind: transportCodeKindHelper,
+			identifier:   oneNodHelperSigningIdentifier,
+			entitlements: dangerousCodeEntitlementDisableLibraryValidation,
+		},
+		{
+			name: "may without entitlements", kind: transportCodeKindMay,
+			identifier: oneNodMaySigningIdentifier, wantAllowed: true,
+		},
+		{
+			name: "may with only library validation disabled", kind: transportCodeKindMay,
+			identifier:   oneNodMaySigningIdentifier,
+			entitlements: dangerousCodeEntitlementDisableLibraryValidation,
+			wantAllowed:  true,
+		},
+		{
+			name: "may with library validation and another exception", kind: transportCodeKindMay,
+			identifier: oneNodMaySigningIdentifier,
+			entitlements: dangerousCodeEntitlementDisableLibraryValidation |
+				dangerousCodeEntitlementGetTaskAllow,
+		},
+		{
+			name: "may with an unknown runtime exception", kind: transportCodeKindMay,
+			identifier:   oneNodMaySigningIdentifier,
+			entitlements: dangerousCodeEntitlementUnknownRuntimeException,
+		},
+		{
+			name: "may with malformed entitlements", kind: transportCodeKindMay,
+			identifier:   oneNodMaySigningIdentifier,
+			entitlements: dangerousCodeEntitlementMalformed,
+		},
+		{
+			name: "SSH adapter without entitlements", kind: transportCodeKindSSHSign,
+			identifier: oneNodSSHSignSigningIdentifier, wantAllowed: true,
+		},
+		{
+			name: "SSH adapter with library validation disabled", kind: transportCodeKindSSHSign,
+			identifier:   oneNodSSHSignSigningIdentifier,
+			entitlements: dangerousCodeEntitlementDisableLibraryValidation,
+		},
+		{
+			name: "unknown role", kind: transportCodeKind("future-role"),
+			identifier: oneNodMaySigningIdentifier,
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			process := validAdHocTransportProcess(test.identifier, byte(0x60+index))
+			process.DangerousEntitlements = test.entitlements
+			identity, err := newTransportCodeIdentity(process, test.kind, test.identifier)
+			if test.wantAllowed {
+				if err != nil {
+					t.Fatalf("allowed role policy was rejected: %v", err)
+				}
+				wantPolicy := uint32(transportRuntimePolicyVersion)
+				if test.kind == transportCodeKindMay &&
+					test.entitlements == dangerousCodeEntitlementDisableLibraryValidation {
+					wantPolicy = transportConstrainedDLVPolicyVersion
+				}
+				if identity.Kind != test.kind || identity.PolicyVersion != wantPolicy {
+					t.Fatalf("identity = %+v, want kind %q policy %d", identity, test.kind, wantPolicy)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("disallowed role policy produced identity %+v", identity)
+			}
+		})
+	}
+}
+
+func TestOneNodTransportLibraryConstraintIsBoundToPolicyVersion(t *testing.T) {
+	t.Parallel()
+	legacy := testTransportIdentity(transportCodeKindMay, 0x71)
+	constrained := legacy
+	constrained.PolicyVersion = transportConstrainedDLVPolicyVersion
+	exactBlob, err := hex.DecodeString(
+		"fade8181000000a1708196020101b0819030090c0463636174020100" +
+			"30090c04636f6d70020101306d0c0472657173b065302a0c127369676e696e672d" +
+			"6964656e7469666965720c146c69626f705f73646b5f6970635f636c69656e74" +
+			"301d0c0f7465616d2d6964656e7469666965720c0a3242554138433453324330" +
+			"180c1376616c69646174696f6e2d63617465676f727902010630090c04766572" +
+			"73020101",
+	)
+	if err != nil || len(exactBlob) != transportOnePasswordConstraintSize {
+		t.Fatalf("decode canonical signed LWCR: length=%d error=%v", len(exactBlob), err)
+	}
+
+	if !transportLibraryConstraintAllowed(legacy, nil) ||
+		transportLibraryConstraintAllowed(legacy, exactBlob) {
+		t.Fatal("legacy transport policy did not require an absent library constraint")
+	}
+	if !transportLibraryConstraintAllowed(constrained, exactBlob) ||
+		transportLibraryConstraintAllowed(constrained, nil) ||
+		transportLibraryConstraintAllowed(constrained, exactBlob[:len(exactBlob)-1]) {
+		t.Fatal("constrained transport policy accepted the wrong library constraint shape")
+	}
+	if !validTransportCodeIdentityShape(constrained, transportCodeKindMay) {
+		t.Fatal("constrained may identity did not survive stored-state validation")
+	}
+	invalidPolicy := constrained
+	invalidPolicy.PolicyVersion++
+	if validTransportCodeIdentityShape(invalidPolicy, transportCodeKindMay) {
+		t.Fatal("unknown transport policy version survived stored-state validation")
+	}
+	changed := append([]byte(nil), exactBlob...)
+	changed[len(changed)-1] ^= 1
+	if transportLibraryConstraintAllowed(constrained, changed) {
+		t.Fatal("constrained transport policy accepted a different signed LWCR")
+	}
+	constrainedAdapter := testTransportIdentity(transportCodeKindSSHSign, 0x72)
+	constrainedAdapter.PolicyVersion = transportConstrainedDLVPolicyVersion
+	if transportLibraryConstraintAllowed(constrainedAdapter, exactBlob) ||
+		validTransportCodeIdentityShape(constrainedAdapter, transportCodeKindSSHSign) {
+		t.Fatal("SSH adapter accepted the may-only constrained policy")
 	}
 }
 

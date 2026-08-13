@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -138,10 +139,8 @@ func runEnroll(args []string, config cliConfig, deps dependencies) error {
 			created.PublicKeyFingerprint != fingerprint {
 			return errors.New("gateway returned an invalid already-enrolled requester response")
 		}
-		if freshIdentity {
-			if err := activateRequesterSlot(config.origin, selectedSlot); err != nil {
-				return errors.New("existing requester is active but activating its non-secret local slot failed")
-			}
+		if err := activateApprovedRequester(config.origin, selectedSlot, deps); err != nil {
+			return err
 		}
 		return writeSafeJSON(deps.stdout, map[string]any{
 			"already_enrolled":       true,
@@ -195,10 +194,11 @@ func runEnroll(args []string, config cliConfig, deps dependencies) error {
 	if err != nil {
 		return err
 	}
-	if freshIdentity && isAuthorizedStatus(status) {
-		if err := activateRequesterSlot(config.origin, selectedSlot); err != nil {
-			return errors.New("new requester was approved but activating its non-secret local slot failed")
-		}
+	if normalizeStatus(status) != "approved" {
+		return fmt.Errorf("gateway enrollment reached unexpected status %q", status)
+	}
+	if err := activateApprovedRequester(config.origin, selectedSlot, deps); err != nil {
+		return err
 	}
 	return writeSafeJSON(deps.stdout, map[string]string{
 		"device_id":              credential.DeviceID,
@@ -206,6 +206,34 @@ func runEnroll(args []string, config cliConfig, deps dependencies) error {
 		"public_key_fingerprint": fingerprint,
 		"status":                 status,
 	})
+}
+
+func activateApprovedRequester(origin, slot string, deps dependencies) error {
+	if err := activateRequesterSlot(origin, slot); err != nil {
+		return errors.New("requester was approved but activating its non-secret local slot failed")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return errors.New("requester slot was activated but resolving the Approval SSH Agent installation failed; rerun enrollment for the same device name without `--new-identity`")
+	}
+	root := filepath.Join(home, userAgentDirectoryName)
+	plan := &userCLIInstallPlan{
+		adapterPath:     filepath.Join(root, "bin", gitSignAdapterBinaryName),
+		binaryPath:      filepath.Join(root, "bin", "may"),
+		launchAgentPath: filepath.Join(home, "Library", "LaunchAgents", oneNodAgentLabel+".plist"),
+		socketPath:      filepath.Join(root, "agent.sock"),
+	}
+	activate := deps.approvalAgentActivator
+	if activate == nil {
+		activate = activateApprovalAgent
+	}
+	if err := activate(plan); err != nil {
+		return fmt.Errorf(
+			"requester slot was activated but restarting the Approval SSH Agent failed: %w; rerun enrollment for the same device name without `--new-identity`",
+			err,
+		)
+	}
+	return nil
 }
 
 func requesterIsRegistered(

@@ -16,17 +16,18 @@ const gatewayRequestTimeout = 5 * time.Minute
 const approvalObservationGrace = 5 * time.Second
 
 type dependencies struct {
-	applicationResolver applicationResolver
-	cloudflareTransport http.RoundTripper
-	httpClient          *http.Client
-	keychain            keychainStore
-	localOnePassword    localOnePasswordFactory
-	localSSHAgent       localSSHAgentFactory
-	platformProbe       func() (hostPlatform, error)
-	releases            releaseSource
-	stderr              io.Writer
-	stdin               io.Reader
-	stdout              io.Writer
+	applicationResolver    applicationResolver
+	approvalAgentActivator func(*userCLIInstallPlan) error
+	cloudflareTransport    http.RoundTripper
+	httpClient             *http.Client
+	keychain               keychainStore
+	localOnePassword       localOnePasswordFactory
+	localSSHAgent          localSSHAgentFactory
+	platformProbe          func() (hostPlatform, error)
+	releases               releaseSource
+	stderr                 io.Writer
+	stdin                  io.Reader
+	stdout                 io.Writer
 }
 
 type cliConfig struct {

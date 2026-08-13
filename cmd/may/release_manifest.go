@@ -75,7 +75,7 @@ func validateReleaseManifest(
 	}
 	if !validStableVersion(manifest.Support.MinimumSafeVersion) ||
 		compareProductVersions(manifest.Support.MinimumSafeVersion, manifest.ReleaseVersion) > 0 ||
-		!validStableVersion(manifest.Upgrade.MinimumUpdaterVersion) ||
+		!validProductVersion(manifest.Upgrade.MinimumUpdaterVersion) ||
 		compareProductVersions(manifest.Upgrade.MinimumUpdaterVersion, manifest.ReleaseVersion) > 0 {
 		return errors.New("release manifest update safety versions are invalid")
 	}
