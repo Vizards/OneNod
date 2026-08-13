@@ -398,6 +398,28 @@ static int helper_copy_cf_data(
     return 0;
 }
 
+static int helper_is_known_runtime_entitlement(CFStringRef key) {
+    return CFStringCompare(key,
+            CFSTR("com.apple.security.cs.disable-library-validation"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key,
+            CFSTR("com.apple.security.cs.allow-dyld-environment-variables"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key, CFSTR("com.apple.security.cs.allow-jit"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key,
+            CFSTR("com.apple.security.cs.allow-unsigned-executable-memory"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key,
+            CFSTR("com.apple.security.cs.disable-executable-page-protection"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key,
+            CFSTR("com.apple.security.cs.allow-relative-library-loads"), 0)
+            == kCFCompareEqualTo ||
+        CFStringCompare(key, CFSTR("com.apple.security.cs.debugger"), 0)
+            == kCFCompareEqualTo;
+}
+
 static uint32_t helper_dangerous_entitlements(CFDictionaryRef information) {
     CFTypeRef raw_entitlements = CFDictionaryGetValue(information, kSecCodeInfoEntitlements);
     CFTypeRef value = CFDictionaryGetValue(information, kSecCodeInfoEntitlementsDict);
@@ -459,11 +481,7 @@ static uint32_t helper_dangerous_entitlements(CFDictionaryRef information) {
             }
             CFStringRef string_key = (CFStringRef)key;
             if (CFStringHasPrefix(string_key, CFSTR("com.apple.security.cs.")) &&
-                CFStringCompare(string_key, CFSTR("com.apple.security.cs.allow-jit"), 0)
-                    != kCFCompareEqualTo &&
-                CFStringCompare(string_key,
-                    CFSTR("com.apple.security.cs.allow-unsigned-executable-memory"), 0)
-                    != kCFCompareEqualTo) {
+                !helper_is_known_runtime_entitlement(string_key)) {
                 flags |= HELPER_ENTITLEMENT_UNKNOWN_RUNTIME_EXCEPTION;
             }
         }
@@ -843,7 +861,7 @@ int helper_inspect_static_transport_fd(
     }
     process->hardened_runtime = 1;
     process->dangerous_entitlements = helper_dangerous_entitlements(information);
-    if (process->dangerous_entitlements != 0 || helper_copy_cf_number_u32(
+    if (helper_copy_cf_number_u32(
             information, kSecCodeInfoRuntimeVersion,
             &process->code_runtime_version) != 0 ||
         process->code_runtime_version == 0 || helper_copy_cf_data(

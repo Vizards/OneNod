@@ -117,6 +117,31 @@ func TestRunningReleaseConsumerGate(t *testing.T) {
 	}
 }
 
+func TestReleaseManifestMayRequireAnExactPrereleaseBridgeUpdater(t *testing.T) {
+	manifest, assets := canonicalManifestFixture("0.0.2-alpha.27")
+	manifest.Upgrade.MinimumUpdaterVersion = "0.0.2-alpha.26"
+	if err := validateReleaseManifest(
+		manifest, "v0.0.2-alpha.27", assets,
+	); err != nil {
+		t.Fatalf("exact prerelease bridge updater was rejected: %v", err)
+	}
+
+	commit := manifest.Source.Commit
+	oldVersion, oldTag, oldSource := productVersion, releaseTag, sourceCommit
+	t.Cleanup(func() { productVersion, releaseTag, sourceCommit = oldVersion, oldTag, oldSource })
+	productVersion, releaseTag, sourceCommit =
+		"0.0.2-alpha.25", "v0.0.2-alpha.25", strings.Repeat("b", 40)
+	if _, err := runningReleaseCanConsume(manifest); err == nil ||
+		!strings.Contains(err.Error(), "below minimum_updater_version") {
+		t.Fatalf("pre-bridge updater was not rejected: %v", err)
+	}
+	productVersion, releaseTag, sourceCommit =
+		"0.0.2-alpha.26", "v0.0.2-alpha.26", commit
+	if exact, err := runningReleaseCanConsume(manifest); err != nil || exact {
+		t.Fatalf("declared bridge updater was rejected: exact=%t error=%v", exact, err)
+	}
+}
+
 func TestReleaseManifestRequiresExactAdHocHardenedRuntimeIdentity(t *testing.T) {
 	manifest, assets := canonicalManifestFixture("0.0.2")
 	if err := validateReleaseManifest(manifest, "v0.0.2", assets); err != nil {

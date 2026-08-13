@@ -39,8 +39,8 @@
       }
     },
     "keychain_helper": {
-      "version": "3.0.1",
-      "source_digest": "sha256:7c80656f3bae058cced280b003edf2f77d4ad61b4e23cb2c2decd98ad0a8bf03",
+      "version": "3.0.2",
+      "source_digest": "sha256:e40003c9b4a5ef37c1658f0f992f9bf13fbf9cb111aea1a384e96d75d84b1f8b",
       "code_identity": {
         "scheme": "apple-cdhash",
         "signing": "adhoc",

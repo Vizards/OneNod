@@ -3,14 +3,24 @@
 package main
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+const testOnePasswordLibraryConstraintPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>team-identifier</key><string>2BUA8C4S2C</string>
+<key>signing-identifier</key><string>libop_sdk_ipc_client</string>
+<key>validation-category</key><integer>6</integer>
+</dict></plist>`
 
 func TestApplicationIdentityDarwinRejectsCurrentUnprovisionedTestProcess(t *testing.T) {
 	process, err := inspectApplicationProcessByPID(os.Getpid())
@@ -95,6 +105,31 @@ func TestApplicationIdentityDarwinAcceptsOnlyServerSideNamedSocket(t *testing.T)
 	); err != nil {
 		t.Fatalf("accepted fixed-path server socket was rejected: %v", err)
 	}
+	peerPID, err := applicationEvidenceStartPID(
+		applicationEvidenceSSHPeer,
+		applicationProcess{PID: 42, ParentPID: 1},
+		func() (int, error) {
+			return acceptedSSHPeerPIDAtPathForTesting(
+				int(acceptedFile.Fd()), socketPath,
+			)
+		},
+	)
+	if err != nil {
+		t.Fatalf("LaunchAgent-shaped SSH transport rejected valid peer evidence: %v", err)
+	}
+	if peerPID != os.Getpid() {
+		t.Fatalf("SSH peer PID = %d, want current test process %d", peerPID, os.Getpid())
+	}
+	if _, err := applicationEvidenceStartPID(
+		applicationEvidenceParent,
+		applicationProcess{PID: 42, ParentPID: 1},
+		func() (int, error) {
+			t.Fatal("parent evidence consulted the SSH peer")
+			return 0, nil
+		},
+	); err == nil {
+		t.Fatal("parent evidence accepted a transport without a stable parent")
+	}
 	if err := validateAcceptedSSHPeerSocketForTesting(
 		int(acceptedFile.Fd()), socketPath+"\x00forged",
 	); err == nil {
@@ -172,12 +207,99 @@ func TestApplicationIdentityDarwinAcceptsOnlyServerSideNamedSocket(t *testing.T)
 	}
 }
 
+func TestSSHResolverAcceptsLaunchAgentTransportWhileParentEvidenceStillFails(t *testing.T) {
+	helperIdentity := testTransportIdentity(transportCodeKindHelper, 0x31)
+	directIdentity := testTransportIdentity(transportCodeKindMay, 0x32)
+	directProcess := validAdHocTransportProcess(oneNodMaySigningIdentifier, 0x32)
+	directProcess.PID = 42
+	directProcess.ParentPID = 1
+	application := applicationProcess{
+		PID: 123, ParentPID: 1,
+		Path:                  "/Applications/Verified.app/Contents/MacOS/verified",
+		DisplayName:           "Verified",
+		SigningIdentifier:     "com.example.verified",
+		TeamIdentifier:        "TEAM123456",
+		SignerName:            "Developer ID Application: Example",
+		DesignatedRequirement: []byte{0xfa, 0xde, 0x0c, 0x00},
+		CodeDirectoryHash:     bytes.Repeat([]byte{0x33}, minimumCodeDirectoryHashSize),
+		SignatureClass:        applicationSignatureDeveloperID,
+		CodeState:             applicationCodeVerified,
+		AppBundle:             true,
+		HardenedRuntime:       true,
+		CodeRuntimeVersion:    0x10000,
+	}
+
+	previousDirectResolver := applicationDirectTransportEvidenceResolver
+	previousPeerResolver := applicationSSHPeerEvidenceResolver
+	t.Cleanup(func() {
+		applicationDirectTransportEvidenceResolver = previousDirectResolver
+		applicationSSHPeerEvidenceResolver = previousPeerResolver
+	})
+	peerCalls := 0
+	revalidations := 0
+	applicationDirectTransportEvidenceResolver = func(
+		authorized authorizedTransportSet,
+	) (applicationDirectTransportEvidence, error) {
+		if !authorized.authorizes(directIdentity) {
+			t.Fatal("resolver did not receive the current exact transport")
+		}
+		return applicationDirectTransportEvidence{
+			helperIdentity: helperIdentity,
+			process:        directProcess,
+			inspectProcess: func(pid, depth int) (applicationProcess, error) {
+				t.Fatalf("resolver unexpectedly used ordinary PID inspection for pid=%d depth=%d", pid, depth)
+				return applicationProcess{}, nil
+			},
+			revalidateDirect: func() error {
+				revalidations++
+				return nil
+			},
+		}, nil
+	}
+	applicationSSHPeerEvidenceResolver = func() (applicationSSHPeerEvidence, error) {
+		peerCalls++
+		return applicationSSHPeerEvidence{
+			pid: application.PID,
+			inspectProcess: func() (applicationProcess, error) {
+				return application, nil
+			},
+		}, nil
+	}
+	authorized := authorizedTransportSet{Current: []transportCodeIdentity{directIdentity}}
+	identity, err := resolveApplicationIdentityWithAuthorizedTransports(
+		applicationEvidenceSSHPeer, authorized,
+	)
+	if err != nil || identity.Application != application.DisplayName ||
+		peerCalls != 1 || revalidations != 1 {
+		t.Fatalf("LaunchAgent SSH resolver failed: identity=%+v peer=%d revalidate=%d error=%v",
+			identity, peerCalls, revalidations, err)
+	}
+	peerCalls = 0
+	if _, err := resolveApplicationIdentityWithAuthorizedTransports(
+		applicationEvidenceParent, authorized,
+	); err == nil || peerCalls != 0 {
+		t.Fatalf("parent evidence accepted PID-1 transport or consulted SSH peer: calls=%d error=%v", peerCalls, err)
+	}
+}
+
 func TestTransportCodeIdentityAtFileRequiresExplicitHardenedAdHocRole(t *testing.T) {
 	directory := t.TempDir()
-	makeCandidate := func(name, identifier string, entitlements []byte) *os.File {
+	templateSource := filepath.Join(directory, "template.go")
+	templateBinary := filepath.Join(directory, "template")
+	if err := os.WriteFile(
+		templateSource, []byte("package main\nfunc main() {}\n"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(
+		"go", "build", "-o", templateBinary, templateSource,
+	).CombinedOutput(); err != nil {
+		t.Fatalf("build thin transport candidate: %v: %s", err, output)
+	}
+	makeCandidate := func(name, identifier string, entitlements, libraryConstraint []byte) *os.File {
 		t.Helper()
 		path := filepath.Join(directory, name)
-		if output, err := exec.Command("/bin/cp", "/bin/sleep", path).CombinedOutput(); err != nil {
+		if output, err := exec.Command("/bin/cp", templateBinary, path).CombinedOutput(); err != nil {
 			t.Fatalf("copy candidate: %v: %s", err, output)
 		}
 		arguments := []string{
@@ -191,6 +313,13 @@ func TestTransportCodeIdentityAtFileRequiresExplicitHardenedAdHocRole(t *testing
 			}
 			arguments = append(arguments, "--entitlements", entitlementsPath)
 		}
+		if libraryConstraint != nil {
+			constraintPath := filepath.Join(directory, name+".library-constraint.plist")
+			if err := os.WriteFile(constraintPath, libraryConstraint, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			arguments = append(arguments, "--library-constraint", constraintPath)
+		}
 		arguments = append(arguments, path)
 		if output, err := exec.Command("/usr/bin/codesign", arguments...).CombinedOutput(); err != nil {
 			t.Fatalf("sign candidate: %v: %s", err, output)
@@ -203,7 +332,7 @@ func TestTransportCodeIdentityAtFileRequiresExplicitHardenedAdHocRole(t *testing
 		return file
 	}
 
-	mayFile := makeCandidate("may", oneNodMaySigningIdentifier, nil)
+	mayFile := makeCandidate("may", oneNodMaySigningIdentifier, nil, nil)
 	identity, err := transportCodeIdentityAtFile(mayFile, transportCodeKindMay)
 	if err != nil {
 		t.Fatal(err)
@@ -228,33 +357,99 @@ func TestTransportCodeIdentityAtFileRequiresExplicitHardenedAdHocRole(t *testing
 	if _, err := transportCodeIdentityAtFile(writableMay, transportCodeKindMay); err == nil {
 		t.Fatal("writable staged descriptor was accepted")
 	}
-	helperFile := makeCandidate("helper", oneNodHelperSigningIdentifier, nil)
+	helperFile := makeCandidate("helper", oneNodHelperSigningIdentifier, nil, nil)
 	helperIdentity, err := transportCodeIdentityAtFile(helperFile, transportCodeKindHelper)
 	if err != nil || helperIdentity.Kind != transportCodeKindHelper {
 		t.Fatalf("valid helper candidate was rejected: identity=%+v error=%v", helperIdentity, err)
 	}
-	sshSignFile := makeCandidate("may-ssh-sign", oneNodSSHSignSigningIdentifier, nil)
+	sshSignFile := makeCandidate("may-ssh-sign", oneNodSSHSignSigningIdentifier, nil, nil)
 	sshSignIdentity, err := transportCodeIdentityAtFile(sshSignFile, transportCodeKindSSHSign)
 	if err != nil || sshSignIdentity.Kind != transportCodeKindSSHSign {
 		t.Fatalf("valid SSH adapter candidate was rejected: identity=%+v error=%v", sshSignIdentity, err)
 	}
 
-	unsafeFile := makeCandidate(
-		"unsafe-may", oneNodMaySigningIdentifier,
+	disabledLibraryValidation := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>`)
+	dlvMayFile := makeCandidate(
+		"dlv-may", oneNodMaySigningIdentifier, disabledLibraryValidation,
+		[]byte(testOnePasswordLibraryConstraintPlist),
+	)
+	if identity, err := transportCodeIdentityAtFile(
+		dlvMayFile, transportCodeKindMay,
+	); err != nil || identity.Kind != transportCodeKindMay ||
+		identity.PolicyVersion != transportConstrainedDLVPolicyVersion {
+		t.Fatalf("may candidate with the role-specific DLV entitlement was rejected: identity=%+v error=%v", identity, err)
+	}
+	dlvWithoutConstraint := makeCandidate(
+		"dlv-without-constraint", oneNodMaySigningIdentifier,
+		disabledLibraryValidation, nil,
+	)
+	if _, err := transportCodeIdentityAtFile(
+		dlvWithoutConstraint, transportCodeKindMay,
+	); err == nil {
+		t.Fatal("DLV may candidate without the exact library constraint was accepted")
+	}
+	wrongConstraint := []byte(strings.ReplaceAll(
+		testOnePasswordLibraryConstraintPlist,
+		"libop_sdk_ipc_client", "libop_sdk_lib_core",
+	))
+	dlvWithWrongConstraint := makeCandidate(
+		"dlv-with-wrong-constraint", oneNodMaySigningIdentifier,
+		disabledLibraryValidation, wrongConstraint,
+	)
+	if _, err := transportCodeIdentityAtFile(
+		dlvWithWrongConstraint, transportCodeKindMay,
+	); err == nil {
+		t.Fatal("DLV may candidate with a different library constraint was accepted")
+	}
+	constraintWithoutDLV := makeCandidate(
+		"constraint-without-dlv", oneNodMaySigningIdentifier, nil,
+		[]byte(testOnePasswordLibraryConstraintPlist),
+	)
+	if _, err := transportCodeIdentityAtFile(
+		constraintWithoutDLV, transportCodeKindMay,
+	); err == nil {
+		t.Fatal("legacy may candidate with an unexpected library constraint was accepted")
+	}
+	dlvHelperFile := makeCandidate(
+		"dlv-helper", oneNodHelperSigningIdentifier, disabledLibraryValidation,
+		[]byte(testOnePasswordLibraryConstraintPlist),
+	)
+	if _, err := transportCodeIdentityAtFile(
+		dlvHelperFile, transportCodeKindHelper,
+	); err == nil {
+		t.Fatal("helper candidate with the may-only DLV entitlement was accepted")
+	}
+	dlvSSHSignFile := makeCandidate(
+		"dlv-may-ssh-sign", oneNodSSHSignSigningIdentifier,
+		disabledLibraryValidation, []byte(testOnePasswordLibraryConstraintPlist),
+	)
+	if _, err := transportCodeIdentityAtFile(
+		dlvSSHSignFile, transportCodeKindSSHSign,
+	); err == nil {
+		t.Fatal("SSH adapter candidate with the may-only DLV entitlement was accepted")
+	}
+	dlvAndGetTaskAllowFile := makeCandidate(
+		"dlv-and-get-task-allow-may", oneNodMaySigningIdentifier,
 		[]byte(`<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>com.apple.security.cs.disable-library-validation</key><true/>
-</dict></plist>`),
+<key>com.apple.security.get-task-allow</key><true/>
+</dict></plist>`), []byte(testOnePasswordLibraryConstraintPlist),
 	)
-	if _, err := transportCodeIdentityAtFile(unsafeFile, transportCodeKindMay); err == nil {
-		t.Fatal("candidate with a dangerous runtime entitlement was accepted")
+	if _, err := transportCodeIdentityAtFile(
+		dlvAndGetTaskAllowFile, transportCodeKindMay,
+	); err == nil {
+		t.Fatal("may candidate with DLV plus another runtime exception was accepted")
 	}
 	unknownExceptionFile := makeCandidate(
 		"unknown-exception-may", oneNodMaySigningIdentifier,
 		[]byte(`<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>com.apple.security.cs.future-injection-exception</key><true/>
-</dict></plist>`),
+</dict></plist>`), nil,
 	)
 	if _, err := transportCodeIdentityAtFile(
 		unknownExceptionFile, transportCodeKindMay,
@@ -289,9 +484,24 @@ func main() { time.Sleep(30 * time.Second) }
 	if output, err := exec.Command("go", "build", "-o", path, sourcePath).CombinedOutput(); err != nil {
 		t.Fatalf("build candidate: %v: %s", err, output)
 	}
+	entitlementsPath := filepath.Join(directory, "may.entitlements.plist")
+	if err := os.WriteFile(entitlementsPath, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	constraintPath := filepath.Join(directory, "may.library-constraint.plist")
+	if err := os.WriteFile(
+		constraintPath, []byte(testOnePasswordLibraryConstraintPlist), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	if output, err := exec.Command(
 		"/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime",
-		"--identifier", oneNodMaySigningIdentifier, path,
+		"--identifier", oneNodMaySigningIdentifier,
+		"--entitlements", entitlementsPath,
+		"--library-constraint", constraintPath, path,
 	).CombinedOutput(); err != nil {
 		t.Fatalf("sign candidate: %v: %s", err, output)
 	}
@@ -316,6 +526,9 @@ func main() { time.Sleep(30 * time.Second) }
 	process, err := inspectApplicationProcessByPID(command.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if process.DangerousEntitlements != dangerousCodeEntitlementDisableLibraryValidation {
+		t.Fatalf("dynamic DLV mask = %#x, want only DLV", process.DangerousEntitlements)
 	}
 	dynamicIdentity, err := newTransportCodeIdentity(
 		process, transportCodeKindMay, oneNodMaySigningIdentifier,

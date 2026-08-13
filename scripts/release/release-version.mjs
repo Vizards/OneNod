@@ -54,6 +54,28 @@ export function compareProductVersions(left, right) {
   return semver.compare(first.version, second.version);
 }
 
+export function releaseUpgradeVersionPolicy(upgrade, releaseVersion) {
+  const minimumSafe = parseStableVersion(upgrade?.minimum_safe_version);
+  if (minimumSafe === null) {
+    return "minimum safe version must be a stable product version";
+  }
+  const minimumUpdater = parseProductVersion(upgrade?.minimum_updater_version);
+  if (minimumUpdater === null) {
+    return "minimum updater version must be a product version";
+  }
+  const release = parseProductVersion(releaseVersion);
+  if (release === null) {
+    return "release version must be a product version";
+  }
+  if (compareProductVersions(minimumSafe.version, release.version) > 0) {
+    return "minimum safe version cannot exceed the published release";
+  }
+  if (compareProductVersions(minimumUpdater.version, release.version) > 0) {
+    return "minimum updater version cannot exceed the published release";
+  }
+  return null;
+}
+
 export function releaseChannelPolicy(contract, version) {
   const parsed = parseProductVersion(version);
   if (parsed === null) return null;

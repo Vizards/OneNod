@@ -21,12 +21,17 @@ const (
 	applicationIdentityPlatform  = "macos"
 	applicationIdentityAssurance = "verified-code-signature"
 
-	maximumApplicationAncestryDepth  = 16
-	maximumDesignatedRequirementSize = 64 * 1024
-	minimumCodeDirectoryHashSize     = 20
-	maximumCodeDirectoryHashSize     = 64
-	maximumAuthorizedTransportCount  = 8
-	transportRuntimePolicyVersion    = 1
+	maximumApplicationAncestryDepth      = 16
+	maximumDesignatedRequirementSize     = 64 * 1024
+	minimumCodeDirectoryHashSize         = 20
+	maximumCodeDirectoryHashSize         = 64
+	maximumAuthorizedTransportCount      = 8
+	transportRuntimePolicyVersion        = 1
+	transportConstrainedDLVPolicyVersion = 2
+	transportOnePasswordConstraintSize   = 161
+	transportOnePasswordConstraintSHA256 = "\x87\x7d\x4e\x04\x7e\x1a\x24\x6c" +
+		"\xc3\x0f\x54\xde\xbe\x56\x6a\xf3\x07\xed\x88\x51\x87\x6b\x5d\x20" +
+		"\xf9\x06\xf8\x65\xe4\x1c\xc7\x5f"
 
 	oneNodHelperSigningIdentifier  = "com.github.vizards.onenod.keychain-helper"
 	oneNodMaySigningIdentifier     = "com.github.vizards.onenod.may"
@@ -282,11 +287,15 @@ func newTransportCodeIdentity(
 	expectedSigningIdentifier string,
 ) (transportCodeIdentity, error) {
 	identifierForKind, kindIsValid := signingIdentifierForTransportKind(kind)
+	policyVersion, entitlementsAllowed := transportCodePolicyVersion(
+		kind, process.DangerousEntitlements,
+	)
 	if process.CodeState != applicationCodeAdHoc ||
 		process.SignatureClass != applicationSignatureAdHoc ||
-		!process.HardenedRuntime || process.DangerousEntitlements != 0 ||
+		!process.HardenedRuntime ||
 		process.LinkerSigned || process.CodeRuntimeVersion == 0 ||
 		!kindIsValid || identifierForKind != expectedSigningIdentifier ||
+		!entitlementsAllowed ||
 		process.SigningIdentifier != expectedSigningIdentifier ||
 		process.TeamIdentifier != "" ||
 		!safeIdentityField(process.SigningIdentifier, 1024) ||
@@ -297,7 +306,7 @@ func newTransportCodeIdentity(
 	}
 	return transportCodeIdentity{
 		Kind:                  kind,
-		PolicyVersion:         transportRuntimePolicyVersion,
+		PolicyVersion:         policyVersion,
 		SignatureClass:        process.SignatureClass,
 		SigningIdentifier:     process.SigningIdentifier,
 		CodeDirectoryHash:     append([]byte(nil), process.CodeDirectoryHash...),
@@ -305,6 +314,50 @@ func newTransportCodeIdentity(
 		HardenedRuntime:       process.HardenedRuntime,
 		CodeRuntimeVersion:    process.CodeRuntimeVersion,
 	}, nil
+}
+
+func transportCodePolicyVersion(kind transportCodeKind, entitlements uint32) (uint32, bool) {
+	switch kind {
+	case transportCodeKindHelper, transportCodeKindSSHSign:
+		return transportRuntimePolicyVersion, entitlements == 0
+	case transportCodeKindMay:
+		switch entitlements {
+		case 0:
+			return transportRuntimePolicyVersion, true
+		case dangerousCodeEntitlementDisableLibraryValidation:
+			// Static candidate inspection additionally requires the exact signed
+			// library-load constraint before this v2 identity may be staged. A
+			// running parent is then bound to that inspected candidate by its exact
+			// CDHash and designated requirement.
+			return transportConstrainedDLVPolicyVersion, true
+		default:
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+}
+
+func transportLibraryConstraintAllowed(
+	identity transportCodeIdentity,
+	constraintBlob []byte,
+) bool {
+	switch identity.PolicyVersion {
+	case transportRuntimePolicyVersion:
+		// The v1 policy has no runtime exception requiring a load constraint.
+		// Rejecting unexpected slots keeps every fixed transport role on one
+		// auditable signature shape.
+		return len(constraintBlob) == 0
+	case transportConstrainedDLVPolicyVersion:
+		if identity.Kind != transportCodeKindMay ||
+			len(constraintBlob) != transportOnePasswordConstraintSize {
+			return false
+		}
+		digest := sha256.Sum256(constraintBlob)
+		return bytes.Equal(digest[:], []byte(transportOnePasswordConstraintSHA256))
+	default:
+		return false
+	}
 }
 
 func sameTransportCodeIdentity(first, second transportCodeIdentity) bool {
@@ -328,8 +381,13 @@ func validTransportCodeIdentityShape(
 	expectedKind transportCodeKind,
 ) bool {
 	expectedIdentifier, ok := signingIdentifierForTransportKind(expectedKind)
+	policyIsValid := identity.PolicyVersion == transportRuntimePolicyVersion
+	if expectedKind == transportCodeKindMay {
+		policyIsValid = policyIsValid ||
+			identity.PolicyVersion == transportConstrainedDLVPolicyVersion
+	}
 	return ok && identity.Kind == expectedKind &&
-		identity.PolicyVersion == transportRuntimePolicyVersion &&
+		policyIsValid &&
 		identity.SignatureClass == applicationSignatureAdHoc &&
 		identity.SigningIdentifier == expectedIdentifier &&
 		identity.TeamIdentifier == "" && identity.HardenedRuntime &&

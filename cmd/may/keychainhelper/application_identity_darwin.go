@@ -20,17 +20,42 @@ import (
 
 const inheritedSSHPeerDescriptor = 3
 
-// validateAcceptedSSHPeerSocketForTesting is a narrow test seam for exercising
-// accepted/client/socketpair role checks at a temporary socket path. Production
-// evidence never accepts a caller-provided path; resolveApplicationIdentity
-// always calls helper_peer_audit_token, which derives ~/.onenod/agent.sock from
-// the account database and checks its accepted-socket shape. The path and
-// inode are not an authentication boundary; exact caller SecCode authorization
-// is required separately before this evidence can produce a verified result.
-func validateAcceptedSSHPeerSocketForTesting(descriptor int, expectedPath string) error {
+type applicationEvidenceContext struct {
+	helperIdentity   transportCodeIdentity
+	startPID         int
+	inspectProcess   func(int, int) (applicationProcess, error)
+	revalidateDirect func() error
+}
+
+type applicationDirectTransportEvidence struct {
+	helperIdentity   transportCodeIdentity
+	process          applicationProcess
+	inspectProcess   func(int, int) (applicationProcess, error)
+	revalidateDirect func() error
+}
+
+type applicationSSHPeerEvidence struct {
+	pid            int
+	inspectProcess func() (applicationProcess, error)
+}
+
+var (
+	applicationDirectTransportEvidenceResolver = resolveApplicationDirectTransportEvidence
+	applicationSSHPeerEvidenceResolver         = resolveApplicationSSHPeerEvidence
+)
+
+// acceptedSSHPeerPIDAtPathForTesting and its validation wrapper are narrow test
+// seams for exercising accepted/client/socketpair role checks at a temporary
+// socket path. Production evidence never accepts a caller-provided path;
+// resolveApplicationIdentity always calls helper_peer_audit_token, which derives
+// ~/.onenod/agent.sock from the account database and checks its accepted-socket
+// shape. The path and inode are not an authentication boundary; exact caller
+// SecCode authorization is required separately before this evidence can produce
+// a verified result.
+func acceptedSSHPeerPIDAtPathForTesting(descriptor int, expectedPath string) (int, error) {
 	if descriptor < 0 || expectedPath == "" || !filepath.IsAbs(expectedPath) ||
 		filepath.Clean(expectedPath) != expectedPath || strings.IndexByte(expectedPath, 0) >= 0 {
-		return errors.New("test SSH peer socket path is invalid")
+		return 0, errors.New("test SSH peer socket path is invalid")
 	}
 	cPath := C.CString(expectedPath)
 	defer C.free(unsafe.Pointer(cPath))
@@ -41,9 +66,14 @@ func validateAcceptedSSHPeerSocketForTesting(descriptor int, expectedPath string
 		C.int(descriptor), C.uid_t(os.Geteuid()), cPath, C.size_t(len(expectedPath)),
 		&token, &peerPID, &systemError,
 	) != 0 {
-		return fmt.Errorf("SSH peer socket is not an accepted fixed-path connection (system status %d)", int(systemError))
+		return 0, fmt.Errorf("SSH peer socket is not an accepted fixed-path connection (system status %d)", int(systemError))
 	}
-	return nil
+	return int(peerPID), nil
+}
+
+func validateAcceptedSSHPeerSocketForTesting(descriptor int, expectedPath string) error {
+	_, err := acceptedSSHPeerPIDAtPathForTesting(descriptor, expectedPath)
+	return err
 }
 
 func resolveApplicationIdentity(evidence string) (applicationIdentity, error) {
@@ -62,58 +92,19 @@ func resolveApplicationIdentityWithAuthorizedTransports(
 	if err := validateApplicationEvidence(evidence); err != nil {
 		return applicationIdentity{}, err
 	}
-	expectedEUID := C.uid_t(os.Geteuid())
-	helperIdentity, err := currentHelperTransportCodeIdentity()
+	context, err := resolveApplicationEvidenceContext(evidence, authorized)
 	if err != nil {
-		return applicationIdentity{}, fmt.Errorf("helper code identity is unavailable: %w", err)
-	}
-	startPID := 0
-	directTransportPID := os.Getppid()
-	directTransport, directTransportIdentity, err := inspectOneNodTransportProcess(
-		directTransportPID, nil, expectedEUID, helperIdentity,
-		transportCodeKindMay, authorized,
-	)
-	if err != nil {
-		return applicationIdentity{}, fmt.Errorf(
-			"application evidence transport is unavailable: %w", err,
-		)
-	}
-	if directTransport.ParentPID <= 1 || directTransport.ParentPID == directTransport.PID {
-		return applicationIdentity{}, errors.New("application evidence transport has no stable parent")
-	}
-	var peerToken C.audit_token_t
-	usePeerToken := false
-	var systemError C.int
-
-	switch evidence {
-	case applicationEvidenceParent:
-		startPID = directTransport.ParentPID
-	case applicationEvidenceSSHPeer:
-		var peerPID C.pid_t
-		if result := C.helper_peer_audit_token(
-			C.int(inheritedSSHPeerDescriptor), expectedEUID,
-			&peerToken, &peerPID, &systemError,
-		); result != 0 || peerPID <= 1 {
-			return applicationIdentity{}, fmt.Errorf(
-				"SSH peer application evidence is unavailable (system status %d)", int(systemError),
-			)
-		}
-		startPID = int(peerPID)
-		usePeerToken = true
+		return applicationIdentity{}, err
 	}
 
 	visited := make(map[int]struct{}, maximumApplicationAncestryDepth)
 	var child *applicationProcess
-	for depth, pid := 0, startPID; depth < maximumApplicationAncestryDepth && pid > 1; depth++ {
+	for depth, pid := 0, context.startPID; depth < maximumApplicationAncestryDepth && pid > 1; depth++ {
 		if _, repeated := visited[pid]; repeated {
 			return applicationIdentity{}, errors.New("process ancestry contains a cycle")
 		}
 		visited[pid] = struct{}{}
-		var token *C.audit_token_t
-		if usePeerToken && depth == 0 {
-			token = &peerToken
-		}
-		process, err := inspectApplicationProcess(pid, token, expectedEUID)
+		process, err := context.inspectProcess(pid, depth)
 		if err != nil {
 			return applicationIdentity{}, err
 		}
@@ -122,28 +113,24 @@ func resolveApplicationIdentityWithAuthorizedTransports(
 			if processStartedAfter(process, *child) || C.helper_validate_process_link(
 				C.pid_t(child.PID), C.pid_t(process.PID),
 				C.uint64_t(child.StartSeconds), C.uint64_t(child.StartMicroseconds),
-				expectedEUID, &systemError,
+				C.uid_t(os.Geteuid()), &systemError,
 			) != 0 {
 				return applicationIdentity{}, errors.New("process ancestry changed during application verification")
 			}
 		}
 		if evidence == applicationEvidenceSSHPeer &&
-			isTransparentOneNodTransport(process, helperIdentity, authorized) {
+			isTransparentOneNodTransport(process, context.helperIdentity, authorized) {
 			if process.ParentPID <= 1 || process.ParentPID == process.PID {
 				return applicationIdentity{}, errors.New("OneNod SSH transport has no stable parent")
 			}
-			if err := revalidateDirectTransport(
-				directTransport, directTransportIdentity, helperIdentity, authorized,
-			); err != nil {
+			if err := context.revalidateDirect(); err != nil {
 				return applicationIdentity{}, err
 			}
 			child = &process
 			pid = process.ParentPID
 			continue
 		}
-		if err := revalidateDirectTransport(
-			directTransport, directTransportIdentity, helperIdentity, authorized,
-		); err != nil {
+		if err := context.revalidateDirect(); err != nil {
 			return applicationIdentity{}, err
 		}
 		selectProcess, continueAncestry, err := applicationProcessDecision(process)
@@ -160,6 +147,130 @@ func resolveApplicationIdentityWithAuthorizedTransports(
 		pid = process.ParentPID
 	}
 	return applicationIdentity{}, errApplicationIdentityUnavailable
+}
+
+func resolveApplicationEvidenceContext(
+	evidence string,
+	authorized authorizedTransportSet,
+) (applicationEvidenceContext, error) {
+	direct, err := applicationDirectTransportEvidenceResolver(authorized)
+	if err != nil {
+		return applicationEvidenceContext{}, err
+	}
+	var peer applicationSSHPeerEvidence
+	startPID, err := applicationEvidenceStartPID(evidence, direct.process, func() (int, error) {
+		var peerErr error
+		peer, peerErr = applicationSSHPeerEvidenceResolver()
+		if peerErr != nil {
+			return 0, peerErr
+		}
+		return peer.pid, nil
+	})
+	if err != nil {
+		return applicationEvidenceContext{}, err
+	}
+	return applicationEvidenceContext{
+		helperIdentity: direct.helperIdentity,
+		startPID:       startPID,
+		inspectProcess: func(pid, depth int) (applicationProcess, error) {
+			if evidence == applicationEvidenceSSHPeer && depth == 0 {
+				if pid != peer.pid || peer.inspectProcess == nil {
+					return applicationProcess{}, errors.New("SSH peer application evidence changed before verification")
+				}
+				return peer.inspectProcess()
+			}
+			return direct.inspectProcess(pid, depth)
+		},
+		revalidateDirect: direct.revalidateDirect,
+	}, nil
+}
+
+func resolveApplicationDirectTransportEvidence(
+	authorized authorizedTransportSet,
+) (applicationDirectTransportEvidence, error) {
+	expectedEUID := C.uid_t(os.Geteuid())
+	helperIdentity, err := currentHelperTransportCodeIdentity()
+	if err != nil {
+		return applicationDirectTransportEvidence{}, fmt.Errorf("helper code identity is unavailable: %w", err)
+	}
+	directTransport, directTransportIdentity, err := inspectOneNodTransportProcess(
+		os.Getppid(), nil, expectedEUID, helperIdentity,
+		transportCodeKindMay, authorized,
+	)
+	if err != nil {
+		return applicationDirectTransportEvidence{}, fmt.Errorf(
+			"application evidence transport is unavailable: %w", err,
+		)
+	}
+	return applicationDirectTransportEvidence{
+		helperIdentity: helperIdentity,
+		process:        directTransport,
+		inspectProcess: func(pid, depth int) (applicationProcess, error) {
+			return inspectApplicationProcess(pid, nil, expectedEUID)
+		},
+		revalidateDirect: func() error {
+			return revalidateDirectTransport(
+				directTransport, directTransportIdentity, helperIdentity, authorized,
+			)
+		},
+	}, nil
+}
+
+func resolveApplicationSSHPeerEvidence() (applicationSSHPeerEvidence, error) {
+	expectedEUID := C.uid_t(os.Geteuid())
+	peerToken, peerPID, err := resolveInheritedSSHPeer(expectedEUID)
+	if err != nil {
+		return applicationSSHPeerEvidence{}, err
+	}
+	return applicationSSHPeerEvidence{
+		pid: peerPID,
+		inspectProcess: func() (applicationProcess, error) {
+			return inspectApplicationProcess(peerPID, &peerToken, expectedEUID)
+		},
+	}, nil
+}
+
+func resolveInheritedSSHPeer(expectedEUID C.uid_t) (C.audit_token_t, int, error) {
+	var peerToken C.audit_token_t
+	var peerPID C.pid_t
+	var systemError C.int
+	if result := C.helper_peer_audit_token(
+		C.int(inheritedSSHPeerDescriptor), expectedEUID,
+		&peerToken, &peerPID, &systemError,
+	); result != 0 || peerPID <= 1 {
+		return C.audit_token_t{}, 0, fmt.Errorf(
+			"SSH peer application evidence is unavailable (system status %d)", int(systemError),
+		)
+	}
+	return peerToken, int(peerPID), nil
+}
+
+func applicationEvidenceStartPID(
+	evidence string,
+	directTransport applicationProcess,
+	resolveSSHPeer func() (int, error),
+) (int, error) {
+	switch evidence {
+	case applicationEvidenceParent:
+		if directTransport.ParentPID <= 1 || directTransport.ParentPID == directTransport.PID {
+			return 0, errors.New("application evidence transport has no stable parent")
+		}
+		return directTransport.ParentPID, nil
+	case applicationEvidenceSSHPeer:
+		if resolveSSHPeer == nil {
+			return 0, errors.New("SSH peer application evidence is unavailable")
+		}
+		peerPID, err := resolveSSHPeer()
+		if err != nil {
+			return 0, err
+		}
+		if peerPID <= 1 {
+			return 0, errors.New("SSH peer application evidence is unavailable")
+		}
+		return peerPID, nil
+	default:
+		return 0, errApplicationEvidenceInvalid
+	}
 }
 
 // currentHelperTransportCodeIdentity returns the exact identity of this
@@ -227,7 +338,22 @@ func transportCodeIdentityAtFile(
 	if err != nil {
 		return transportCodeIdentity{}, err
 	}
-	return newTransportCodeIdentity(process, expectedKind, identifier)
+	identity, err := newTransportCodeIdentity(process, expectedKind, identifier)
+	if err != nil {
+		return transportCodeIdentity{}, err
+	}
+	constraintBlob, err := transportLibraryConstraintBlob(
+		file, identity.CodeDirectoryHash,
+	)
+	if err != nil {
+		return transportCodeIdentity{}, fmt.Errorf(
+			"static transport library constraint is unavailable: %w", err,
+		)
+	}
+	if !transportLibraryConstraintAllowed(identity, constraintBlob) {
+		return transportCodeIdentity{}, errors.New("static transport library constraint is not trusted")
+	}
+	return identity, nil
 }
 
 func inspectOneNodTransportProcess(

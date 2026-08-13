@@ -10,6 +10,7 @@ import (
 )
 
 func TestItemCreateUsesClosedStdinSpecAndNeverLogsFieldValues(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	credential, err := credentialFromSeed("test-requester")
 	if err != nil {
 		t.Fatal(err)

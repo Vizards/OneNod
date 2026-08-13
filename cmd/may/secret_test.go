@@ -31,6 +31,7 @@ func TestSecretValueIsSuppressedWithoutRaw(t *testing.T) {
 }
 
 func TestReferenceReadResolvesExactItemAndFieldThenPrintsOnlyTheValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	credential, err := credentialFromSeed("test-requester")
 	if err != nil {
 		t.Fatal(err)
