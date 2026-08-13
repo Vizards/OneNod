@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,6 +14,9 @@ import (
 )
 
 func TestLocalFallbackConfigurationGuidesAndVerifiesAgentVault(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("local 1Password fallback requires macOS")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	vaultID := strings.Repeat("a", 26)
