@@ -13,9 +13,6 @@ import (
 )
 
 func runLocalUpdate(args []string, deps dependencies) error {
-	if err := reconcileInterruptedTransportUpdate(deps); err != nil {
-		return err
-	}
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	flags.SetOutput(deps.stderr)
 	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
@@ -28,6 +25,26 @@ func runLocalUpdate(args []string, deps dependencies) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("usage: may update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
+	}
+	if _, err := requireCanonicalLocalUpdateHome(); err != nil {
+		return err
+	}
+	beforeRecoveryActor, err := snapshotCurrentLocalUpdateActor()
+	if err != nil {
+		return err
+	}
+	if reexecuted, err := bootstrapLocalUpdateRecovery(
+		*channelValue, *versionValue, beforeRecoveryActor,
+	); err != nil || reexecuted {
+		return err
+	}
+	if err := reconcileInterruptedTransportUpdate(deps); err != nil {
+		return err
+	}
+	if reexecuted, err := reexecuteLocalUpdateAfterRecovery(
+		beforeRecoveryActor, *versionValue, deps,
+	); err != nil || reexecuted {
+		return err
 	}
 	receipt, found, err := readLocalInstallReceipt()
 	if err != nil {
