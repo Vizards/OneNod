@@ -19,6 +19,9 @@ const manifestPath = resolve(repositoryRoot, ".release-please-manifest.json");
 const contractPath = resolve(import.meta.dirname, "release-contract.json");
 
 const workflowSha = strictCommit(options.sha);
+const publishedReleaseTags = await readPublishedReleaseTags(
+  options.publishedReleaseTagsPath,
+);
 let sourceSha = workflowSha;
 let manifest;
 let contract;
@@ -49,7 +52,7 @@ if (options.event === "push") {
       );
     }
     ensurePublicVersion(version);
-    requireNewVersionAfterAllTags(version, sourceSha);
+    requireNewVersionAfterAllTags(version, sourceSha, publishedReleaseTags);
     previousVersion = version === "0.0.1" ? "" : candidatePreviousVersion;
     shouldRelease = true;
     reason = "manifest_version_advanced";
@@ -64,6 +67,7 @@ if (options.event === "push") {
     ensurePublicVersion(version);
     const parsed = parseProductVersion(version);
     sourceSha = exactLightweightTagCommit(`v${version}`);
+    requireRetryableUnpublishedTag(version, publishedReleaseTags);
     if (parsed.channel !== "alpha") requireAncestor(sourceSha, workflowSha);
     manifest = readRecordAt(
       sourceSha,
@@ -88,7 +92,11 @@ if (options.event === "push") {
       previousVersion = previousStableReleaseVersion(sourceSha, version);
     } else {
       strictStableVersion(manifest["."], "tagged stable baseline version");
-      previousVersion = artifactPredecessorVersion(sourceSha, version);
+      previousVersion = artifactPredecessorVersion(
+        sourceSha,
+        version,
+        publishedReleaseTags,
+      );
     }
     shouldRelease = true;
     reason = "manual_retry";
@@ -153,8 +161,12 @@ if (options.event === "push") {
     if (compareProductVersions(version, stableBaseline) <= 0) {
       fail(`prerelease ${version} must be newer than stable baseline ${stableBaseline}`);
     }
-    requireNewVersionAfterAllTags(version, sourceSha);
-    previousVersion = artifactPredecessorVersion(sourceSha, version);
+    requireNewVersionAfterAllTags(version, sourceSha, publishedReleaseTags);
+    previousVersion = artifactPredecessorVersion(
+      sourceSha,
+      version,
+      publishedReleaseTags,
+    );
     shouldRelease = true;
     reason = `derived_${options.intent}`;
   } else {
@@ -195,7 +207,7 @@ const helperSourceDigest = strictDigest(
   "Keychain helper source digest",
 );
 const artifactPredecessor = shouldRelease
-  ? artifactPredecessorVersion(sourceSha, version)
+  ? artifactPredecessorVersion(sourceSha, version, publishedReleaseTags)
   : "";
 
 const result = {
@@ -209,6 +221,7 @@ const result = {
         version,
         helperVersion,
         helperSourceDigest,
+        publishedReleaseTags,
       )
     : false,
   helper_source_digest: helperSourceDigest,
@@ -240,6 +253,7 @@ function parseOptions(args) {
     event: "",
     intent: "",
     output: "",
+    publishedReleaseTagsPath: "",
     ref: "",
     sha: "",
     sourceSha: "",
@@ -258,6 +272,9 @@ function parseOptions(args) {
         break;
       case "--output":
         parsed.output = value;
+        break;
+      case "--published-release-tags":
+        parsed.publishedReleaseTagsPath = value;
         break;
       case "--ref":
         parsed.ref = value;
@@ -284,12 +301,46 @@ function parseOptions(args) {
   ) {
     fail("automatic releases cannot declare manual version or source inputs");
   }
-  if (parsed.event === "" || parsed.ref === "" || parsed.sha === "") {
+  if (
+    parsed.event === "" ||
+    parsed.ref === "" ||
+    parsed.sha === "" ||
+    parsed.publishedReleaseTagsPath === ""
+  ) {
     fail(
-      "usage: derive-release.mjs --event <push|workflow_dispatch> --ref <git-ref> --sha <commit> [--intent <retry|alpha|beta>] [--source-sha <commit>] [--version-input <retry-version>] [--output <path>]",
+      "usage: derive-release.mjs --event <push|workflow_dispatch> --ref <git-ref> --sha <commit> --published-release-tags <path> [--intent <retry|alpha|beta>] [--source-sha <commit>] [--version-input <retry-version>] [--output <path>]",
     );
   }
   return parsed;
+}
+
+async function readPublishedReleaseTags(path) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(resolve(path), "utf8"));
+  } catch {
+    fail("published release tags must be a readable JSON array");
+  }
+  if (!Array.isArray(parsed)) {
+    fail("published release tags must be a JSON array");
+  }
+  const availableTags = new Map(releaseTags().map((entry) => [entry.tag, entry]));
+  const published = new Set();
+  for (const tag of parsed) {
+    if (typeof tag !== "string") {
+      fail("published release tag names must be strings");
+    }
+    const version = tag.startsWith("v") ? parseProductVersion(tag.slice(1)) : null;
+    if (version === null) continue;
+    if (!availableTags.has(tag)) {
+      fail(`published release tag ${tag} is not an available lightweight product tag`);
+    }
+    if (published.has(tag)) {
+      fail(`published release tag ${tag} is duplicated`);
+    }
+    published.add(tag);
+  }
+  return published;
 }
 
 function requireMainRef(label) {
@@ -520,8 +571,13 @@ function nextPrereleaseVersion(target, channel) {
   return `${prefix}${sequence + 1}`;
 }
 
-function artifactPredecessorVersion(sourceShaValue, currentVersion) {
+function artifactPredecessorVersion(
+  sourceShaValue,
+  currentVersion,
+  publishedReleaseTags,
+) {
   const candidates = releaseTags()
+    .filter(({ tag }) => publishedReleaseTags.has(tag))
     .filter(({ version: candidate }) => compareProductVersions(candidate, currentVersion) < 0)
     .sort((left, right) => compareProductVersions(right.version, left.version));
   if (candidates.length === 0) return "";
@@ -535,19 +591,30 @@ function artifactPredecessorVersion(sourceShaValue, currentVersion) {
   return predecessor.version;
 }
 
-function requireNewVersionAfterAllTags(currentVersion, sourceShaValue) {
+function requireNewVersionAfterAllTags(
+  currentVersion,
+  sourceShaValue,
+  publishedReleaseTags,
+) {
   const newest = releaseTags().sort((left, right) =>
     compareProductVersions(right.version, left.version),
   )[0];
   if (newest === undefined) return;
-  const current = parseProductVersion(currentVersion);
   const previous = parseProductVersion(newest.version);
+  const currentCore = productVersionCore(currentVersion);
+  const previousCore = productVersionCore(newest.version);
+  if (previous.channel !== "stable" && currentCore !== previousCore) {
+    fail(
+      `release train ${previousCore} must reach stable before starting ${currentCore}`,
+    );
+  }
   if (
-    previous.channel !== "stable" &&
-    current.version.split("-", 1)[0] !== previous.version.split("-", 1)[0]
+    previous.channel === "stable" &&
+    currentCore !== previousCore &&
+    !publishedReleaseTags.has(newest.tag)
   ) {
     fail(
-      `release train ${previous.version.split("-", 1)[0]} must reach stable before starting ${current.version.split("-", 1)[0]}`,
+      `release train ${previousCore} must publish stable before starting ${currentCore}`,
     );
   }
   const comparison = compareProductVersions(currentVersion, newest.version);
@@ -555,6 +622,21 @@ function requireNewVersionAfterAllTags(currentVersion, sourceShaValue) {
   if (comparison <= 0) {
     fail(
       `new release ${currentVersion} must be newer than existing official tag ${newest.tag}`,
+    );
+  }
+}
+
+function requireRetryableUnpublishedTag(currentVersion, publishedReleaseTags) {
+  const currentTag = `v${currentVersion}`;
+  if (publishedReleaseTags.has(currentTag)) {
+    fail(`manual release retry requires ${currentTag} to remain unpublished`);
+  }
+  const newer = releaseTags().find(
+    ({ version }) => compareProductVersions(version, currentVersion) > 0,
+  );
+  if (newer !== undefined) {
+    fail(
+      `manual release retry for ${currentTag} is stale after newer official tag ${newer.tag}`,
     );
   }
 }
@@ -570,6 +652,7 @@ function helperChanged(
   currentProductVersion,
   currentHelperVersion,
   currentSourceDigest,
+  publishedReleaseTags,
 ) {
   if (predecessorVersion === "") return true;
   const previous = releaseContractAt(
@@ -593,7 +676,7 @@ function helperChanged(
     if (compareProductVersions(currentHelperVersion, previousHelperVersion) <= 0) {
       fail("Keychain helper version must increase when its production source changes");
     }
-    for (const tag of releaseTags()) {
+    for (const tag of releaseTags().filter(({ tag }) => publishedReleaseTags.has(tag))) {
       if (compareProductVersions(tag.version, currentProductVersion) >= 0) continue;
       const historical = releaseContractAt(tag.version, `release contract ${tag.tag}`);
       if (historical.components?.keychain_helper?.version === currentHelperVersion) {

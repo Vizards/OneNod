@@ -55,6 +55,62 @@ test("prepare verifies the exact selected source before authorization", () => {
   );
 });
 
+test("candidate numbering cannot promote an unpublished tag into release lineage", () => {
+  const changed = replaceOnce(
+    workflow,
+    "select(.draft == false and .immutable == true)",
+    "select(.draft == false)",
+  );
+  assert.throws(
+    () => validateReleaseWorkflow(changed),
+    /read-only, signed-source plan/u,
+  );
+});
+
+test("published lineage inventory remains complete and versioned", () => {
+  for (const [before, after] of [
+    ["gh api --paginate --slurp", "gh api --slurp"],
+    ["X-GitHub-Api-Version: 2026-03-10", "X-GitHub-Api-Version: 2022-11-28"],
+    [".draft == false and .immutable == true", ".immutable == true"],
+    [
+      '> "$RUNNER_TEMP/published-release-tags.json"',
+      '> "$RUNNER_TEMP/wrong-release-tags.json"',
+    ],
+  ]) {
+    const changed = replaceOnce(workflow, before, after);
+    assert.throws(
+      () => validateReleaseWorkflow(changed),
+      /read-only, signed-source plan/u,
+    );
+  }
+});
+
+test("the predecessor must retain official main-workflow provenance", () => {
+  for (const [before, after] of [
+    ["gh attestation verify", "echo attestation skipped"],
+    [
+      '--bundle "$lineage_dir/onenod-provenance.intoto.jsonl"',
+      '--bundle "$lineage_dir/untrusted-provenance.intoto.jsonl"',
+    ],
+    [
+      "--predicate-type https://slsa.dev/provenance/v1",
+      "--predicate-type https://example.invalid/untrusted/v1",
+    ],
+    [
+      "--signer-workflow github.com/Vizards/OneNod/.github/workflows/release.yml",
+      "--signer-workflow github.com/example/fork/.github/workflows/release.yml",
+    ],
+    ["--source-ref refs/heads/main", "--source-ref refs/heads/untrusted"],
+    ["--deny-self-hosted-runners", "--format json"],
+  ]) {
+    const changed = replaceOnce(workflow, before, after);
+    assert.throws(
+      () => validateReleaseWorkflow(changed),
+      /read-only, signed-source plan/u,
+    );
+  }
+});
+
 test("native artifacts cannot silently lose exact-build signing", () => {
   const changed = workflow.replaceAll("              --options runtime \\\n", "");
   assert.notEqual(changed, workflow);
