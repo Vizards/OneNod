@@ -9,7 +9,6 @@ import {
   sanitizeItemReconciliationEnvelope,
   sanitizeSecretMetadataEnvelope,
   sanitizeSecretReadEnvelope,
-  sanitizeServiceAccountQuotaEnvelope,
   sanitizeSshSignEnvelope,
 } from "../src/worker/gateway-envelope.js";
 
@@ -264,59 +263,6 @@ test("SSH signature envelopes pin the approved item, version, fingerprint, and a
       },
       200,
       expected,
-    ),
-  );
-});
-
-test("service-account quota accepts only paired authoritative counts and confirmed exhaustion", () => {
-  assert.deepEqual(
-    sanitizeServiceAccountQuotaEnvelope(
-      {
-        daily_limit: null,
-        daily_remaining: null,
-        exhausted: true,
-        exhausted_at: "2026-08-15T01:02:03.000Z",
-        ok: true,
-      },
-      200,
-    ),
-    {
-      exhausted: true,
-      exhausted_at: "2026-08-15T01:02:03.000Z",
-    },
-  );
-  assert.deepEqual(
-    sanitizeServiceAccountQuotaEnvelope(
-      {
-        daily_limit: 1_000,
-        daily_remaining: 999,
-        exhausted: false,
-        ok: true,
-      },
-      200,
-    ),
-    { daily_limit: 1_000, daily_remaining: 999, exhausted: false },
-  );
-  assert.throws(() =>
-    sanitizeServiceAccountQuotaEnvelope(
-      {
-        daily_limit: 1_000,
-        daily_remaining: null,
-        exhausted: false,
-        ok: true,
-      },
-      200,
-    ),
-  );
-  assert.throws(() =>
-    sanitizeServiceAccountQuotaEnvelope(
-      {
-        daily_limit: 1_000,
-        daily_remaining: 1_001,
-        exhausted: false,
-        ok: true,
-      },
-      200,
     ),
   );
 });

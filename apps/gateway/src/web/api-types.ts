@@ -123,14 +123,6 @@ export interface AuthorizationSummary {
   serverTime: string;
 }
 
-export interface ServiceAccountQuota {
-  dailyLimit?: number;
-  dailyRemaining?: number;
-  exhausted: boolean;
-  exhaustedAt?: string;
-  lastSuccessAt?: string;
-}
-
 export interface WebAuthnOptionsEnvelope<TOptions> {
   challenge_id: string;
   options: TOptions;

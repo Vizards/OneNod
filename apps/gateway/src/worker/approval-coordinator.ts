@@ -354,10 +354,6 @@ export class ApprovalCoordinator extends DurableObject<Env> {
     if (request.method === "GET" && path === "/v1/human/management") {
       return this.humanManagement.humanManagement(request);
     }
-    if (request.method === "GET" && path === "/v1/human/onepassword-quota") {
-      await this.human.requireHumanSession(request);
-      return json(await this.executor.executeServiceAccountQuota());
-    }
     if (
       request.method === "GET" &&
       path === "/v1/human/authorizations/summary"

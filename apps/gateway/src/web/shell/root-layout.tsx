@@ -5,7 +5,6 @@ import { Link, Outlet } from "@tanstack/react-router";
 import {
   getAuthorizationSummary,
   getHumanState,
-  getServiceAccountQuota,
   getSystemHealth,
 } from "../api";
 import { BootstrapPage, DeviceSetupPage, LoginPage } from "../auth/human-gate";
@@ -34,13 +33,6 @@ export function RootLayout() {
     enabled: trusted,
     queryFn: getAuthorizationSummary,
     queryKey: ["authorization-summary"],
-    refetchOnWindowFocus: "always",
-  });
-  const serviceAccountQuota = useQuery({
-    enabled: trusted,
-    queryFn: getServiceAccountQuota,
-    queryKey: ["service-account-quota"],
-    refetchInterval: 60_000,
     refetchOnWindowFocus: "always",
   });
   useHumanRealtime(trusted);
@@ -76,28 +68,9 @@ export function RootLayout() {
       >
         Skip to main content
       </a>
-      <header className="fixed inset-x-0 top-0 z-40 border-b border-subtle bg-background/80 pt-[env(safe-area-inset-top)] backdrop-blur-2xl">
-        <div className="mx-auto flex h-16 max-w-[960px] items-center justify-between px-4 sm:px-6">
-          <Link
-            to="/requests"
-            aria-label="Approval queue"
-            className="flex items-center gap-3 rounded-control"
-          >
-            <span
-              className="grid size-8 place-items-center rounded-control border border-subtle bg-muted font-mono text-xs font-semibold"
-              aria-hidden="true"
-            >
-              NOD
-            </span>
-            <span className="text-sm font-medium tracking-[-0.01em]">OneNod</span>
-          </Link>
-          <RefreshPageButton />
-        </div>
-      </header>
-
       <main
         id="main-content"
-        className="mx-auto min-w-0 max-w-[960px] px-4 pb-[calc(7.5rem+env(safe-area-inset-bottom))] pt-[calc(5.25rem+env(safe-area-inset-top))] sm:px-6 sm:pt-[calc(7rem+env(safe-area-inset-top))]"
+        className="mx-auto min-w-0 max-w-[960px] px-4 pb-[calc(7.5rem+env(safe-area-inset-bottom))] pt-[calc(1.5rem+env(safe-area-inset-top))] sm:px-6 sm:pt-[calc(3rem+env(safe-area-inset-top))]"
       >
         {health.isError ? (
           <button
@@ -121,19 +94,6 @@ export function RootLayout() {
             >
               Reload the approval app
             </button>
-          </div>
-        ) : null}
-        {serviceAccountQuota.data?.exhausted ? (
-          <div
-            role="alert"
-            className="mb-6 rounded-card border border-danger-border bg-danger-muted px-4 py-3"
-          >
-            <p className="text-sm font-medium text-danger-text">
-              1Password Service Account quota exhausted
-            </p>
-            <p className="mt-1 text-xs text-secondary">
-              Password reads and SSH signing remain unavailable until 1Password resets the quota.
-            </p>
           </div>
         ) : null}
         {humanState.isPending ? <HumanGateSkeleton /> : null}
@@ -186,6 +146,7 @@ function BottomNavigation({
       <Link
         to="/management"
         search={{ section: "approvers" }}
+        activeOptions={{ includeSearch: false }}
         className="relative grid min-h-12 place-items-center rounded-[1.05rem] px-2 text-sm text-secondary transition-colors hover:text-foreground"
         activeProps={{ className: "bg-white/10 text-foreground" }}
       >
@@ -224,31 +185,5 @@ function NavigationBadge({ count }: { count: number }) {
     <span className="absolute -right-4 -top-2 min-w-4 rounded-pill bg-danger-text px-1 text-center font-mono text-[9px] font-semibold leading-4 text-background">
       {count > 99 ? "99+" : count}
     </span>
-  );
-}
-
-function RefreshPageButton() {
-  return (
-    <button
-      type="button"
-      aria-label="Reload the entire page"
-      title="Reload page"
-      onClick={() => window.location.reload()}
-      className="grid h-10 w-12 place-items-center rounded-pill border border-subtle bg-surface text-secondary transition-colors hover:text-foreground"
-    >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.75"
-        className="size-4"
-      >
-        <path d="M20 11a8 8 0 1 0-2.34 5.66" />
-        <path d="M20 4v7h-7" />
-      </svg>
-    </button>
   );
 }

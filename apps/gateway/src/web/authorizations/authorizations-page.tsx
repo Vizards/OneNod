@@ -10,7 +10,12 @@ import {
   revokeSecretAuthorization,
   revokeSshAuthorization,
 } from "../api";
-import { ActionError, InlineError, PagePanelSkeleton } from "../components/common";
+import {
+  ActionError,
+  InlineError,
+  PageHeading,
+  PagePanelSkeleton,
+} from "../components/common";
 import { LiveCountdown } from "../components/live-countdown";
 import { useExpiryRefresh, useServerClock } from "../hooks/live-clock";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
@@ -52,14 +57,31 @@ export function AuthorizationsPage() {
     [management.data?.secretAuthorizations, management.data?.sshAuthorizations],
   );
   useExpiryRefresh(deadlines, now, refreshAuthorizations);
+  const heading = (
+    <PageHeading
+      id="authorizations-title"
+      title="Remembered access"
+      description="Review access that can be reused without another approval."
+    />
+  );
 
-  if (management.isPending) return <PagePanelSkeleton />;
+  if (management.isPending) {
+    return (
+      <section aria-labelledby="authorizations-title">
+        {heading}
+        <PagePanelSkeleton />
+      </section>
+    );
+  }
   if (management.isError) {
     return (
-      <InlineError
-        message={toErrorMessage(management.error)}
-        onRetry={() => void management.refetch()}
-      />
+      <section aria-labelledby="authorizations-title">
+        {heading}
+        <InlineError
+          message={toErrorMessage(management.error)}
+          onRetry={() => void management.refetch()}
+        />
+      </section>
     );
   }
 
@@ -83,23 +105,10 @@ export function AuthorizationsPage() {
 
   return (
     <section aria-labelledby="authorizations-title">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <h1
-          id="authorizations-title"
-          className="text-2xl font-semibold tracking-[-0.03em]"
-        >
-          Remembered access
-        </h1>
-        <span className="rounded-pill border border-subtle px-3 py-1.5 font-mono text-xs text-secondary">
-          {authorizations.length} active
-        </span>
-      </div>
-      <p className="mt-2 text-sm text-secondary">
-        Active access that can be reused without another approval.
-      </p>
+      {heading}
 
       {authorizations.length > 0 ? (
-        <ul className="mt-8 grid gap-3">
+        <ul className="grid gap-3">
           {authorizations.map((authorization) => (
             <AuthorizationCard
               authorization={authorization}
@@ -113,7 +122,7 @@ export function AuthorizationsPage() {
           ))}
         </ul>
       ) : (
-        <div className="mt-8 rounded-card border border-subtle bg-surface p-6">
+        <div className="rounded-card border border-subtle bg-surface p-6">
           <h2 className="font-medium">No remembered access</h2>
           <p className="mt-2 text-sm leading-6 text-secondary">
             Approving once never appears here. Duration approvals will be listed
@@ -224,7 +233,7 @@ function AuthorizationEnd({
 }) {
   const value = authorization.value;
   if (value.expiresAt) {
-    return <LiveCountdown expiresAt={value.expiresAt} label="Ends" now={now} />;
+    return <LiveCountdown expiresAt={value.expiresAt} now={now} />;
   }
   if (value.duration === "until-lock") return <>When Lock mode is enabled</>;
   if (authorization.kind === "ssh" && value.duration === "until-agent-quits") {

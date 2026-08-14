@@ -26,7 +26,12 @@ import {
   type HumanDeviceSummary,
   type RequesterSummary,
 } from "../api";
-import { ActionError, InlineError, PagePanelSkeleton } from "../components/common";
+import {
+  ActionError,
+  InlineError,
+  PageHeading,
+  PagePanelSkeleton,
+} from "../components/common";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
 import { readyPushServiceWorker, settlePushStep } from "../push-registration";
 import {
@@ -133,13 +138,31 @@ export function ManagementPage() {
     }
   }
 
-  if (management.isPending) return <PagePanelSkeleton />;
+  if (management.isPending) {
+    return (
+      <section aria-labelledby="management-title">
+        <PageHeading
+          id="management-title"
+          title="Approver management"
+          description="Manage approval devices, requester Macs, and owner passkeys."
+        />
+        <PagePanelSkeleton />
+      </section>
+    );
+  }
   if (management.isError) {
     return (
-      <InlineError
-        message={toErrorMessage(management.error)}
-        onRetry={() => void management.refetch()}
-      />
+      <section aria-labelledby="management-title">
+        <PageHeading
+          id="management-title"
+          title="Approver management"
+          description="Manage approval devices, requester Macs, and owner passkeys."
+        />
+        <InlineError
+          message={toErrorMessage(management.error)}
+          onRetry={() => void management.refetch()}
+        />
+      </section>
     );
   }
 
@@ -153,17 +176,14 @@ export function ManagementPage() {
 
   return (
     <section aria-labelledby="management-title">
-      <header>
-        <h1 id="management-title" className="text-2xl font-semibold tracking-[-0.03em]">
-          Approver management
-        </h1>
-        <p className="mt-2 text-sm text-secondary">
-          Manage approval devices, requester Macs, and owner passkeys.
-        </p>
-      </header>
+      <PageHeading
+        id="management-title"
+        title="Approver management"
+        description="Manage approval devices, requester Macs, and owner passkeys."
+      />
 
       <section
-        className="mt-6 flex min-h-14 flex-wrap items-center justify-between gap-x-4 rounded-card border border-subtle bg-surface px-3 py-1.5"
+        className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 rounded-card border border-subtle bg-surface px-3 py-1.5"
         aria-labelledby="push-title"
       >
         <div className="min-w-0">
@@ -279,6 +299,7 @@ function ManagementTabs({
             type="button"
             role="tab"
             aria-controls={`${tab.value}-panel`}
+            aria-label={`${tab.label}, ${counts[tab.value]}`}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onClick={() => onSelect(tab.value)}
@@ -305,8 +326,19 @@ function ManagementTabs({
               selected ? "text-foreground" : "text-secondary"
             }`}
           >
-            {tab.label}{" "}
-            <span className="font-mono text-xs tabular-nums">{counts[tab.value]}</span>
+            <span className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
+              <span>{tab.label}</span>
+              <span
+                aria-hidden="true"
+                className={`min-w-5 rounded-pill px-1.5 py-0.5 text-center font-mono text-[10px] leading-4 tabular-nums ${
+                  selected
+                    ? "bg-white/10 text-foreground"
+                    : "bg-muted text-secondary"
+                }`}
+              >
+                {counts[tab.value]}
+              </span>
+            </span>
             {selected ? (
               <span aria-hidden="true" className="absolute inset-x-2 -bottom-px h-px bg-foreground" />
             ) : null}
@@ -508,13 +540,22 @@ function HumanDeviceCard({
   });
   useSessionExpiryRecovery(revoke.error);
   return (
-    <li className="grid min-w-0 gap-4 rounded-card border border-subtle bg-surface p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-5">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-medium">{device.label}</h3>
+    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 rounded-card border border-subtle bg-surface p-4 sm:p-5">
+      <h3 className="min-w-0 break-words pt-2.5 font-medium">{device.label}</h3>
+      <button
+        type="button"
+        aria-label={`Revoke approval device ${device.label}`}
+        disabled={!canRevoke || revoke.isPending}
+        onClick={() => revoke.mutate()}
+        className="h-11 min-w-20 shrink-0 rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40"
+      >
+        {revoke.isPending ? "Verifying…" : "Revoke"}
+      </button>
+      {device.current || device.pushEnabled ? (
+        <div className="col-span-2 flex flex-wrap items-center gap-2">
           {device.current ? (
             <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">
-              Current device
+              Current
             </span>
           ) : null}
           {device.pushEnabled ? (
@@ -523,25 +564,19 @@ function HumanDeviceCard({
             </span>
           ) : null}
         </div>
-        <p className="mt-2 text-xs text-secondary">
-          {device.platform} · last active {formatDateTime(device.lastSeenAt)}
-        </p>
-      </div>
-      <button
-        type="button"
-        disabled={!canRevoke || revoke.isPending}
-        onClick={() => revoke.mutate()}
-        className="h-11 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:w-auto"
-      >
-        {revoke.isPending ? "Verifying…" : "Revoke device"}
-      </button>
+      ) : null}
+      <p className="col-span-2 text-xs text-secondary">
+        {device.platform} · last active {formatDateTime(device.lastSeenAt)}
+      </p>
       {!canRevoke ? (
-        <p className="text-xs text-secondary sm:col-span-2">
+        <p className="col-span-2 text-xs text-secondary">
           The last approval device cannot be revoked.
         </p>
       ) : null}
       {revoke.isError ? (
-        <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+        <div className="col-span-2">
+          <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+        </div>
       ) : null}
     </li>
   );
@@ -650,39 +685,40 @@ function HumanCredentialCard({
   });
   useSessionExpiryRecovery(revoke.error);
   return (
-    <li className="grid min-w-0 gap-4 rounded-card border border-subtle bg-surface p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-5">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-medium">{credential.label}</h3>
-          {credential.current ? (
-            <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">
-              Current passkey
-            </span>
-          ) : null}
-          <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">
-            {portability}
-          </span>
-        </div>
-        <p className="mt-2 text-xs text-secondary">
-          Added {formatDateTime(credential.createdAt)} · last used{" "}
-          {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
-        </p>
-      </div>
+    <li className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 rounded-card border border-subtle bg-surface p-4 sm:p-5">
+      <h3 className="min-w-0 break-words pt-2.5 font-medium">{credential.label}</h3>
       <button
         type="button"
+        aria-label={`Revoke passkey ${credential.label}`}
         disabled={!canRevoke || revoke.isPending}
         onClick={() => revoke.mutate()}
-        className="h-11 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:w-auto"
+        className="h-11 min-w-20 shrink-0 rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40"
       >
-        {revoke.isPending ? "Verifying…" : "Revoke passkey"}
+        {revoke.isPending ? "Verifying…" : "Revoke"}
       </button>
+      <div className="col-span-2 flex flex-wrap items-center gap-2">
+        {credential.current ? (
+          <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">
+            Current
+          </span>
+        ) : null}
+        <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">
+          {portability}
+        </span>
+      </div>
+      <p className="col-span-2 text-xs text-secondary">
+        Added {formatDateTime(credential.createdAt)} · last used{" "}
+        {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
+      </p>
       {!canRevoke ? (
-        <p className="text-xs text-secondary sm:col-span-2">
+        <p className="col-span-2 text-xs text-secondary">
           The last owner passkey cannot be revoked.
         </p>
       ) : null}
       {revoke.isError ? (
-        <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+        <div className="col-span-2">
+          <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+        </div>
       ) : null}
     </li>
   );

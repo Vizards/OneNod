@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm build:web && pnpm build:worker",
-    "build:web": "vite build",
+    "build:web": "vite build && node scripts/finalize-service-worker.mjs",
     "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
     "dev:web": "vite",
     "dev:worker": "wrangler dev",

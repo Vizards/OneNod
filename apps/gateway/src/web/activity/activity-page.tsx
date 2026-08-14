@@ -6,6 +6,7 @@ import { getRequest, getRequests } from "../api";
 import {
   Fact,
   InlineError,
+  PageHeading,
   RequestListSkeleton,
   StatusBadge,
 } from "../components/common";
@@ -18,7 +19,7 @@ import {
 } from "../utils/presentation";
 
 export function ActivityPage() {
-  usePageTitle("Request activity · OneNod");
+  usePageTitle("Activity · OneNod");
   const requests = useInfiniteQuery({
     initialPageParam: undefined as string | undefined,
     queryKey: ["requests", "activity"],
@@ -30,20 +31,11 @@ export function ActivityPage() {
 
   return (
     <section aria-labelledby="activity-title">
-      <div className="mb-8">
-        <p className="mb-2 font-mono text-xs uppercase tracking-[0.12em] text-secondary">
-          Activity
-        </p>
-        <h1
-          id="activity-title"
-          className="text-2xl font-semibold tracking-[-0.03em] sm:text-[2rem] sm:leading-10"
-        >
-          Recent requests
-        </h1>
-        <p className="mt-3 max-w-xl text-sm leading-6 text-secondary">
-          A bounded history of request outcomes. This page cannot approve requests.
-        </p>
-      </div>
+      <PageHeading
+        id="activity-title"
+        title="Activity"
+        description="Review recent request outcomes. This page cannot approve requests."
+      />
 
       {requests.isPending ? <RequestListSkeleton /> : null}
       {requests.isError ? (

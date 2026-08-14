@@ -20,10 +20,67 @@ export function HumanGateCard({
 }) {
   return (
     <section className="mx-auto max-w-[520px] rounded-dialog border border-subtle bg-surface p-6 sm:p-8">
+      <div className="mb-6 flex items-center gap-3">
+        <img src="/icon.svg" alt="" className="size-9 rounded-control" />
+        <span className="text-sm font-medium tracking-[-0.01em]">OneNod</span>
+      </div>
       <p className="font-mono text-xs uppercase tracking-[0.12em] text-secondary">{eyebrow}</p>
       <h1 className="mt-3 text-2xl font-semibold tracking-[-0.03em]">{title}</h1>
       <div className="mt-4">{children}</div>
     </section>
+  );
+}
+
+export function PageHeading({
+  description,
+  id,
+  title,
+}: {
+  description: string;
+  id: string;
+  title: string;
+}) {
+  return (
+    <header className="mb-6 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 sm:mb-8">
+      <div className="min-w-0">
+        <h1
+          id={id}
+          className="text-[1.75rem] font-semibold leading-9 tracking-[-0.04em] sm:text-4xl sm:leading-10"
+        >
+          {title}
+        </h1>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-secondary">
+          {description}
+        </p>
+      </div>
+      <RefreshPageButton />
+    </header>
+  );
+}
+
+function RefreshPageButton() {
+  return (
+    <button
+      type="button"
+      aria-label="Refresh page"
+      title="Refresh"
+      onClick={() => window.location.reload()}
+      className="grid size-11 shrink-0 place-items-center rounded-full border border-subtle bg-surface text-secondary transition-colors hover:border-subtle-hover hover:text-foreground active:border-subtle-active"
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.75"
+        className="size-[18px]"
+      >
+        <path d="M20 11a8 8 0 1 0-2.34 5.66" />
+        <path d="M20 4v7h-7" />
+      </svg>
+    </button>
   );
 }
 export function HumanGateSkeleton() {

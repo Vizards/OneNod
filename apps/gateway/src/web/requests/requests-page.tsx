@@ -14,7 +14,6 @@ import {
   getHumanState,
   getRequesterEnrollments,
   getRequests,
-  getServiceAccountQuota,
   lockGateway,
   verifyApprovalDecision,
   verifyGatewayUnlock,
@@ -26,6 +25,7 @@ import {
   ActionError,
   EmptyQueue,
   InlineError,
+  PageHeading,
   RequestListSkeleton,
   StatusBadge,
 } from "../components/common";
@@ -48,7 +48,7 @@ import {
 } from "../utils/presentation";
 
 export function RequestsPage() {
-  usePageTitle("Approval queue · OneNod");
+  usePageTitle("Approvals · OneNod");
   const queryClient = useQueryClient();
   const requests = useQuery({
     queryKey: ["requests"],
@@ -94,23 +94,13 @@ export function RequestsPage() {
 
   return (
     <section aria-labelledby="requests-title">
-      <header className="mb-4">
-        <div className="flex items-center justify-between gap-3">
-          <h1
-            id="requests-title"
-            className="text-2xl font-semibold tracking-[-0.03em] sm:text-[2rem] sm:leading-10"
-          >
-            Pending approvals
-          </h1>
-          <span className="shrink-0 rounded-pill border border-subtle bg-muted px-2.5 py-1 font-mono text-xs tabular-nums text-secondary">
-            {pendingRequests.length + pendingEnrollments.length}
-          </span>
-        </div>
-        <p className="mt-1 text-sm text-secondary">Review requests waiting for you.</p>
-      </header>
+      <PageHeading
+        id="requests-title"
+        title="Approvals"
+        description="Review requests waiting for you."
+      />
 
       <LockModeControl />
-      <ServiceAccountQuotaStatus />
 
       {pendingEnrollments.length > 0 ? (
         <section aria-labelledby="enrollment-title" className="mb-6">
@@ -347,61 +337,6 @@ function LockModeControl() {
           <ActionError error={lockMode.error} onDismiss={() => lockMode.reset()} compact />
         </div>
       ) : null}
-    </section>
-  );
-}
-
-function ServiceAccountQuotaStatus() {
-  const quota = useQuery({
-    queryKey: ["service-account-quota"],
-    queryFn: getServiceAccountQuota,
-    refetchInterval: 60_000,
-    refetchOnWindowFocus: "always",
-  });
-  useSessionExpiryRecovery(quota.error);
-  const remaining = quota.data?.dailyRemaining;
-  const limit = quota.data?.dailyLimit;
-  const low = remaining !== undefined && limit !== undefined && remaining <= limit * 0.1;
-  const status = quota.isPending
-    ? "Checking…"
-    : quota.data?.exhausted
-      ? "Quota exhausted"
-      : remaining === undefined || limit === undefined
-        ? "24h remaining unavailable"
-        : `${remaining.toLocaleString()} of ${limit.toLocaleString()} remaining`;
-
-  return (
-    <section
-      aria-labelledby="service-account-quota-title"
-      className={`mb-4 rounded-card border px-3 py-2.5 ${
-        quota.data?.exhausted
-          ? "border-danger-border bg-danger-muted"
-          : low
-            ? "border-warning-border bg-warning-muted/40"
-            : "border-subtle bg-surface"
-      }`}
-      title={
-        remaining === undefined
-          ? "The Executor reports confirmed rate-limit exhaustion, but its SDK does not expose an authoritative account-wide remaining count."
-          : "Authoritative account-wide 24-hour Service Account quota reported by 1Password."
-      }
-    >
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <h2 id="service-account-quota-title" className="text-sm font-medium">
-          1Password quota
-        </h2>
-        <p
-          className={`text-xs tabular-nums ${
-            quota.data?.exhausted
-              ? "text-danger-text"
-              : low
-                ? "text-warning"
-                : "text-secondary"
-          }`}
-        >
-          {status}
-        </p>
-      </div>
     </section>
   );
 }

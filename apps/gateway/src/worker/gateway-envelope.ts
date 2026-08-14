@@ -74,14 +74,6 @@ export interface SshSignExecutorResult {
   version: number;
 }
 
-export interface ServiceAccountQuotaExecutorStatus {
-  daily_limit?: number;
-  daily_remaining?: number;
-  exhausted: boolean;
-  exhausted_at?: string;
-  last_success_at?: string;
-}
-
 export interface SecretTargetExpectation {
   field_id: string;
   field_label?: string;
@@ -222,45 +214,6 @@ export function sanitizeSshSignEnvelope(
     public_key_blob: publicKeyBlob,
     signature_blob: signatureBlob,
     version,
-  };
-}
-
-export function sanitizeServiceAccountQuotaEnvelope(
-  body: Record<string, unknown>,
-  status: number,
-): ServiceAccountQuotaExecutorStatus {
-  assertSuccessful(body, status);
-  if (typeof body.exhausted !== "boolean") {
-    throw new ExecutorTransportError("untrusted_response");
-  }
-  const exhaustedAt = body.exhausted_at === undefined
-    ? undefined
-    : safeTimestamp(body.exhausted_at);
-  const lastSuccessAt = body.last_success_at === undefined
-    ? undefined
-    : safeTimestamp(body.last_success_at);
-  const hasDailyQuota = body.daily_limit !== null || body.daily_remaining !== null;
-  let dailyLimit: number | undefined;
-  let dailyRemaining: number | undefined;
-  if (hasDailyQuota) {
-    if (
-      !Number.isInteger(body.daily_limit) ||
-      !Number.isInteger(body.daily_remaining) ||
-      (body.daily_limit as number) < 1 ||
-      (body.daily_remaining as number) < 0 ||
-      (body.daily_remaining as number) > (body.daily_limit as number)
-    ) {
-      throw new ExecutorTransportError("untrusted_response");
-    }
-    dailyLimit = body.daily_limit as number;
-    dailyRemaining = body.daily_remaining as number;
-  }
-  return {
-    ...(dailyLimit === undefined ? {} : { daily_limit: dailyLimit }),
-    ...(dailyRemaining === undefined ? {} : { daily_remaining: dailyRemaining }),
-    exhausted: body.exhausted,
-    ...(exhaustedAt === undefined ? {} : { exhausted_at: exhaustedAt }),
-    ...(lastSuccessAt === undefined ? {} : { last_success_at: lastSuccessAt }),
   };
 }
 
