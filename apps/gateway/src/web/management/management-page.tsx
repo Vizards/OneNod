@@ -1,6 +1,7 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Children, useState, type ReactNode } from "react";
 import { decodeBase64Url } from "@onenod/protocol";
 
 import { passkeyPortabilityLabel } from "../../passkey-identity";
@@ -28,11 +29,18 @@ import {
 import { ActionError, InlineError, PagePanelSkeleton } from "../components/common";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
 import { readyPushServiceWorker, settlePushStep } from "../push-registration";
-import { formatDateTime, toErrorMessage } from "../utils/presentation";
+import {
+  formatDateTime,
+  shortIdentifier,
+  toErrorMessage,
+} from "../utils/presentation";
+import type { ManagementSection } from "./management-section";
 
 export function ManagementPage() {
   usePageTitle("Approver management · OneNod");
   const queryClient = useQueryClient();
+  const navigate = useNavigate({ from: "/management" });
+  const { section } = useSearch({ from: "/management" });
   const management = useQuery({ queryFn: getHumanManagement, queryKey: ["management"] });
   const push = useQuery({ queryFn: getPushConfig, queryKey: ["push-config"] });
   const [pushError, setPushError] = useState<unknown>();
@@ -43,7 +51,11 @@ export function ManagementPage() {
     setPushPending(true);
     setPushError(undefined);
     try {
-      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      if (
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window) ||
+        !("Notification" in window)
+      ) {
         throw new Error("This browser does not support Web Push.");
       }
       if (!push.data?.configured || !push.data.public_key) {
@@ -54,32 +66,29 @@ export function ManagementPage() {
         60_000,
         "Notification permission was not completed. Check the browser prompt and try again.",
       );
-      if (permission !== "granted") throw new Error("System notification permission was not granted.");
+      if (permission !== "granted") {
+        throw new Error("System notification permission was not granted.");
+      }
       const registration = await readyPushServiceWorker();
       const existing = await settlePushStep(
         registration.pushManager.getSubscription(),
         undefined,
         "Checking the existing notification subscription took too long. Reload the page and try again.",
       );
-      const subscription =
-        existing ??
-        (await settlePushStep(
-          registration.pushManager.subscribe({
-            applicationServerKey: ownedBytes(decodeBase64Url(push.data.public_key)),
-            userVisibleOnly: true,
-          }),
-          undefined,
-          "Creating the notification subscription took too long. Reload the page and try again.",
-        ));
+      const subscription = existing ?? await settlePushStep(
+        registration.pushManager.subscribe({
+          applicationServerKey: ownedBytes(decodeBase64Url(push.data.public_key)),
+          userVisibleOnly: true,
+        }),
+        undefined,
+        "Creating the notification subscription took too long. Reload the page and try again.",
+      );
       await settlePushStep(
         putPushSubscription(subscription.toJSON()),
         undefined,
         "Saving the notification subscription took too long. Reload the page and try again.",
       );
-      queryClient.setQueryData(["push-config"], {
-        ...push.data,
-        enabled: true,
-      });
+      queryClient.setQueryData(["push-config"], { ...push.data, enabled: true });
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["push-config"] }),
         queryClient.invalidateQueries({ queryKey: ["management"] }),
@@ -100,10 +109,7 @@ export function ManagementPage() {
         undefined,
         "Disabling the server subscription took too long. Reload the page and try again.",
       );
-      queryClient.setQueryData(["push-config"], {
-        ...push.data,
-        enabled: false,
-      });
+      queryClient.setQueryData(["push-config"], { ...push.data, enabled: false });
       const registration = await readyPushServiceWorker();
       const subscription = await settlePushStep(
         registration.pushManager.getSubscription(),
@@ -130,96 +136,230 @@ export function ManagementPage() {
 
   if (management.isPending) return <PagePanelSkeleton />;
   if (management.isError) {
-    return <InlineError message={toErrorMessage(management.error)} onRetry={() => void management.refetch()} />;
+    return (
+      <InlineError
+        message={toErrorMessage(management.error)}
+        onRetry={() => void management.refetch()}
+      />
+    );
   }
+
+  const pushStatus = pushPending
+    ? "Working…"
+    : !push.data?.configured
+      ? "Unavailable"
+      : push.data.enabled
+        ? "Enabled"
+        : "Disabled";
 
   return (
     <section aria-labelledby="management-title">
-      <p className="mb-2 font-mono text-xs uppercase tracking-[0.12em] text-secondary">
-        Human control plane
-      </p>
-      <h1 id="management-title" className="text-2xl font-semibold tracking-[-0.03em]">
-        Approver management
-      </h1>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-secondary">
-        A passkey verifies your human identity. A device key identifies one PWA installation. Revoking a device does not delete a passkey synced to other devices.
-      </p>
+      <header>
+        <h1 id="management-title" className="text-2xl font-semibold tracking-[-0.03em]">
+          Approver management
+        </h1>
+        <p className="mt-2 text-sm text-secondary">
+          Manage approval devices, requester Macs, and owner passkeys.
+        </p>
+      </header>
 
-      <section className="mt-10 rounded-card border border-subtle bg-surface p-5" aria-labelledby="push-title">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 id="push-title" className="text-base font-medium">System notifications on this device</h2>
-            <p className="mt-2 text-sm leading-5 text-secondary">
-              Notifications reveal only that a new request exists. They never show the item, field, or client observation on the lock screen.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={pushPending || push.isPending || !push.data?.configured}
-            onClick={() => void (push.data?.enabled ? disablePush() : enablePush())}
-            className="h-10 rounded-control border border-subtle bg-background px-4 text-sm font-medium disabled:opacity-50"
-          >
-            {pushPending ? "Working…" : push.data?.enabled ? "Disable notifications" : "Enable notifications"}
-          </button>
+      <section
+        className="mt-6 flex min-h-14 flex-wrap items-center justify-between gap-x-4 rounded-card border border-subtle bg-surface px-3 py-1.5"
+        aria-labelledby="push-title"
+      >
+        <div className="min-w-0">
+          <h2 id="push-title" className="text-sm font-medium">System notifications</h2>
+          <p className="truncate text-xs text-secondary">
+            New-request alerts on this device · {pushStatus}
+          </p>
         </div>
-        {pushError ? <ActionError error={pushError} onDismiss={() => setPushError(undefined)} compact /> : null}
-        {!push.data?.configured ? (
-          <p className="mt-3 text-xs text-warning">The server has no VAPID key. Subscriptions remain unavailable until deployment setup is complete.</p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={Boolean(push.data?.enabled)}
+          aria-label={`${push.data?.enabled ? "Disable" : "Enable"} system notifications`}
+          disabled={pushPending || push.isPending || !push.data?.configured}
+          onClick={() => void (push.data?.enabled ? disablePush() : enablePush())}
+          className="relative h-11 w-12 shrink-0 disabled:opacity-50"
+        >
+          <span
+            aria-hidden="true"
+            className={`absolute inset-x-0 top-2 h-7 rounded-pill border transition-colors ${
+              push.data?.enabled
+                ? "border-success-border bg-success"
+                : "border-subtle bg-muted"
+            }`}
+          >
+            <span
+              className={`absolute left-[3px] top-[3px] size-5 rounded-full bg-background transition-transform ${
+                push.data?.enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </span>
+        </button>
+        {pushError ? (
+          <div className="basis-full pb-2">
+            <ActionError
+              error={pushError}
+              onDismiss={() => setPushError(undefined)}
+              compact
+            />
+          </div>
         ) : null}
       </section>
 
-      <section className="mt-10" aria-labelledby="devices-title">
-        <div className="flex items-center justify-between gap-4">
-          <h2 id="devices-title" className="text-base font-medium">Approval devices</h2>
-          <span className="font-mono text-xs text-secondary">{management.data.devices.length} devices</span>
-        </div>
-        <ul className="mt-4 grid gap-3">
-          {management.data.devices.map((device) => (
-            <HumanDeviceCard
-              key={device.id}
-              device={device}
-              canRevoke={management.data.devices.length > 1}
-            />
-          ))}
-        </ul>
-      </section>
+      <ManagementTabs
+        counts={{
+          approvers: management.data.devices.length,
+          passkeys: management.data.credentials.length,
+          requesters: management.data.requesters.length,
+        }}
+        onSelect={(nextSection) => {
+          void navigate({ replace: true, search: { section: nextSection } });
+        }}
+        section={section}
+      />
 
-      <section className="mt-10" aria-labelledby="requesters-title">
-        <div className="flex items-center justify-between gap-4">
-          <h2 id="requesters-title" className="text-base font-medium">
-            Requester devices
-          </h2>
-          <span className="font-mono text-xs text-secondary">
-            {management.data.requesters.length} requesters
-          </span>
-        </div>
-        <p className="mt-2 text-sm leading-5 text-secondary">
-          These Origin-scoped public keys identify enrolled Macs that may submit
-          approval requests. They do not identify an application or authorize
-          approval. Revoking one immediately blocks new requests, status polling,
-          and result consumption from that requester.
-        </p>
-        <ul className="mt-4 grid gap-3">
-          {management.data.requesters.map((requester) => (
-            <RequesterCard key={requester.deviceId} requester={requester} />
-          ))}
-        </ul>
-      </section>
+      {section === "approvers" ? (
+        <ManagementPanel id="approvers-panel" label="Approval devices">
+          <CompactList empty="No approval devices are registered.">
+            {management.data.devices.map((device) => (
+              <HumanDeviceRow
+                key={device.id}
+                device={device}
+                canRevoke={management.data.devices.length > 1}
+              />
+            ))}
+          </CompactList>
+        </ManagementPanel>
+      ) : null}
 
-      <CredentialsSection credentials={management.data.credentials} />
+      {section === "requesters" ? (
+        <ManagementPanel id="requesters-panel" label="Requester devices">
+          <CompactList empty="No requester Macs are enrolled.">
+            {management.data.requesters.map((requester) => (
+              <RequesterRow key={requester.deviceId} requester={requester} />
+            ))}
+          </CompactList>
+        </ManagementPanel>
+      ) : null}
+
+      {section === "passkeys" ? (
+        <CredentialsPanel credentials={management.data.credentials} />
+      ) : null}
     </section>
   );
 }
-function RequesterCard({ requester }: { requester: RequesterSummary }) {
+
+function ManagementTabs({
+  counts,
+  onSelect,
+  section,
+}: {
+  counts: Record<ManagementSection, number>;
+  onSelect: (section: ManagementSection) => void;
+  section: ManagementSection;
+}) {
+  const tabs: Array<{ label: string; value: ManagementSection }> = [
+    { label: "Approvers", value: "approvers" },
+    { label: "Requesters", value: "requesters" },
+    { label: "Passkeys", value: "passkeys" },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="Approver management sections"
+      className="mt-6 grid grid-cols-3 border-b border-subtle"
+    >
+      {tabs.map((tab) => {
+        const selected = section === tab.value;
+        return (
+          <button
+            key={tab.value}
+            id={`${tab.value}-tab`}
+            type="button"
+            role="tab"
+            aria-controls={`${tab.value}-panel`}
+            aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onSelect(tab.value)}
+            onKeyDown={(event) => {
+              const currentIndex = tabs.findIndex((candidate) => candidate.value === tab.value);
+              const targetIndex = event.key === "ArrowRight"
+                ? (currentIndex + 1) % tabs.length
+                : event.key === "ArrowLeft"
+                  ? (currentIndex - 1 + tabs.length) % tabs.length
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? tabs.length - 1
+                      : -1;
+              if (targetIndex < 0) return;
+              event.preventDefault();
+              onSelect(tabs[targetIndex]!.value);
+              const controls = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                '[role="tab"]',
+              );
+              controls?.[targetIndex]?.focus();
+            }}
+            className={`relative min-h-12 px-1 text-sm ${
+              selected ? "text-foreground" : "text-secondary"
+            }`}
+          >
+            {tab.label}{" "}
+            <span className="font-mono text-xs tabular-nums">{counts[tab.value]}</span>
+            {selected ? (
+              <span aria-hidden="true" className="absolute inset-x-2 -bottom-px h-px bg-foreground" />
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ManagementPanel({
+  children,
+  id,
+  label,
+}: {
+  children: ReactNode;
+  id: string;
+  label: string;
+}) {
+  return (
+    <section
+      id={id}
+      role="tabpanel"
+      aria-labelledby={`${id.replace("-panel", "")}-tab`}
+      className="mt-4"
+    >
+      <h2 className="sr-only">{label}</h2>
+      {children}
+    </section>
+  );
+}
+
+function CompactList({
+  children,
+  empty,
+}: {
+  children: ReactNode;
+  empty: string;
+}) {
+  if (Children.count(children) === 0) {
+    return <p className="border-y border-subtle py-6 text-sm text-secondary">{empty}</p>;
+  }
+  return <ul className="divide-y divide-subtle border-y border-subtle">{children}</ul>;
+}
+
+function RequesterRow({ requester }: { requester: RequesterSummary }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState(requester.displayName);
   const rename = useMutation({
     mutationFn: async (nextDisplayName: string) => {
-      const challenge = await beginRequesterRename(
-        requester.deviceId,
-        nextDisplayName,
-      );
+      const challenge = await beginRequesterRename(requester.deviceId, nextDisplayName);
       const response = await startAuthentication({ optionsJSON: challenge.options });
       return verifyRequesterRename(
         requester.deviceId,
@@ -246,6 +386,7 @@ function RequesterCard({ requester }: { requester: RequesterSummary }) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["management"] }),
         queryClient.invalidateQueries({ queryKey: ["requester-enrollments"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
       ]);
     },
   });
@@ -253,95 +394,100 @@ function RequesterCard({ requester }: { requester: RequesterSummary }) {
   const normalizedName = displayName.trim();
 
   return (
-    <li className="grid min-w-0 gap-4 rounded-card border border-subtle bg-surface p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-      <div className="min-w-0">
-        {editing ? (
-          <div className="max-w-sm">
-            <label htmlFor={`requester-name-${requester.deviceId}`} className="text-xs text-secondary">
-              Requester device name
-            </label>
-            <input
-              id={`requester-name-${requester.deviceId}`}
-              autoFocus
-              maxLength={80}
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-              className="mt-2 h-10 w-full rounded-control border border-subtle bg-background px-3 text-sm outline-none focus:border-focus"
-            />
+    <li>
+      <details className="group">
+        <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 px-1 marker:content-none">
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-sm font-medium">{requester.displayName}</h3>
+            <p className="mt-1 truncate font-mono text-xs text-secondary">
+              {shortIdentifier(requester.publicKeyFingerprint)} · enrolled {formatDateTime(requester.createdAt)}
+            </p>
           </div>
-        ) : (
-          <h3 className="font-medium">{requester.displayName}</h3>
-        )}
-        <p className="mt-2 text-xs text-secondary">
-          Enrolled {formatDateTime(requester.createdAt)}
-        </p>
-        <p className="mt-3 max-w-full break-all font-mono text-[11px] text-secondary">
-          Device {requester.deviceId}
-        </p>
-        <p className="mt-2 max-w-full break-all font-mono text-[11px] text-secondary">
-          Fingerprint {requester.publicKeyFingerprint}
-        </p>
-      </div>
-      <div className="grid grid-cols-2 gap-2 sm:flex">
-        {editing ? (
-          <>
-            <button
-              type="button"
-              disabled={rename.isPending}
-              onClick={() => {
-                setDisplayName(requester.displayName);
-                setEditing(false);
-                rename.reset();
-              }}
-              className="h-10 rounded-control border border-subtle px-3 text-sm disabled:opacity-40"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={
-                rename.isPending ||
-                normalizedName.length === 0 ||
-                normalizedName === requester.displayName
-              }
-              onClick={() => rename.mutate(normalizedName)}
-              className="h-10 rounded-control bg-foreground px-3 text-sm text-background disabled:opacity-40"
-            >
-              {rename.isPending ? "Verifying…" : "Save name"}
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            disabled={revoke.isPending}
-            onClick={() => setEditing(true)}
-            className="h-10 rounded-control border border-subtle px-3 text-sm disabled:opacity-40"
-          >
-            Rename device
-          </button>
-        )}
-        {!editing ? (
-          <button
-            type="button"
-            disabled={revoke.isPending}
-            onClick={() => revoke.mutate()}
-            className="h-10 rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40"
-          >
-            {revoke.isPending ? "Verifying…" : "Revoke requester"}
-          </button>
-        ) : null}
-      </div>
-      {rename.isError ? (
-        <ActionError error={rename.error} onDismiss={() => rename.reset()} compact />
-      ) : null}
-      {revoke.isError ? (
-        <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
-      ) : null}
+          <RowChevron />
+        </summary>
+        <div className="border-t border-subtle px-1 pb-4 pt-3">
+          {editing ? (
+            <div className="max-w-sm">
+              <label htmlFor={`requester-name-${requester.deviceId}`} className="text-xs text-secondary">
+                Requester device name
+              </label>
+              <input
+                id={`requester-name-${requester.deviceId}`}
+                autoFocus
+                maxLength={80}
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                className="mt-2 h-11 w-full rounded-control border border-subtle bg-background px-3 text-sm outline-none focus:border-focus"
+              />
+            </div>
+          ) : null}
+          <dl className={`${editing ? "mt-4" : ""} grid gap-3 text-xs`}>
+            <ManagementFact label="Device ID" value={requester.deviceId} />
+            <ManagementFact label="Fingerprint" value={requester.publicKeyFingerprint} />
+            <ManagementFact label="Enrolled" value={formatDateTime(requester.createdAt)} />
+          </dl>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+            {editing ? (
+              <>
+                <button
+                  type="button"
+                  disabled={rename.isPending}
+                  onClick={() => {
+                    setDisplayName(requester.displayName);
+                    setEditing(false);
+                    rename.reset();
+                  }}
+                  className="h-11 rounded-control border border-subtle px-3 text-sm disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    rename.isPending ||
+                    normalizedName.length === 0 ||
+                    normalizedName === requester.displayName
+                  }
+                  onClick={() => rename.mutate(normalizedName)}
+                  className="h-11 rounded-control bg-foreground px-3 text-sm text-background disabled:opacity-40"
+                >
+                  {rename.isPending ? "Verifying…" : "Save name"}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  disabled={revoke.isPending}
+                  onClick={() => setEditing(true)}
+                  className="h-11 rounded-control border border-subtle px-3 text-sm disabled:opacity-40"
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate()}
+                  className="h-11 rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40"
+                >
+                  {revoke.isPending ? "Verifying…" : "Revoke"}
+                </button>
+              </>
+            )}
+          </div>
+          {rename.isError ? (
+            <ActionError error={rename.error} onDismiss={() => rename.reset()} compact />
+          ) : null}
+          {revoke.isError ? (
+            <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+          ) : null}
+        </div>
+      </details>
     </li>
   );
 }
 
-function HumanDeviceCard({
+function HumanDeviceRow({
   canRevoke,
   device,
 }: {
@@ -362,33 +508,54 @@ function HumanDeviceCard({
       ]);
     },
   });
+  useSessionExpiryRecovery(revoke.error);
   return (
-    <li className="grid min-w-0 gap-4 rounded-card border border-subtle bg-surface p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-medium">{device.label}</h3>
-          {device.current ? <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">Current device</span> : null}
-          {device.pushEnabled ? <span className="rounded-pill bg-success-muted px-2 py-1 text-xs text-success">Push enabled</span> : null}
+    <li>
+      <details className="group">
+        <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 px-1 marker:content-none">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-sm font-medium">{device.label}</h3>
+              {device.current ? (
+                <span className="shrink-0 text-xs text-secondary">This device</span>
+              ) : null}
+            </div>
+            <p className="mt-1 truncate text-xs text-secondary">
+              {device.platform} · active {formatDateTime(device.lastSeenAt)}
+              {device.pushEnabled ? " · notifications on" : ""}
+            </p>
+          </div>
+          <RowChevron />
+        </summary>
+        <div className="border-t border-subtle px-1 pb-4 pt-3">
+          <dl className="grid gap-3 text-xs">
+            <ManagementFact label="Created" value={formatDateTime(device.createdAt)} />
+            <ManagementFact label="Last active" value={formatDateTime(device.lastSeenAt)} />
+            <ManagementFact label="Push" value={device.pushEnabled ? "Enabled" : "Disabled"} />
+          </dl>
+          <button
+            type="button"
+            disabled={!canRevoke || revoke.isPending}
+            onClick={() => revoke.mutate()}
+            className="mt-4 h-11 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:ml-auto sm:block sm:w-auto"
+          >
+            {revoke.isPending ? "Verifying…" : "Revoke device"}
+          </button>
+          {!canRevoke ? (
+            <p className="mt-2 text-xs text-secondary">The last approval device cannot be revoked.</p>
+          ) : null}
+          {revoke.isError ? (
+            <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+          ) : null}
         </div>
-        <p className="mt-2 text-xs text-secondary">
-          {device.platform} · last active {formatDateTime(device.lastSeenAt)}
-        </p>
-      </div>
-      <button
-        type="button"
-        disabled={!canRevoke || revoke.isPending}
-        onClick={() => revoke.mutate()}
-        className="h-10 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:w-auto"
-      >
-        {revoke.isPending ? "Verifying…" : "Revoke device"}
-      </button>
-      {revoke.isError ? <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact /> : null}
+      </details>
     </li>
   );
 }
 
-function CredentialsSection({ credentials }: { credentials: HumanCredentialSummary[] }) {
+function CredentialsPanel({ credentials }: { credentials: HumanCredentialSummary[] }) {
   const queryClient = useQueryClient();
+  const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState("");
   const add = useMutation({
     mutationFn: async () => {
@@ -403,52 +570,67 @@ function CredentialsSection({ credentials }: { credentials: HumanCredentialSumma
     },
     onSuccess: async () => {
       setLabel("");
+      setAdding(false);
       await queryClient.invalidateQueries({ queryKey: ["management"] });
     },
   });
+  useSessionExpiryRecovery(add.error);
   return (
-    <section className="mt-10" aria-labelledby="credentials-title">
-      <h2 id="credentials-title" className="text-base font-medium">Owner passkeys</h2>
-      <p className="mt-2 text-sm leading-5 text-secondary">
-        Passkeys verify the OneNod owner. A synced passkey can serve multiple devices;
-        PWA installations are registered and revoked separately below.
-      </p>
-      <p className="mt-2 text-xs leading-5 text-secondary">
-        The label is stored by OneNod for management only. The passkey account is
-        always OneNod owner.
-      </p>
-      <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <input
-          value={label}
-          maxLength={80}
-          onChange={(event) => setLabel(event.target.value)}
-          placeholder="Passkey label (for example, 1Password)"
-          className="h-11 min-w-0 flex-1 rounded-control border border-subtle bg-background px-3 text-sm"
-        />
+    <section
+      id="passkeys-panel"
+      role="tabpanel"
+      aria-labelledby="passkeys-tab"
+      className="mt-4"
+    >
+      <div className="mb-3 flex items-center justify-end">
         <button
           type="button"
-          disabled={!label.trim() || add.isPending}
-          onClick={() => add.mutate()}
-          className="h-11 w-full rounded-control bg-foreground px-4 text-sm font-medium text-background disabled:opacity-50 sm:w-auto"
+          aria-expanded={adding}
+          onClick={() => setAdding((value) => !value)}
+          className="h-11 rounded-control border border-subtle px-3 text-sm"
         >
-          {add.isPending ? "Registering…" : "Add passkey"}
+          {adding ? "Cancel" : "Add passkey"}
         </button>
       </div>
-      {add.isError ? <ActionError error={add.error} onDismiss={() => add.reset()} compact /> : null}
-      <ul className="mt-4 grid gap-3">
+      {adding ? (
+        <div className="mb-4 grid min-w-0 gap-2 rounded-card border border-subtle bg-surface p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <input
+            value={label}
+            maxLength={80}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder="Passkey label"
+            aria-label="Passkey label"
+            className="h-11 min-w-0 rounded-control border border-subtle bg-background px-3 text-sm"
+          />
+          <button
+            type="button"
+            disabled={!label.trim() || add.isPending}
+            onClick={() => add.mutate()}
+            className="h-11 rounded-control bg-foreground px-4 text-sm font-medium text-background disabled:opacity-50"
+          >
+            {add.isPending ? "Registering…" : "Register passkey"}
+          </button>
+          {add.isError ? (
+            <div className="sm:col-span-2">
+              <ActionError error={add.error} onDismiss={() => add.reset()} compact />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <CompactList empty="No owner passkeys are registered.">
         {credentials.map((credential) => (
-          <HumanCredentialCard
+          <HumanCredentialRow
             key={credential.id}
             credential={credential}
             canRevoke={credentials.length > 1}
           />
         ))}
-      </ul>
+      </CompactList>
     </section>
   );
 }
 
-function HumanCredentialCard({
+function HumanCredentialRow({
   canRevoke,
   credential,
 }: {
@@ -470,30 +652,81 @@ function HumanCredentialCard({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["management"] }),
         queryClient.invalidateQueries({ queryKey: ["human-state"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
       ]);
     },
   });
+  useSessionExpiryRecovery(revoke.error);
   return (
-    <li className="grid min-w-0 gap-4 rounded-card border border-subtle bg-surface p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-medium">{credential.label}</h3>
-          {credential.current ? <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">Current passkey</span> : null}
-          <span className="rounded-pill bg-muted px-2 py-1 text-xs text-secondary">{portability}</span>
+    <li>
+      <details className="group">
+        <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 px-1 marker:content-none">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-sm font-medium">{credential.label}</h3>
+              {credential.current ? (
+                <span className="shrink-0 text-xs text-secondary">Current</span>
+              ) : null}
+            </div>
+            <p className="mt-1 truncate text-xs text-secondary">
+              {portability} · last used {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "unknown"}
+            </p>
+          </div>
+          <RowChevron />
+        </summary>
+        <div className="border-t border-subtle px-1 pb-4 pt-3">
+          <dl className="grid gap-3 text-xs">
+            <ManagementFact label="Created" value={formatDateTime(credential.createdAt)} />
+            <ManagementFact
+              label="Last used"
+              value={credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
+            />
+            <ManagementFact label="Portability" value={portability} />
+          </dl>
+          <button
+            type="button"
+            disabled={!canRevoke || revoke.isPending}
+            onClick={() => revoke.mutate()}
+            className="mt-4 h-11 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:ml-auto sm:block sm:w-auto"
+          >
+            {revoke.isPending ? "Verifying…" : "Revoke passkey"}
+          </button>
+          {!canRevoke ? (
+            <p className="mt-2 text-xs text-secondary">The last owner passkey cannot be revoked.</p>
+          ) : null}
+          {revoke.isError ? (
+            <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact />
+          ) : null}
         </div>
-        <p className="mt-2 text-xs text-secondary">
-          Added {formatDateTime(credential.createdAt)} · last used {credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : "Unknown"}
-        </p>
-      </div>
-      <button
-        type="button"
-        disabled={!canRevoke || revoke.isPending}
-        onClick={() => revoke.mutate()}
-        className="h-10 w-full rounded-control border border-danger-border px-3 text-sm text-danger-text disabled:opacity-40 sm:w-auto"
-      >
-        {revoke.isPending ? "Verifying…" : "Revoke passkey"}
-      </button>
-      {revoke.isError ? <ActionError error={revoke.error} onDismiss={() => revoke.reset()} compact /> : null}
+      </details>
     </li>
+  );
+}
+
+function ManagementFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)] gap-3">
+      <dt className="text-secondary">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function RowChevron() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="size-4 shrink-0 text-secondary transition-transform group-open:rotate-180"
+      fill="none"
+    >
+      <path
+        d="m4 6 4 4 4-4"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
   );
 }

@@ -74,6 +74,11 @@ export class ApprovalRequestStore {
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
+              EXISTS(
+                SELECT 1 FROM approved_application_identities approved
+                WHERE approved.principal_scheme = requests.application_principal_scheme
+                  AND approved.principal_id = requests.application_principal_id
+              ) AS application_approved_before,
               application_scope_id, secret_grant_id,
               ssh_agent_instance_public_key, ssh_scope_id, ssh_scope_kind,
               ssh_grant_id, legacy_ssh_signed_consume,
@@ -96,7 +101,13 @@ export class ApprovalRequestStore {
               client_source, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
-              application_signer_name, error_code
+              application_signer_name,
+              EXISTS(
+                SELECT 1 FROM approved_application_identities approved
+                WHERE approved.principal_scheme = request_activity.application_principal_scheme
+                  AND approved.principal_id = request_activity.application_principal_id
+              ) AS application_approved_before,
+              error_code
        FROM request_activity WHERE request_id = ?`,
       requestId,
     );

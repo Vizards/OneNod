@@ -1,7 +1,11 @@
 import { startAuthentication } from "@simplewebauthn/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
-import type { RequestSummary, SshAuthorizationDuration } from "@onenod/protocol";
+import { useEffect, useMemo } from "react";
+import type {
+  ApplicationRecognition,
+  RequestSummary,
+  SshAuthorizationDuration,
+} from "@onenod/protocol";
 
 import {
   beginApprovalDecision,
@@ -24,13 +28,17 @@ import {
   RequestListSkeleton,
   StatusBadge,
 } from "../components/common";
+import { LiveCountdown } from "../components/live-countdown";
+import {
+  useExpiryRefresh,
+  useServerClock,
+} from "../hooks/live-clock";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
 import {
   applicationSignerCopy,
   approvalQuestion,
   effectiveStatus,
   formatDateTime,
-  formatTime,
   isPast,
   isRefreshableDecisionError,
   secretAuthorizationDurations,
@@ -41,6 +49,7 @@ import {
 
 export function RequestsPage() {
   usePageTitle("Approval queue · OneNod");
+  const queryClient = useQueryClient();
   const requests = useQuery({
     queryKey: ["requests"],
     queryFn: () => getRequests(undefined, true),
@@ -50,52 +59,75 @@ export function RequestsPage() {
     queryFn: getRequesterEnrollments,
   });
   useSessionExpiryRecovery(requests.error ?? enrollments.error);
+  const refreshQueue = (): void => {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["requests"] }),
+      queryClient.invalidateQueries({ queryKey: ["requester-enrollments"] }),
+    ]);
+  };
+  const serverTime = requests.data?.serverTime ?? enrollments.data?.serverTime;
+  const now = useServerClock(serverTime, refreshQueue);
   const pendingRequests =
     requests.data?.requests.filter(
-      (request) => effectiveStatus(request) === "pending",
+      (request) => effectiveStatus(request, now) === "pending",
     ) ?? [];
   const pendingEnrollments =
     enrollments.data?.enrollments.filter(
-      (enrollment) => enrollment.status === "pending" && !isPast(enrollment.expiresAt),
+      (enrollment) =>
+        enrollment.status === "pending" && !isPast(enrollment.expiresAt, now),
     ) ?? [];
+  const deadlines = useMemo(
+    () => [
+      ...(requests.data?.requests.map((request) => ({
+        expiresAt: request.expiresAt,
+        id: `request:${request.requestId}`,
+      })) ?? []),
+      ...(enrollments.data?.enrollments.map((enrollment) => ({
+        expiresAt: enrollment.expiresAt,
+        id: `enrollment:${enrollment.id}`,
+      })) ?? []),
+    ],
+    [enrollments.data?.enrollments, requests.data?.requests],
+  );
+  useExpiryRefresh(deadlines, now, refreshQueue);
   useRequestDeepLinkFocus(requests.isSuccess);
 
   return (
     <section aria-labelledby="requests-title">
-      <div className="mb-8 flex items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 font-mono text-xs uppercase tracking-[0.12em] text-secondary">
-            Approval Queue
-          </p>
+      <header className="mb-4">
+        <div className="flex items-center justify-between gap-3">
           <h1
             id="requests-title"
             className="text-2xl font-semibold tracking-[-0.03em] sm:text-[2rem] sm:leading-10"
           >
             Pending approvals
           </h1>
-          <p className="mt-3 max-w-xl text-sm leading-6 text-secondary">
-            Approve or deny requests using the operation, local application, and verified requester device.
-          </p>
+          <span className="shrink-0 rounded-pill border border-subtle bg-muted px-2.5 py-1 font-mono text-xs tabular-nums text-secondary">
+            {pendingRequests.length + pendingEnrollments.length}
+          </span>
         </div>
-        <span className="whitespace-nowrap rounded-pill border border-subtle bg-muted px-3 py-1 font-mono text-xs tabular-nums text-secondary">
-          {pendingRequests.length + pendingEnrollments.length}{" "}
-          items
-        </span>
-      </div>
+        <p className="mt-1 text-sm text-secondary">Review requests waiting for you.</p>
+      </header>
 
       <LockModeControl />
 
-      {pendingEnrollments.length ? (
-        <section aria-labelledby="enrollment-title" className="mb-10">
-          <div className="mb-3 flex items-center justify-between">
+      {pendingEnrollments.length > 0 ? (
+        <section aria-labelledby="enrollment-title" className="mb-6">
+          <div className="mb-2 flex items-center justify-between gap-3">
             <h2 id="enrollment-title" className="text-sm font-medium">
-              Pending Agent devices
+              Pending Agent registration
             </h2>
-            <span className="text-xs text-secondary">A device can submit requests only after registration</span>
+            <span className="font-mono text-xs tabular-nums text-secondary">
+              {pendingEnrollments.length}
+            </span>
           </div>
           <ul className="grid gap-3">
             {pendingEnrollments.map((enrollment) => (
-              <RequesterEnrollmentCard key={enrollment.id} enrollment={enrollment} />
+              <RequesterEnrollmentCard
+                enrollment={enrollment}
+                key={enrollment.id}
+                now={now}
+              />
             ))}
           </ul>
         </section>
@@ -121,16 +153,17 @@ export function RequestsPage() {
       pendingEnrollments.length === 0 ? (
         <EmptyQueue />
       ) : null}
-      {pendingRequests.length ? (
+      {pendingRequests.length > 0 ? (
         <ul className="grid gap-3">
           {pendingRequests.map((request) => (
-            <RequestCard key={request.requestId} request={request} />
+            <RequestCard key={request.requestId} now={now} request={request} />
           ))}
         </ul>
       ) : null}
     </section>
   );
 }
+
 function useRequestDeepLinkFocus(ready: boolean): void {
   useEffect(() => {
     if (!ready || !window.location.hash.startsWith("#request-")) return;
@@ -143,7 +176,13 @@ function useRequestDeepLinkFocus(ready: boolean): void {
   }, [ready]);
 }
 
-function RequesterEnrollmentCard({ enrollment }: { enrollment: RequesterEnrollment }) {
+function RequesterEnrollmentCard({
+  enrollment,
+  now,
+}: {
+  enrollment: RequesterEnrollment;
+  now: number;
+}) {
   const queryClient = useQueryClient();
   const decision = useMutation({
     mutationFn: async (value: ApprovalDecision) => {
@@ -157,7 +196,10 @@ function RequesterEnrollmentCard({ enrollment }: { enrollment: RequesterEnrollme
       );
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["requester-enrollments"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["requester-enrollments"] }),
+        queryClient.invalidateQueries({ queryKey: ["management"] }),
+      ]);
     },
     onError: async (error) => {
       if (isRefreshableDecisionError(error)) {
@@ -167,54 +209,55 @@ function RequesterEnrollmentCard({ enrollment }: { enrollment: RequesterEnrollme
   });
   useSessionExpiryRecovery(decision.error);
 
-  const expired = isPast(enrollment.expiresAt);
+  const expired = isPast(enrollment.expiresAt, now);
   const disabled = decision.isPending || expired || enrollment.status !== "pending";
 
   return (
-    <li className="rounded-card border border-warning-border bg-warning-muted/40 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <li className="rounded-card border border-warning-border bg-warning-muted/40 p-4">
+      <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
-            <span className="rounded-pill border border-warning-border bg-warning-muted px-2.5 py-1 text-xs font-medium text-warning">
-              {expired ? "Expired" : "Pending registration"}
-            </span>
-            <span className="min-w-0 break-all font-mono text-xs text-secondary">{enrollment.deviceId}</span>
-          </div>
-          <h3 className="text-base font-medium">{enrollment.displayName}</h3>
-          <p className="mt-1 text-sm leading-5 text-secondary">
-            Requested {formatDateTime(enrollment.createdAt)} · expires {formatTime(enrollment.expiresAt)}
-          </p>
-          <dl className="mt-3 grid gap-1 text-xs text-secondary">
-            <div className="grid gap-1 sm:grid-cols-[92px_1fr]">
-              <dt>Enrollment ID</dt>
-              <dd className="break-all font-mono text-foreground">{enrollment.id}</dd>
-            </div>
-            <div className="grid gap-1 sm:grid-cols-[92px_1fr]">
-              <dt>Public-key fingerprint</dt>
-              <dd className="break-all font-mono text-foreground">
-                {enrollment.publicKeyFingerprint}
-              </dd>
-            </div>
-          </dl>
+          <span className="text-xs font-medium text-warning">
+            {expired ? "Expired" : "New requester Mac"}
+          </span>
+          <h3 className="mt-1 truncate text-base font-medium">{enrollment.displayName}</h3>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => decision.mutate("reject")}
-            className="h-10 rounded-control border border-subtle bg-background px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {decision.isPending && decision.variables === "reject" ? "Verifying…" : "Reject"}
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => decision.mutate("approve")}
-            className="h-10 rounded-control bg-foreground px-3 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {decision.isPending && decision.variables === "approve" ? "Verifying…" : "Register"}
-          </button>
-        </div>
+        <span className="shrink-0 text-xs tabular-nums text-secondary">
+          <LiveCountdown expiresAt={enrollment.expiresAt} label="Expires" now={now} />
+        </span>
+      </div>
+      <details className="group mt-2 border-t border-warning-border/60 pt-1">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm text-secondary marker:content-none">
+          <span>Registration details</span>
+          <DisclosureChevron />
+        </summary>
+        <dl className="grid gap-3 pb-3 text-xs">
+          <IdentityFact label="Device ID" value={enrollment.deviceId} />
+          <IdentityFact label="Enrollment ID" value={enrollment.id} />
+          <IdentityFact
+            label="Public-key fingerprint"
+            value={enrollment.publicKeyFingerprint}
+          />
+          <IdentityFact label="Requested" value={formatDateTime(enrollment.createdAt)} />
+          <IdentityFact label="Expires" value={formatDateTime(enrollment.expiresAt)} />
+        </dl>
+      </details>
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => decision.mutate("reject")}
+          className="h-11 rounded-control border border-subtle bg-background px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {decision.isPending && decision.variables === "reject" ? "Verifying…" : "Reject"}
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => decision.mutate("approve")}
+          className="h-11 rounded-control bg-foreground px-3 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {decision.isPending && decision.variables === "approve" ? "Verifying…" : "Register"}
+        </button>
       </div>
       {decision.isError ? (
         <ActionError error={decision.error} onDismiss={() => decision.reset()} compact />
@@ -241,72 +284,68 @@ function LockModeControl() {
         queryClient.invalidateQueries({ queryKey: ["human-state"] }),
         queryClient.invalidateQueries({ queryKey: ["requests"] }),
         queryClient.invalidateQueries({ queryKey: ["management"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
       ]);
     },
   });
   useSessionExpiryRecovery(state.error ?? lockMode.error);
   const locked = state.data?.locked ?? false;
+  const status = lockMode.isPending
+    ? locked
+      ? "Verify with your passkey…"
+      : "Blocking new requests…"
+    : locked
+      ? "New requests blocked"
+      : "Requests allowed";
 
   return (
     <section
       aria-labelledby="lock-mode-title"
-      className={`mb-8 rounded-card border p-4 ${
+      className={`mb-4 flex min-h-14 flex-wrap items-center justify-between gap-x-4 rounded-card border px-3 py-1.5 ${
         locked
           ? "border-danger-border bg-danger-muted"
           : "border-subtle bg-surface"
       }`}
     >
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 id="lock-mode-title" className="text-sm font-medium">
-            Lock mode
-          </h2>
-          <p className="mt-1 text-xs leading-5 text-secondary">
-            {locked
-              ? "Locked. New requester operations are rejected without an approval notification."
-              : "Unlocked. Requests may be approved once or through an active remembered authorization."}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={locked}
-          aria-label={locked ? "Unlock gateway" : "Lock gateway"}
-          disabled={state.isPending || lockMode.isPending}
-          onClick={() => lockMode.mutate(!locked)}
-          className={`relative h-7 w-12 shrink-0 rounded-pill border transition-colors disabled:opacity-50 ${
+      <div className="min-w-0">
+        <h2 id="lock-mode-title" className="text-sm font-medium">Lock mode</h2>
+        <p className="truncate text-xs text-secondary">{status}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={locked}
+        aria-label={locked ? "Unlock gateway" : "Lock gateway"}
+        disabled={state.isPending || lockMode.isPending}
+        onClick={() => lockMode.mutate(!locked)}
+        className="relative h-11 w-12 shrink-0 disabled:opacity-50"
+      >
+        <span
+          aria-hidden="true"
+          className={`absolute inset-x-0 top-2 h-7 rounded-pill border transition-colors ${
             locked
               ? "border-danger-border bg-danger-text"
               : "border-subtle bg-muted"
           }`}
         >
           <span
-            aria-hidden="true"
             className={`absolute left-[3px] top-[3px] size-5 rounded-full bg-background transition-transform ${
               locked ? "translate-x-5" : "translate-x-0"
             }`}
           />
-        </button>
-      </div>
-      {lockMode.isPending && !locked ? (
-        <p className="mt-3 text-xs text-secondary">
-          Locking and rejecting pending requests…
-        </p>
-      ) : null}
-      {lockMode.isPending && locked ? (
-        <p className="mt-3 text-xs text-secondary">
-          Verify your Passkey to leave Lock mode.
-        </p>
-      ) : null}
+        </span>
+      </button>
       {lockMode.isError ? (
-        <ActionError error={lockMode.error} onDismiss={() => lockMode.reset()} compact />
+        <div className="basis-full">
+          <ActionError error={lockMode.error} onDismiss={() => lockMode.reset()} compact />
+        </div>
       ) : null}
     </section>
   );
 }
 
-function RequestCard({ request }: { request: RequestSummary }) {
-  const status = effectiveStatus(request);
+function RequestCard({ now, request }: { now: number; request: RequestSummary }) {
+  const status = effectiveStatus(request, now);
   const decision = useRequestDecision(request.requestId);
   const canDecide = status === "pending";
 
@@ -314,50 +353,21 @@ function RequestCard({ request }: { request: RequestSummary }) {
     <li
       id={`request-${request.requestId}`}
       tabIndex={-1}
-      className="scroll-mt-24 rounded-dialog border border-subtle bg-surface p-5 outline-none transition-[border-color,box-shadow] target:border-focus target:shadow-[0_0_0_1px_var(--color-focus)] sm:p-6"
+      className="scroll-mt-24 rounded-dialog border border-subtle bg-surface p-4 outline-none transition-[border-color,box-shadow] target:border-focus target:shadow-[0_0_0_1px_var(--color-focus)] sm:p-5"
     >
-      <div className="flex min-w-0 flex-col gap-5">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold leading-7 tracking-[-0.02em] [overflow-wrap:anywhere]">
-            {approvalQuestion(request)}
-          </h2>
-          <dl className="mt-5 grid gap-4 rounded-card border border-subtle bg-muted p-4 sm:grid-cols-2">
-            <div className="min-w-0">
-              <dt className="text-xs text-secondary">
-                Application identity · {request.client.identity.assurance === "verified-code-signature" ? "verified" : "unverified"}
-              </dt>
-              <dd className="mt-1 break-words text-sm font-medium">
-                {request.client.application}
-              </dd>
-              {request.client.identity.assurance === "verified-code-signature" ? (
-                <dd className="mt-1 break-words font-mono text-[11px] text-secondary">
-                  {applicationSignerCopy(request.client.identity)}
-                </dd>
-              ) : null}
-            </div>
-            <div className="min-w-0">
-              <dt className="text-xs text-secondary">Requester device · verified</dt>
-              <dd className="mt-1 break-words text-sm font-medium">
-                {request.requesterName}
-              </dd>
-            </div>
-          </dl>
-          <p className="mt-3 text-xs text-secondary">
-            Expires{" "}
-            <time dateTime={request.expiresAt}>{formatDateTime(request.expiresAt)}</time>
-          </p>
-          {request.client.identity.assurance === "unverified" ? (
-            <p className="mt-3 text-xs leading-5 text-secondary">
-              OneNod could not cryptographically verify this application. Only a one-time approval is available; verify the requester device before approving.
-            </p>
-          ) : null}
-        </div>
+      <h2 className="text-lg font-semibold leading-6 tracking-[-0.02em] [overflow-wrap:anywhere]">
+        {approvalQuestion(request)}
+      </h2>
+      <ApplicationIdentityDisclosure request={request} />
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 text-xs text-secondary">
+        <span className="min-w-0 truncate">{request.requesterName}</span>
+        <span className="shrink-0 tabular-nums">
+          <LiveCountdown expiresAt={request.expiresAt} label="Expires" now={now} />
+        </span>
+      </div>
+      <div className="mt-4">
         {canDecide ? (
-          <ApprovalControls
-            canDecide
-            decision={decision}
-            request={request}
-          />
+          <ApprovalControls canDecide decision={decision} request={request} />
         ) : (
           <StatusBadge status={status} />
         )}
@@ -366,6 +376,110 @@ function RequestCard({ request }: { request: RequestSummary }) {
         <ActionError error={decision.error} onDismiss={() => decision.reset()} compact />
       ) : null}
     </li>
+  );
+}
+
+function ApplicationIdentityDisclosure({ request }: { request: RequestSummary }) {
+  const identity = request.client.identity;
+  const recognition = request.applicationRecognition;
+  const warning = recognition !== "approved-before";
+  const copy = applicationRecognitionCopy(recognition, request);
+
+  return (
+    <details className="group mt-3 rounded-control border border-subtle bg-background/40">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 marker:content-none">
+        {warning ? (
+          <span
+            aria-hidden="true"
+            className="grid size-4 shrink-0 place-items-center rounded-full border border-danger-border text-[10px] font-semibold text-danger-text"
+          >
+            !
+          </span>
+        ) : null}
+        <span
+          className={`min-w-0 flex-1 truncate text-sm ${
+            warning ? "text-danger-text" : "text-secondary"
+          }`}
+        >
+          {copy}
+        </span>
+        <DisclosureChevron />
+      </summary>
+      <dl className="grid gap-3 border-t border-subtle px-3 py-3 text-xs">
+        <IdentityFact label="Application" value={request.client.application} />
+        <IdentityFact
+          label="Assurance"
+          value={
+            identity.assurance === "verified-code-signature"
+              ? "Verified code signature"
+              : "Not cryptographically verified"
+          }
+        />
+        {identity.assurance === "verified-code-signature" ? (
+          <>
+            {identity.signerName ? (
+              <IdentityFact label="Signer" value={identity.signerName} />
+            ) : null}
+            {identity.teamIdentifier ? (
+              <IdentityFact label="Team ID" value={identity.teamIdentifier} />
+            ) : null}
+            <IdentityFact label="Signing identifier" value={identity.signingIdentifier} />
+            <IdentityFact
+              label="Application principal"
+              value={identity.principalId}
+            />
+          </>
+        ) : null}
+        <IdentityFact label="Requester" value={request.requesterName} />
+        <IdentityFact label="Created" value={formatDateTime(request.createdAt)} />
+        <IdentityFact label="Expires" value={formatDateTime(request.expiresAt)} />
+      </dl>
+    </details>
+  );
+}
+
+function applicationRecognitionCopy(
+  recognition: ApplicationRecognition,
+  request: RequestSummary,
+): string {
+  if (recognition === "unverified") {
+    return "App signature not verified · One-time approval only";
+  }
+  if (recognition === "first-approval") {
+    return "First approval for this app signature";
+  }
+  if (request.client.identity.assurance !== "verified-code-signature") {
+    return "App signature not verified";
+  }
+  const signer = applicationSignerCopy(request.client.identity);
+  return `Verified app signature${signer ? ` · ${signer}` : ""}`;
+}
+
+function IdentityFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] gap-3">
+      <dt className="text-secondary">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function DisclosureChevron() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="size-4 shrink-0 transition-transform group-open:rotate-180"
+      fill="none"
+    >
+      <path
+        d="m4 6 4 4 4-4"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
   );
 }
 
@@ -395,6 +509,8 @@ function useRequestDecision(requestId: string) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["request", requestId] }),
         queryClient.invalidateQueries({ queryKey: ["requests"] }),
+        queryClient.invalidateQueries({ queryKey: ["management"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
       ]);
     },
     onError: async (error) => {
@@ -434,7 +550,7 @@ function ApprovalControls({
     : sshAuthorizationDurations;
 
   return (
-    <div className="grid w-full grid-cols-2 gap-3 sm:ml-auto sm:max-w-[560px] lg:grid-cols-[minmax(10rem,0.8fr)_minmax(18rem,1.2fr)]">
+    <div className="grid w-full grid-cols-2 gap-2 sm:ml-auto sm:max-w-[560px]">
       <button
         type="button"
         aria-label={`Deny ${request.targetLabel}`}
@@ -459,43 +575,32 @@ function ApprovalControls({
         >
           {decision.isPending && decision.variables?.decision === "approve"
             ? "Verifying…"
-            : (
-                <>
-                  Approve
-                  <span className="hidden lg:inline"> with Passkey</span>
-                </>
-              )}
+            : "Approve"}
         </button>
         {canRemember ? (
           <details className="group relative">
             <summary
-              aria-label={`Choose how long to remember this ${authorizationResource === "secret" ? "secret" : "SSH"} approval`}
+              aria-label={`Choose how long to remember this ${
+                authorizationResource === "secret" ? "secret" : "SSH"
+              } approval`}
               className="grid h-12 w-11 cursor-pointer list-none place-items-center rounded-r-control border-l border-background/20 bg-foreground text-background marker:content-none"
             >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 16 16"
-                className="size-4"
-                fill="none"
-              >
-                <path
-                  d="m4 6 4 4 4-4"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.5"
-                />
-              </svg>
+              <DisclosureChevron />
             </summary>
             <div className="absolute bottom-[calc(100%+0.5rem)] right-0 z-50 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-card border border-subtle bg-surface p-1 shadow-2xl">
-              <p className="px-3 py-2 text-xs leading-5 text-secondary">
-                <strong className="font-medium text-foreground">
-                  Application-wide, not task-scoped.
-                </strong>{" "}
-                OneNod cannot distinguish tasks or sessions inside {request.client.application}.
-                Any request carrying this verified code-signing identity on {request.requesterName} may {authorizationResource === "secret" ? "read this exact 1Password field" : "use this SSH key"} while the approval is active.
-                If the identity belongs to a shared runtime such as Node, this includes every local program using that same signed runtime.
+              <p className="px-3 pb-1 pt-2 text-xs text-secondary">
+                Applies to the whole verified app.
               </p>
+              <details className="px-3 pb-2 text-xs text-secondary">
+                <summary className="min-h-7 cursor-pointer list-none py-1 font-medium text-foreground underline decoration-subtle underline-offset-4 marker:content-none">
+                  Why?
+                </summary>
+                <p className="pb-1 leading-5">
+                  OneNod cannot distinguish tasks inside {request.client.application}.
+                  Any request with this same verified app signature on {request.requesterName}
+                  may use the selected resource while access is active.
+                </p>
+              </details>
               {authorizationDurations.map((duration) => (
                 <button
                   key={duration}
@@ -507,7 +612,7 @@ function ApprovalControls({
                       decision: "approve",
                     })
                   }
-                  className="block w-full rounded-control px-3 py-2 text-left text-sm hover:bg-muted disabled:opacity-50"
+                  className="block min-h-11 w-full rounded-control px-3 py-2 text-left text-sm hover:bg-muted disabled:opacity-50"
                 >
                   {sshAuthorizationDurationCopy[duration]}
                 </button>

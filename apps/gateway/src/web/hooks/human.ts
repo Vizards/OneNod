@@ -32,6 +32,7 @@ export function useHumanRealtime(enabled: boolean): void {
         queryClient.invalidateQueries({ queryKey: ["requests"] }),
         queryClient.invalidateQueries({ queryKey: ["requester-enrollments"] }),
         queryClient.invalidateQueries({ queryKey: ["management"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
         queryClient.invalidateQueries({ queryKey: ["push-config"] }),
         queryClient.invalidateQueries({ queryKey: ["human-state"] }),
       ]);
@@ -68,7 +69,10 @@ export function useHumanRealtime(enabled: boolean): void {
           return;
         }
         if (message.type === "management.changed") {
-          void queryClient.invalidateQueries({ queryKey: ["management"] });
+          void Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["management"] }),
+            queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
+          ]);
           return;
         }
         if (message.type === "lock.changed") {
@@ -76,6 +80,7 @@ export function useHumanRealtime(enabled: boolean): void {
             queryClient.invalidateQueries({ queryKey: ["human-state"] }),
             queryClient.invalidateQueries({ queryKey: ["requests"] }),
             queryClient.invalidateQueries({ queryKey: ["management"] }),
+            queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
           ]);
           return;
         }

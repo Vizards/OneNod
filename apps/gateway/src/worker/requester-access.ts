@@ -228,7 +228,7 @@ export class RequesterAccess {
          ORDER BY created_at ASC LIMIT 20`,
         Date.now(),
       ).map(projectEnrollment);
-    return json({ enrollments });
+    return json({ enrollments, server_time: new Date().toISOString() });
   }
 
   async requesterEnrollmentDecisionOptions(

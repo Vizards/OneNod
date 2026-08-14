@@ -36,6 +36,7 @@ export interface HumanManagement {
   credentials: HumanCredentialSummary[];
   devices: HumanDeviceSummary[];
   requesters: RequesterSummary[];
+  serverTime: string;
   secretAuthorizations: SecretAuthorizationSummary[];
   sshAuthorizations: SshAuthorizationSummary[];
 }
@@ -111,6 +112,13 @@ export interface GatewaySystemHealthResponse extends SystemHealthResponse {
 
 export interface PaginatedRequestListResponse extends RequestListResponse {
   nextCursor?: string;
+  serverTime: string;
+}
+
+export interface AuthorizationSummary {
+  activeCount: number;
+  nextExpiryAt?: string;
+  serverTime: string;
 }
 
 export interface WebAuthnOptionsEnvelope<TOptions> {

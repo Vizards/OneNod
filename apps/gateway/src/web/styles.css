@@ -67,6 +67,10 @@ a {
   touch-action: manipulation;
 }
 
+summary::-webkit-details-marker {
+  display: none;
+}
+
 :focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px #000000, 0 0 0 4px var(--color-focus);

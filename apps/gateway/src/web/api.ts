@@ -14,13 +14,14 @@ import { DEFAULT_PASSKEY_LABEL } from "../passkey-identity";
 const CSRF_STORAGE_KEY = "onepassword-remote.csrf";
 
 export type {
-  ApprovalDecision, DeviceRegistrationInput, GatewaySystemHealthResponse,
+  ApprovalDecision, AuthorizationSummary, DeviceRegistrationInput, GatewaySystemHealthResponse,
   HumanCredentialSummary, HumanDeviceSummary, HumanManagement, HumanState,
   PaginatedRequestListResponse, RequesterEnrollment, RequesterSummary,
   SecretAuthorizationSummary, SshAuthorizationSummary, VerifyDecisionResponse,
 } from "./api-types";
 import type {
   ApprovalDecision,
+  AuthorizationSummary,
   DeviceRegistrationInput,
   GatewaySystemHealthResponse,
   HumanManagement,
@@ -155,6 +156,7 @@ export function deletePushSubscription(): Promise<{ ok: true }> {
 
 export async function getRequesterEnrollments(): Promise<{
   enrollments: RequesterEnrollment[];
+  serverTime: string;
 }> {
   const response = await fetchJson<{
     enrollments: Array<{
@@ -166,6 +168,7 @@ export async function getRequesterEnrollments(): Promise<{
       public_key_fingerprint: string;
       status: string;
     }>;
+    server_time: string;
   }>("/v1/human/requester-enrollments");
 
   return {
@@ -178,6 +181,7 @@ export async function getRequesterEnrollments(): Promise<{
       publicKeyFingerprint: enrollment.public_key_fingerprint,
       status: enrollment.status,
     })),
+    serverTime: response.server_time,
   };
 }
 
@@ -251,7 +255,11 @@ export async function getRequests(
   const search = new URLSearchParams();
   if (cursor) search.set("cursor", cursor);
   if (pendingOnly) search.set("pending", "true");
-  const response = await fetchJson<{ next_cursor?: unknown; requests: unknown[] }>(
+  const response = await fetchJson<{
+    next_cursor?: unknown;
+    requests: unknown[];
+    server_time: string;
+  }>(
     `/v1/human/requests${search.size > 0 ? `?${search.toString()}` : ""}`,
   );
   return {
@@ -259,6 +267,22 @@ export async function getRequests(
       ? { nextCursor: response.next_cursor }
       : {}),
     requests: response.requests.map(normalizeRequestSummary),
+    serverTime: response.server_time,
+  };
+}
+
+export async function getAuthorizationSummary(): Promise<AuthorizationSummary> {
+  const response = await fetchJson<{
+    active_count: number;
+    next_expiry_at?: string;
+    server_time: string;
+  }>("/v1/human/authorizations/summary");
+  return {
+    activeCount: response.active_count,
+    ...(response.next_expiry_at
+      ? { nextExpiryAt: response.next_expiry_at }
+      : {}),
+    serverTime: response.server_time,
   };
 }
 

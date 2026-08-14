@@ -353,6 +353,20 @@ test("alpha.20 terminal state upgrades while preserving identities and retiring 
   );
   initialize(database);
 
+  assert.equal(
+    database.prepare(
+      `SELECT COUNT(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name = 'approved_application_identities'`,
+    ).get()?.count,
+    1,
+  );
+  assert.equal(
+    database.prepare(
+      "SELECT COUNT(*) AS count FROM approved_application_identities",
+    ).get()?.count,
+    0,
+  );
+
   assert.deepEqual(preservedState(database), before);
   assert.equal(
     database.prepare(

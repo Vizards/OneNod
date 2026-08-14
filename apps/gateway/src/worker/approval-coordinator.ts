@@ -354,6 +354,12 @@ export class ApprovalCoordinator extends DurableObject<Env> {
     if (request.method === "GET" && path === "/v1/human/management") {
       return this.humanManagement.humanManagement(request);
     }
+    if (
+      request.method === "GET" &&
+      path === "/v1/human/authorizations/summary"
+    ) {
+      return this.humanManagement.authorizationSummary(request);
+    }
     const sshGrantRevoke = path.match(
       /^\/v1\/human\/ssh-authorizations\/([^/]+)$/u,
     );

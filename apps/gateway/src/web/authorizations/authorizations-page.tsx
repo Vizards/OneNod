@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 import type {
   SecretAuthorizationSummary,
   SshAuthorizationSummary,
@@ -10,6 +11,8 @@ import {
   revokeSshAuthorization,
 } from "../api";
 import { ActionError, InlineError, PagePanelSkeleton } from "../components/common";
+import { LiveCountdown } from "../components/live-countdown";
+import { useExpiryRefresh, useServerClock } from "../hooks/live-clock";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
 import {
   applicationSignerCopy,
@@ -24,11 +27,31 @@ type ActiveAuthorization =
 
 export function AuthorizationsPage() {
   usePageTitle("Remembered access · OneNod");
+  const queryClient = useQueryClient();
   const management = useQuery({
     queryFn: getHumanManagement,
     queryKey: ["management"],
   });
   useSessionExpiryRecovery(management.error);
+  const refreshAuthorizations = (): void => {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["management"] }),
+      queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
+    ]);
+  };
+  const now = useServerClock(management.data?.serverTime, refreshAuthorizations);
+  const deadlines = useMemo(
+    () => [
+      ...(management.data?.secretAuthorizations ?? []),
+      ...(management.data?.sshAuthorizations ?? []),
+    ].flatMap((authorization) =>
+      authorization.expiresAt
+        ? [{ expiresAt: authorization.expiresAt, id: authorization.id }]
+        : [],
+    ),
+    [management.data?.secretAuthorizations, management.data?.sshAuthorizations],
+  );
+  useExpiryRefresh(deadlines, now, refreshAuthorizations);
 
   if (management.isPending) return <PagePanelSkeleton />;
   if (management.isError) {
@@ -60,9 +83,6 @@ export function AuthorizationsPage() {
 
   return (
     <section aria-labelledby="authorizations-title">
-      <p className="mb-2 font-mono text-xs uppercase tracking-[0.12em] text-secondary">
-        Application access
-      </p>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h1
           id="authorizations-title"
@@ -74,11 +94,8 @@ export function AuthorizationsPage() {
           {authorizations.length} active
         </span>
       </div>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-secondary">
-        These approvals apply to the whole cryptographically verified application
-        on one requester Mac—not to the Agent task or conversation that created
-        them. A shared runtime identity, such as Node, can cover multiple local
-        programs using that runtime. Revoke access you no longer expect.
+      <p className="mt-2 text-sm text-secondary">
+        Active access that can be reused without another approval.
       </p>
 
       {authorizations.length > 0 ? (
@@ -87,6 +104,7 @@ export function AuthorizationsPage() {
             <AuthorizationCard
               authorization={authorization}
               key={`${authorization.kind}:${authorization.value.id}`}
+              now={now}
               requesterName={
                 requesterNames.get(authorization.value.requesterDeviceId) ??
                 authorization.value.requesterDeviceId
@@ -108,9 +126,11 @@ export function AuthorizationsPage() {
 }
 function AuthorizationCard({
   authorization,
+  now,
   requesterName,
 }: {
   authorization: ActiveAuthorization;
+  now: number;
   requesterName: string;
 }) {
   const queryClient = useQueryClient();
@@ -120,7 +140,10 @@ function AuthorizationCard({
         ? revokeSecretAuthorization(authorization.value.id)
         : revokeSshAuthorization(authorization.value.id),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["management"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["management"] }),
+        queryClient.invalidateQueries({ queryKey: ["authorization-summary"] }),
+      ]);
     },
   });
   useSessionExpiryRecovery(revoke.error);
@@ -160,7 +183,7 @@ function AuthorizationCard({
           <div className="min-w-0">
             <dt className="text-xs text-secondary">Ends</dt>
             <dd className="mt-1 break-words text-sm font-medium">
-              {authorizationEndCopy(authorization)}
+              <AuthorizationEnd authorization={authorization} now={now} />
             </dd>
           </div>
         </dl>
@@ -188,12 +211,20 @@ function AuthorizationCard({
   );
 }
 
-function authorizationEndCopy(authorization: ActiveAuthorization): string {
+function AuthorizationEnd({
+  authorization,
+  now,
+}: {
+  authorization: ActiveAuthorization;
+  now: number;
+}) {
   const value = authorization.value;
-  if (value.expiresAt) return formatDateTime(value.expiresAt);
-  if (value.duration === "until-lock") return "When Lock mode is enabled";
-  if (authorization.kind === "ssh" && value.duration === "until-agent-quits") {
-    return "When this SSH Agent quits";
+  if (value.expiresAt) {
+    return <LiveCountdown expiresAt={value.expiresAt} label="Ends" now={now} />;
   }
-  return sshAuthorizationDurationCopy[value.duration];
+  if (value.duration === "until-lock") return <>When Lock mode is enabled</>;
+  if (authorization.kind === "ssh" && value.duration === "until-agent-quits") {
+    return <>When this SSH Agent quits</>;
+  }
+  return <>{sshAuthorizationDurationCopy[value.duration]}</>;
 }

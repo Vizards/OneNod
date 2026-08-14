@@ -47,8 +47,14 @@ export type ApplicationIdentity =
       platform: "macos" | "unsupported";
     };
 
+export type ApplicationRecognition =
+  | "approved-before"
+  | "first-approval"
+  | "unverified";
+
 export interface RequestSummary {
   action: ApprovalAction;
+  applicationRecognition: ApplicationRecognition;
   authorizationScope?: {
     kind: "application";
     resource: "secret" | "ssh";

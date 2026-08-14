@@ -9,6 +9,8 @@ import type {
 
 import { ApiError } from "../api";
 
+export { formatCountdown, shortIdentifier } from "./presentation-core";
+
 export const statusCopy: Record<ApprovalStatus, string> = {
   approved: "Approved",
   consumed: "Released",
@@ -104,17 +106,22 @@ export function environmentCopy(value: string): string {
   return `${value} environment`;
 }
 
-export function effectiveStatus(request: RequestSummary): ApprovalStatus {
-  return request.status === "pending" && isPast(request.expiresAt) ? "expired" : request.status;
+export function effectiveStatus(
+  request: RequestSummary,
+  now = Date.now(),
+): ApprovalStatus {
+  return request.status === "pending" && isPast(request.expiresAt, now)
+    ? "expired"
+    : request.status;
 }
 
 export function isRefreshableDecisionError(error: unknown): boolean {
   return error instanceof ApiError && [401, 404, 409, 410].includes(error.status);
 }
 
-export function isPast(value: string): boolean {
+export function isPast(value: string, now = Date.now()): boolean {
   const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && timestamp <= Date.now();
+  return Number.isFinite(timestamp) && timestamp <= now;
 }
 
 export function toErrorMessage(error: unknown): string {

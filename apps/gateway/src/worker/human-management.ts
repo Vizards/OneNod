@@ -74,6 +74,10 @@ export class HumanManagement {
       .toArray() as unknown as T[];
   }
 
+  private first<T>(query: string, ...bindings: unknown[]): T | undefined {
+    return this.rows<T>(query, ...bindings)[0];
+  }
+
   async humanManagement(request: Request): Promise<Response> {
     const session = await this.human.requireHumanSession(request);
     const credentials = this.rows<HumanCredentialRow>(
@@ -183,6 +187,7 @@ export class HumanManagement {
       credentials,
       devices,
       requesters,
+      server_time: new Date(now).toISOString(),
       secret_authorizations: secretAuthorizations,
       ssh_authorizations: sshAuthorizations,
       storage: {
@@ -190,6 +195,49 @@ export class HumanManagement {
         pressure: storagePressure(this.sql.databaseSize),
       },
     });
+  }
+
+  async authorizationSummary(request: Request): Promise<Response> {
+    await this.human.requireHumanSession(request);
+    const now = Date.now();
+    const lockGeneration = this.human.gatewayRuntimeState().lock_generation;
+    const secret = this.activeAuthorizationCount(
+      "secret_authorization_grants",
+      now,
+      lockGeneration,
+    );
+    const ssh = this.activeAuthorizationCount(
+      "ssh_authorization_grants",
+      now,
+      lockGeneration,
+    );
+    const expiries = [secret.next_expiry_at, ssh.next_expiry_at].filter(
+      (value): value is number => typeof value === "number",
+    );
+    const nextExpiry = expiries.length > 0 ? Math.min(...expiries) : undefined;
+    return json({
+      active_count: secret.count + ssh.count,
+      ...(nextExpiry === undefined
+        ? {}
+        : { next_expiry_at: new Date(nextExpiry).toISOString() }),
+      server_time: new Date(now).toISOString(),
+    });
+  }
+
+  private activeAuthorizationCount(
+    table: "secret_authorization_grants" | "ssh_authorization_grants",
+    now: number,
+    lockGeneration: number,
+  ): { count: number; next_expiry_at: number | null } {
+    return this.first<{ count: number; next_expiry_at: number | null }>(
+      `SELECT COUNT(*) AS count, MIN(expires_at) AS next_expiry_at
+       FROM ${table}
+       WHERE revoked_at IS NULL
+         AND (expires_at IS NULL OR expires_at > ?)
+         AND (duration != 'until-lock' OR lock_generation = ?)`,
+      now,
+      lockGeneration,
+    ) ?? { count: 0, next_expiry_at: null };
   }
 
   async revokeSecretAuthorization(

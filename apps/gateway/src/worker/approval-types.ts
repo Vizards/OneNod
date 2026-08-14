@@ -96,6 +96,7 @@ export interface RequestActivityRow {
   application_signer_name: string | null;
   application_signing_identifier: string | null;
   application_team_identifier: string | null;
+  application_approved_before?: number;
   client_application: string;
   client_source: string;
   consumed_at: number | null;
@@ -195,6 +196,7 @@ export interface RequestRow {
   application_signer_name: string | null;
   application_signing_identifier: string | null;
   application_team_identifier: string | null;
+  application_approved_before?: number;
   application_scope_id: string | null;
   authorized_until: number | null;
   client_application: string;
