@@ -164,9 +164,9 @@ function AuthorizationCard({
           </span>
         </div>
         <h2 className="mt-3 break-words text-base font-medium">{target}</h2>
-        <dl className="mt-5 grid gap-4 sm:grid-cols-3">
-          <div className="min-w-0">
-            <dt className="text-xs text-secondary">Application identity · verified</dt>
+        <dl className="mt-5 grid grid-cols-3 gap-x-4 gap-y-4 lg:grid-cols-[minmax(16rem,2fr)_repeat(3,minmax(7rem,1fr))] lg:gap-x-6">
+          <div className="col-span-full min-w-0 lg:col-span-1">
+            <dt className="text-xs text-secondary">Application identity</dt>
             <dd className="mt-1 break-words text-sm font-medium">
               {value.application}
             </dd>
@@ -175,13 +175,22 @@ function AuthorizationCard({
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-xs text-secondary">Requester device · verified</dt>
+            <dt className="text-xs text-secondary">Requester device</dt>
             <dd className="mt-1 break-words text-sm font-medium">
               {requesterName}
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-xs text-secondary">Ends</dt>
+            <dt className="text-xs text-secondary">Usage</dt>
+            <dd className="mt-1 break-words text-sm font-medium tabular-nums">
+              {value.useCount}{" "}
+              {authorization.kind === "secret"
+                ? value.useCount === 1 ? "read" : "reads"
+                : value.useCount === 1 ? "signature" : "signatures"}
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-secondary">Ends in</dt>
             <dd className="mt-1 break-words text-sm font-medium">
               <AuthorizationEnd authorization={authorization} now={now} />
             </dd>
@@ -190,11 +199,6 @@ function AuthorizationCard({
         <p className="mt-4 text-xs text-secondary">
           Granted {formatDateTime(value.createdAt)} · Whole application
         </p>
-        {authorization.kind === "ssh" ? (
-          <p className="mt-3 break-all font-mono text-[11px] text-secondary">
-            {authorization.value.fingerprint}
-          </p>
-        ) : null}
       </div>
       <button
         type="button"

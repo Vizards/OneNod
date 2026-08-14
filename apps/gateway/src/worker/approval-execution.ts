@@ -7,6 +7,7 @@ import type {
 import {
   ACTIVE_SECRET_GRANT_CONSUME_PREDICATE,
   ACTIVE_SSH_GRANT_CONSUME_PREDICATE,
+  incrementRememberedGrantUse,
 } from "./authorization-grants.js";
 import {
   GatewayHttpError,
@@ -143,15 +144,26 @@ export class ApprovalExecution {
     }
 
     const consumedAt = Date.now();
-    this.sql.exec(
-      `UPDATE requests
-       SET status = 'consumed', consumed_at = ?, error_code = NULL
-       WHERE id = ? AND status = 'executing'`,
-      consumedAt,
-      requestId,
-    );
+    this.ctx.storage.transactionSync(() => {
+      const consumed = this.rows<{ id: string }>(
+        `UPDATE requests
+         SET status = 'consumed', consumed_at = ?, error_code = NULL
+         WHERE id = ? AND status = 'executing'
+         RETURNING id`,
+        consumedAt,
+        requestId,
+      );
+      if (consumed.length !== 1) {
+        throw new GatewayHttpError("execution_state_conflict", 409);
+      }
+      if (row.secret_grant_id) {
+        if (!incrementRememberedGrantUse(this.sql, "secret", row.secret_grant_id)) {
+          throw new GatewayHttpError("execution_state_conflict", 409);
+        }
+      }
+      this.callbacks.audit("request_consumed", requestId, requester.deviceId);
+    });
     this.requestStore.recordTerminalActivity(requestId);
-    this.callbacks.audit("request_consumed", requestId, requester.deviceId);
     this.callbacks.broadcastHumanEvent("request.changed", requestId);
     return json({
       ok: true,
@@ -337,6 +349,11 @@ export class ApprovalExecution {
       );
       if (consumed.length !== 1) {
         throw new GatewayHttpError("execution_state_conflict", 409);
+      }
+      if (row.ssh_grant_id) {
+        if (!incrementRememberedGrantUse(this.sql, "ssh", row.ssh_grant_id)) {
+          throw new GatewayHttpError("execution_state_conflict", 409);
+        }
       }
       this.requestStore.clearPendingPayload(row.id);
       this.callbacks.audit("request_consumed", row.id, requester.deviceId);

@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Link, Outlet } from "@tanstack/react-router";
 
 import {
   getAuthorizationSummary,
   getHumanState,
+  getServiceAccountQuota,
   getSystemHealth,
 } from "../api";
 import { BootstrapPage, DeviceSetupPage, LoginPage } from "../auth/human-gate";
@@ -12,11 +13,9 @@ import { HumanGateSkeleton, InlineError } from "../components/common";
 import { useApprovalAppBadge } from "../hooks/approval-app-badge";
 import { useHumanRealtime } from "../hooks/human";
 import { PWA_RELEASE_METADATA } from "../release-metadata";
-import { environmentCopy, toErrorMessage } from "../utils/presentation";
+import { toErrorMessage } from "../utils/presentation";
 
 export function RootLayout() {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const mobileMenuRef = useRef<HTMLDivElement>(null);
   const health = useQuery({
     queryKey: ["system-health"],
     queryFn: getSystemHealth,
@@ -28,32 +27,24 @@ export function RootLayout() {
     queryFn: getHumanState,
     refetchOnMount: "always",
   });
+  const trusted = Boolean(
+    humanState.data?.authenticated && humanState.data.deviceTrusted,
+  );
   const authorizationSummary = useQuery({
-    enabled: Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted),
+    enabled: trusted,
     queryFn: getAuthorizationSummary,
     queryKey: ["authorization-summary"],
     refetchOnWindowFocus: "always",
   });
-  useHumanRealtime(Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted));
-  useApprovalAppBadge(Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted));
-
-  useEffect(() => {
-    if (!mobileMenuOpen) return;
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setMobileMenuOpen(false);
-    };
-    const closeOnOutsidePointer = (event: PointerEvent): void => {
-      if (event.target instanceof Node && !mobileMenuRef.current?.contains(event.target)) {
-        setMobileMenuOpen(false);
-      }
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-    };
-  }, [mobileMenuOpen]);
+  const serviceAccountQuota = useQuery({
+    enabled: trusted,
+    queryFn: getServiceAccountQuota,
+    queryKey: ["service-account-quota"],
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: "always",
+  });
+  useHumanRealtime(trusted);
+  const pendingApprovalCount = useApprovalAppBadge(trusted);
 
   useEffect(() => {
     const nextExpiry = authorizationSummary.data?.nextExpiryAt;
@@ -71,10 +62,6 @@ export function RootLayout() {
     authorizationSummary.refetch,
   ]);
 
-  const environment = health.isSuccess
-    ? environmentCopy(health.data.environment)
-    : "Connecting";
-  const authenticated = Boolean(humanState.data?.authenticated);
   const releaseMismatch = Boolean(
     health.data &&
       (health.data.version !== PWA_RELEASE_METADATA.releaseVersion ||
@@ -89,7 +76,7 @@ export function RootLayout() {
       >
         Skip to main content
       </a>
-      <header className="fixed inset-x-0 top-0 z-40 border-b border-subtle bg-background/95 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+      <header className="fixed inset-x-0 top-0 z-40 border-b border-subtle bg-background/80 pt-[env(safe-area-inset-top)] backdrop-blur-2xl">
         <div className="mx-auto flex h-16 max-w-[960px] items-center justify-between px-4 sm:px-6">
           <Link
             to="/requests"
@@ -104,145 +91,23 @@ export function RootLayout() {
             </span>
             <span className="text-sm font-medium tracking-[-0.01em]">OneNod</span>
           </Link>
-          <div className="ml-auto hidden items-center sm:flex">
-            <RefreshPageButton />
-            {humanState.data?.deviceTrusted ? (
-              <nav aria-label="Primary navigation" className="mx-3 flex items-center gap-1 text-xs">
-                <Link
-                  to="/requests"
-                  className="rounded-control px-2 py-2 text-secondary hover:text-foreground"
-                  activeProps={{ className: "bg-muted text-foreground" }}
-                >
-                  Approvals
-                </Link>
-                <Link
-                  to="/activity"
-                  className="rounded-control px-2 py-2 text-secondary hover:text-foreground"
-                  activeProps={{ className: "bg-muted text-foreground" }}
-                >
-                  Activity
-                </Link>
-                <Link
-                  to="/authorizations"
-                  className="rounded-control px-2 py-2 text-secondary hover:text-foreground"
-                  activeProps={{ className: "bg-muted text-foreground" }}
-                >
-                  Access
-                </Link>
-                <Link
-                  to="/management"
-                  search={{ section: "approvers" }}
-                  className="rounded-control px-2 py-2 text-secondary hover:text-foreground"
-                  activeProps={{ className: "bg-muted text-foreground" }}
-                >
-                  Manage
-                </Link>
-              </nav>
-            ) : null}
-            {health.isError ? (
-              <button
-                type="button"
-                onClick={() => void health.refetch()}
-                className="flex h-10 items-center gap-2 rounded-control px-2 text-xs text-danger-text"
-              >
-                <span aria-hidden="true" className="size-1.5 rounded-full bg-danger-text" />
-                Connection failed · Retry
-              </button>
-            ) : (
-              <div
-                className="rounded-pill border border-subtle px-3 py-1.5 text-xs text-secondary"
-                aria-live="polite"
-                title={`Gateway ${health.data?.version ?? "unknown"} (${health.data?.channel ?? "unknown"}) · PWA ${PWA_RELEASE_METADATA.releaseVersion} (${PWA_RELEASE_METADATA.releaseChannel}) · ${PWA_RELEASE_METADATA.sourceCommit}`}
-              >
-                {environment}{authenticated ? " · Signed in" : ""}
-              </div>
-            )}
-          </div>
-          <div className="ml-auto flex items-center gap-2 sm:hidden">
-            <RefreshPageButton />
-            {humanState.data?.deviceTrusted ? (
-              <RememberedAccessButton count={authorizationSummary.data?.activeCount ?? 0} />
-            ) : null}
-            <div ref={mobileMenuRef} className="relative">
-              <button
-                type="button"
-                aria-controls="mobile-navigation"
-                aria-expanded={mobileMenuOpen}
-                aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
-                onClick={() => setMobileMenuOpen((open) => !open)}
-                className="grid size-11 place-items-center rounded-control border border-subtle bg-surface"
-              >
-                <span aria-hidden="true" className="grid gap-1">
-                  <span className="block h-px w-4 bg-foreground" />
-                  <span className="block h-px w-4 bg-foreground" />
-                  <span className="block h-px w-4 bg-foreground" />
-                </span>
-              </button>
-              {mobileMenuOpen ? (
-                <div
-                  id="mobile-navigation"
-                  className="absolute right-0 top-[calc(100%+0.5rem)] w-56 rounded-dialog border border-subtle bg-surface p-2 shadow-2xl"
-                >
-                  {humanState.data?.deviceTrusted ? (
-                    <nav aria-label="Mobile primary navigation" className="grid gap-1 text-sm">
-                      <Link
-                        to="/requests"
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="rounded-control px-3 py-3 text-secondary"
-                        activeProps={{ className: "bg-muted text-foreground" }}
-                      >
-                        Approval queue
-                      </Link>
-                      <Link
-                        to="/activity"
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="rounded-control px-3 py-3 text-secondary"
-                        activeProps={{ className: "bg-muted text-foreground" }}
-                      >
-                        Activity
-                      </Link>
-                      <Link
-                        to="/authorizations"
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="rounded-control px-3 py-3 text-secondary"
-                        activeProps={{ className: "bg-muted text-foreground" }}
-                      >
-                        Remembered access
-                      </Link>
-                      <Link
-                        to="/management"
-                        search={{ section: "approvers" }}
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="rounded-control px-3 py-3 text-secondary"
-                        activeProps={{ className: "bg-muted text-foreground" }}
-                      >
-                        Approver management
-                      </Link>
-                    </nav>
-                  ) : null}
-                  <div className={`${humanState.data?.deviceTrusted ? "mt-2 border-t border-subtle pt-2" : ""} px-3 py-2 text-xs text-secondary`}>
-                    {health.isError ? (
-                      <button
-                        type="button"
-                        onClick={() => void health.refetch()}
-                        className="text-danger-text"
-                      >
-                        Gateway connection failed · Retry
-                      </button>
-                    ) : (
-                      <p aria-live="polite">{environment}{authenticated ? " · Signed in" : ""}</p>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
+          <RefreshPageButton />
         </div>
       </header>
+
       <main
         id="main-content"
-        className="mx-auto min-w-0 max-w-[960px] px-4 pb-10 pt-[calc(5.25rem+env(safe-area-inset-top))] sm:px-6 sm:pb-16 sm:pt-[calc(8rem+env(safe-area-inset-top))]"
+        className="mx-auto min-w-0 max-w-[960px] px-4 pb-[calc(7.5rem+env(safe-area-inset-bottom))] pt-[calc(5.25rem+env(safe-area-inset-top))] sm:px-6 sm:pt-[calc(7rem+env(safe-area-inset-top))]"
       >
+        {health.isError ? (
+          <button
+            type="button"
+            onClick={() => void health.refetch()}
+            className="mb-4 w-full rounded-card border border-danger-border bg-danger-muted px-4 py-3 text-left text-sm text-danger-text"
+          >
+            Gateway connection failed · Tap to retry
+          </button>
+        ) : null}
         {releaseMismatch ? (
           <div
             role="status"
@@ -258,6 +123,19 @@ export function RootLayout() {
             </button>
           </div>
         ) : null}
+        {serviceAccountQuota.data?.exhausted ? (
+          <div
+            role="alert"
+            className="mb-6 rounded-card border border-danger-border bg-danger-muted px-4 py-3"
+          >
+            <p className="text-sm font-medium text-danger-text">
+              1Password Service Account quota exhausted
+            </p>
+            <p className="mt-1 text-xs text-secondary">
+              Password reads and SSH signing remain unavailable until 1Password resets the quota.
+            </p>
+          </div>
+        ) : null}
         {humanState.isPending ? <HumanGateSkeleton /> : null}
         {humanState.isError ? (
           <div className="mx-auto max-w-[640px]">
@@ -268,48 +146,84 @@ export function RootLayout() {
             />
           </div>
         ) : null}
-        {humanState.data && !humanState.data.initialized ? (
-          <BootstrapPage />
-        ) : null}
+        {humanState.data && !humanState.data.initialized ? <BootstrapPage /> : null}
         {humanState.data?.initialized && !humanState.data.authenticated ? <LoginPage /> : null}
         {humanState.data?.authenticated && !humanState.data.deviceTrusted ? (
           <DeviceSetupPage />
         ) : null}
-        {humanState.data?.deviceTrusted ? <Outlet /> : null}
+        {trusted ? <Outlet /> : null}
       </main>
+
+      {trusted ? (
+        <BottomNavigation
+          approvalCount={pendingApprovalCount}
+          authorizationCount={authorizationSummary.data?.activeCount ?? 0}
+        />
+      ) : null}
     </div>
   );
 }
 
-function RememberedAccessButton({ count }: { count: number }) {
-  const badge = count > 99 ? "99+" : String(count);
+function BottomNavigation({
+  approvalCount,
+  authorizationCount,
+}: {
+  approvalCount: number;
+  authorizationCount: number;
+}) {
+  return (
+    <nav
+      aria-label="Primary navigation"
+      className="fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-1/2 z-40 grid w-[min(calc(100%_-_1.5rem),34rem)] -translate-x-1/2 grid-cols-4 gap-1 rounded-[1.5rem] border border-white/10 bg-[#171717]/75 p-1.5 shadow-[0_18px_60px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+    >
+      <BottomNavigationLink to="/requests" label="Approvals" count={approvalCount} />
+      <BottomNavigationLink to="/activity" label="Activity" />
+      <BottomNavigationLink
+        to="/authorizations"
+        label="Access"
+        count={authorizationCount}
+      />
+      <Link
+        to="/management"
+        search={{ section: "approvers" }}
+        className="relative grid min-h-12 place-items-center rounded-[1.05rem] px-2 text-sm text-secondary transition-colors hover:text-foreground"
+        activeProps={{ className: "bg-white/10 text-foreground" }}
+      >
+        Manage
+      </Link>
+    </nav>
+  );
+}
+
+function BottomNavigationLink({
+  count = 0,
+  label,
+  to,
+}: {
+  count?: number;
+  label: string;
+  to: "/activity" | "/authorizations" | "/requests";
+}) {
   return (
     <Link
-      to="/authorizations"
-      aria-label={`Remembered access, ${count} active`}
-      title="Remembered access"
-      className="relative grid size-11 place-items-center rounded-control border border-subtle bg-surface text-secondary transition-colors hover:text-foreground"
-      activeProps={{ className: "text-foreground" }}
+      to={to}
+      className="relative grid min-h-12 place-items-center rounded-[1.05rem] px-2 text-sm text-secondary transition-colors hover:text-foreground"
+      activeProps={{ className: "bg-white/10 text-foreground" }}
     >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.75"
-        className="size-[18px]"
-      >
-        <path d="M12 3 4.5 6v5.3c0 4.6 3.1 8.3 7.5 9.7 4.4-1.4 7.5-5.1 7.5-9.7V6L12 3Z" />
-        <path d="m8.7 12 2.1 2.1 4.5-4.5" />
-      </svg>
-      {count > 0 ? (
-        <span className="absolute -right-1 -top-1 min-w-5 rounded-pill border-2 border-background bg-danger-text px-1 text-center font-mono text-[10px] font-semibold leading-4 text-background">
-          {badge}
-        </span>
-      ) : null}
+      <span className="relative">
+        {label}
+        <NavigationBadge count={count} />
+      </span>
     </Link>
+  );
+}
+
+function NavigationBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="absolute -right-4 -top-2 min-w-4 rounded-pill bg-danger-text px-1 text-center font-mono text-[9px] font-semibold leading-4 text-background">
+      {count > 99 ? "99+" : count}
+    </span>
   );
 }
 
@@ -320,7 +234,7 @@ function RefreshPageButton() {
       aria-label="Reload the entire page"
       title="Reload page"
       onClick={() => window.location.reload()}
-      className="grid size-11 place-items-center rounded-control border border-subtle bg-surface text-secondary transition-colors hover:text-foreground"
+      className="grid h-10 w-12 place-items-center rounded-pill border border-subtle bg-surface text-secondary transition-colors hover:text-foreground"
     >
       <svg
         aria-hidden="true"

@@ -144,8 +144,12 @@ test("restricted fetch keeps deadline enforcement active while buffering the bod
 test("restricted fetch records a 1Password rate-limit response on the active lease", async () => {
   const lease = activeLease();
   let upstreamRequests = 0;
+  const upstreamStatuses: number[] = [];
   lease.observeUpstreamRequest = () => {
     upstreamRequests += 1;
+  };
+  lease.observeUpstreamResponse = (status) => {
+    upstreamStatuses.push(status);
   };
   const restricted = createRestrictedFetch(
     "my.1password.com",
@@ -158,6 +162,7 @@ test("restricted fetch records a 1Password rate-limit response on the active lea
   assert.equal(response.status, 429);
   assert.equal(lease.upstreamRateLimited, true);
   assert.equal(upstreamRequests, 1);
+  assert.deepEqual(upstreamStatuses, [429]);
 });
 
 function activeLease(

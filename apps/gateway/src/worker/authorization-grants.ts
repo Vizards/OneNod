@@ -105,6 +105,27 @@ export const REJECT_QUEUED_REQUESTS_FOR_REQUESTER_SQL = `UPDATE requests
   WHERE requester_device_id = ? AND status IN ('pending', 'approved')
   RETURNING id`;
 
+export function incrementRememberedGrantUse(
+  sql: {
+    exec(query: string, ...bindings: unknown[]): {
+      toArray(): Record<string, unknown>[];
+    };
+  },
+  kind: "secret" | "ssh",
+  grantId: string,
+): boolean {
+  const table = kind === "secret"
+    ? "secret_authorization_grants"
+    : "ssh_authorization_grants";
+  return sql
+    .exec(
+      `UPDATE ${table} SET use_count = use_count + 1
+       WHERE id = ? RETURNING id`,
+      grantId,
+    )
+    .toArray().length === 1;
+}
+
 export function rememberedAuthorizationDurationAvailable(input: {
   action: string;
   applicationAssurance: string;

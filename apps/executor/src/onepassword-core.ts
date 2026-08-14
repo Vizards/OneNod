@@ -63,6 +63,7 @@ export interface CoreRunOptions {
   deadlineAt: number;
   observeInvocation?: (kind: OnePasswordOperation["kind"]) => void;
   observeUpstreamRequest?: () => void;
+  observeUpstreamResponse?: (status: number) => void;
   serviceAccountToken: string;
   signal?: AbortSignal;
 }
@@ -189,6 +190,9 @@ export async function runWithOnePasswordClient<T>(
         ...(options.observeUpstreamRequest === undefined
           ? {}
           : { observeUpstreamRequest: options.observeUpstreamRequest }),
+        ...(options.observeUpstreamResponse === undefined
+          ? {}
+          : { observeUpstreamResponse: options.observeUpstreamResponse }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
       async (lease) => {

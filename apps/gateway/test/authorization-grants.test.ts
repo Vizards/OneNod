@@ -23,6 +23,7 @@ import {
   REJECT_QUEUED_REQUESTS_FOR_CREDENTIAL_SQL,
   REJECT_QUEUED_REQUESTS_FOR_REQUESTER_SQL,
   rememberedAuthorizationDurationAvailable,
+  incrementRememberedGrantUse,
   rejectQueuedRequestsForGrantSql,
 } from "../src/worker/authorization-grants.js";
 import {
@@ -350,6 +351,36 @@ test("verified attestation establishes a reusable secret grant whose revoke stop
     ["queued-read"],
   );
   assert.equal(consume(db, "queued-read", "secret"), false);
+});
+
+test("remembered grant usage starts at zero and counts only explicit successful consumption", () => {
+  const { database: db, sql } = approvalStorage();
+  insertSecretGrant(db);
+  insertSshGrant(db);
+  assert.equal(
+    (db.prepare("SELECT use_count FROM secret_authorization_grants WHERE id = ?")
+      .get("secret-grant") as { use_count: number }).use_count,
+    0,
+  );
+  assert.equal(
+    (db.prepare("SELECT use_count FROM ssh_authorization_grants WHERE id = ?")
+      .get("ssh-grant") as { use_count: number }).use_count,
+    0,
+  );
+  assert.equal(incrementRememberedGrantUse(sql, "secret", "secret-grant"), true);
+  assert.equal(incrementRememberedGrantUse(sql, "secret", "secret-grant"), true);
+  assert.equal(incrementRememberedGrantUse(sql, "ssh", "ssh-grant"), true);
+  assert.equal(incrementRememberedGrantUse(sql, "ssh", "missing-grant"), false);
+  assert.equal(
+    (db.prepare("SELECT use_count FROM secret_authorization_grants WHERE id = ?")
+      .get("secret-grant") as { use_count: number }).use_count,
+    2,
+  );
+  assert.equal(
+    (db.prepare("SELECT use_count FROM ssh_authorization_grants WHERE id = ?")
+      .get("ssh-grant") as { use_count: number }).use_count,
+    1,
+  );
 });
 
 test("unverified applications can consume one approval but cannot create or reuse remembered authority", async () => {
