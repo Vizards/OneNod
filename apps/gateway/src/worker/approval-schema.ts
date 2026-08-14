@@ -196,6 +196,17 @@ class ApprovalSchema {
         revoked_at INTEGER,
         authorized_by_credential_id TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS approved_application_identities (
+        principal_scheme TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        signing_identifier TEXT NOT NULL,
+        team_identifier TEXT,
+        signer_name TEXT,
+        first_approved_at INTEGER NOT NULL,
+        last_approved_at INTEGER NOT NULL,
+        approval_count INTEGER NOT NULL CHECK (approval_count > 0),
+        PRIMARY KEY (principal_scheme, principal_id)
+      )`,
       `CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY,
         requester_device_id TEXT NOT NULL,

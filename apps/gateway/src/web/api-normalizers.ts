@@ -68,6 +68,7 @@ export function normalizeHumanManagement(value: unknown): HumanManagement {
         publicKeyFingerprint: readRequiredString(item, "public_key_fingerprint"),
       };
     }),
+    serverTime: readRequiredString(record, "server_time"),
     secretAuthorizations: secretAuthorizations.map((entry) => {
       const item = asRecord(entry);
       const duration = readRequiredString(item, "duration");
@@ -140,6 +141,7 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
   }
   return {
     action: readRequiredString(record, "action") as ApprovalAction,
+    applicationRecognition: readApplicationRecognition(record),
     ...(isRecord(record.authorization_scope)
       ? {
           authorizationScope: {
@@ -161,6 +163,20 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
     targetLabel: readRequiredString(record, "target_label"),
     verifiedVersion: readRequiredNumber(record, "verified_version"),
   };
+}
+
+function readApplicationRecognition(
+  record: Record<string, unknown>,
+): "approved-before" | "first-approval" | "unverified" {
+  const recognition = readRequiredString(record, "application_recognition");
+  if (
+    recognition !== "approved-before" &&
+    recognition !== "first-approval" &&
+    recognition !== "unverified"
+  ) {
+    throw new Error("The server returned an unknown application recognition state.");
+  }
+  return recognition;
 }
 
 export function normalizeRequestDetail(value: unknown): RequestDetail {

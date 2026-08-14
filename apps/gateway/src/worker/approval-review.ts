@@ -10,6 +10,7 @@ import {
 import {
   rememberedAuthorizationDurationAvailable,
 } from "./authorization-grants.js";
+import { recordApprovedApplicationIdentity } from "./approved-application-identities.js";
 import {
   assertLegacyAuthorizationDurationMatches,
   GatewayHttpError,
@@ -68,6 +69,7 @@ export class ApprovalReview {
   async humanRequests(request: Request): Promise<Response> {
     await this.human.requireHumanSession(request);
     const searchParams = new URL(request.url).searchParams;
+    const now = Date.now();
     if (searchParams.get("pending") === "true") {
       const pending = this.rows<RequestRow>(
         `SELECT id, requester_device_id, requester_name, action,
@@ -75,6 +77,11 @@ export class ApprovalReview {
                 application_principal_scheme, application_principal_id,
                 application_signing_identifier, application_team_identifier,
                 application_signer_name,
+                EXISTS(
+                  SELECT 1 FROM approved_application_identities approved
+                  WHERE approved.principal_scheme = requests.application_principal_scheme
+                    AND approved.principal_id = requests.application_principal_id
+                ) AS application_approved_before,
                 application_scope_id, secret_grant_id,
                 ssh_agent_instance_public_key, ssh_scope_id, ssh_scope_kind,
                 ssh_grant_id, item_id, field_id, expected_version,
@@ -86,9 +93,12 @@ export class ApprovalReview {
          FROM requests
          WHERE status = 'pending' AND expires_at > ?
          ORDER BY created_at DESC, id DESC LIMIT 100`,
-        Date.now(),
+        now,
       );
-      return json({ requests: pending.map(projectHumanRequestSummary) });
+      return json({
+        requests: pending.map(projectHumanRequestSummary),
+        server_time: new Date(now).toISOString(),
+      });
     }
     const cursorValue = searchParams.get("cursor");
     let cursor: ActivityCursor | undefined;
@@ -111,6 +121,11 @@ export class ApprovalReview {
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
+              EXISTS(
+                SELECT 1 FROM approved_application_identities approved
+                WHERE approved.principal_scheme = requests.application_principal_scheme
+                  AND approved.principal_id = requests.application_principal_id
+              ) AS application_approved_before,
               application_scope_id, secret_grant_id,
               ssh_agent_instance_public_key, ssh_scope_id, ssh_scope_kind,
               ssh_grant_id, item_id, field_id, expected_version,
@@ -140,7 +155,13 @@ export class ApprovalReview {
               client_source, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
-              application_signer_name, error_code
+              application_signer_name,
+              EXISTS(
+                SELECT 1 FROM approved_application_identities approved
+                WHERE approved.principal_scheme = request_activity.application_principal_scheme
+                  AND approved.principal_id = request_activity.application_principal_id
+              ) AS application_approved_before,
+              error_code
        FROM request_activity
        WHERE 1 = 1 ${activityCursorWhere}
        ORDER BY created_at DESC, request_id DESC LIMIT ?`,
@@ -168,6 +189,7 @@ export class ApprovalReview {
           }
         : {}),
       requests: page.map((entry) => entry.summary),
+      server_time: new Date(now).toISOString(),
     });
   }
 
@@ -265,6 +287,9 @@ export class ApprovalReview {
         throw new GatewayHttpError("request_not_pending", 409);
       }
       if (status === "rejected") this.requestStore.clearPendingPayload(requestId);
+      if (status === "approved") {
+        recordApprovedApplicationIdentity(this.sql, row, now);
+      }
       if (grantId && authorizationDuration) {
         const runtime = this.human.gatewayRuntimeState();
         const durationMs = AUTHORIZATION_DURATION_MS[authorizationDuration];

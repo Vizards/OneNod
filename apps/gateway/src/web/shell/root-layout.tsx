@@ -2,7 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet } from "@tanstack/react-router";
 
-import { getHumanState, getSystemHealth } from "../api";
+import {
+  getAuthorizationSummary,
+  getHumanState,
+  getSystemHealth,
+} from "../api";
 import { BootstrapPage, DeviceSetupPage, LoginPage } from "../auth/human-gate";
 import { HumanGateSkeleton, InlineError } from "../components/common";
 import { useApprovalAppBadge } from "../hooks/approval-app-badge";
@@ -24,6 +28,12 @@ export function RootLayout() {
     queryFn: getHumanState,
     refetchOnMount: "always",
   });
+  const authorizationSummary = useQuery({
+    enabled: Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted),
+    queryFn: getAuthorizationSummary,
+    queryKey: ["authorization-summary"],
+    refetchOnWindowFocus: "always",
+  });
   useHumanRealtime(Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted));
   useApprovalAppBadge(Boolean(humanState.data?.authenticated && humanState.data.deviceTrusted));
 
@@ -44,6 +54,22 @@ export function RootLayout() {
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
     };
   }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    const nextExpiry = authorizationSummary.data?.nextExpiryAt;
+    const serverTime = authorizationSummary.data?.serverTime;
+    if (!nextExpiry || !serverTime) return;
+    const delay = Math.max(0, Date.parse(nextExpiry) - Date.parse(serverTime) + 250);
+    const timer = window.setTimeout(
+      () => void authorizationSummary.refetch(),
+      Math.min(delay, 2_147_000_000),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    authorizationSummary.data?.nextExpiryAt,
+    authorizationSummary.data?.serverTime,
+    authorizationSummary.refetch,
+  ]);
 
   const environment = health.isSuccess
     ? environmentCopy(health.data.environment)
@@ -105,6 +131,7 @@ export function RootLayout() {
                 </Link>
                 <Link
                   to="/management"
+                  search={{ section: "approvers" }}
                   className="rounded-control px-2 py-2 text-secondary hover:text-foreground"
                   activeProps={{ className: "bg-muted text-foreground" }}
                 >
@@ -133,6 +160,9 @@ export function RootLayout() {
           </div>
           <div className="ml-auto flex items-center gap-2 sm:hidden">
             <RefreshPageButton />
+            {humanState.data?.deviceTrusted ? (
+              <RememberedAccessButton count={authorizationSummary.data?.activeCount ?? 0} />
+            ) : null}
             <div ref={mobileMenuRef} className="relative">
               <button
                 type="button"
@@ -181,6 +211,7 @@ export function RootLayout() {
                       </Link>
                       <Link
                         to="/management"
+                        search={{ section: "approvers" }}
                         onClick={() => setMobileMenuOpen(false)}
                         className="rounded-control px-3 py-3 text-secondary"
                         activeProps={{ className: "bg-muted text-foreground" }}
@@ -210,7 +241,7 @@ export function RootLayout() {
       </header>
       <main
         id="main-content"
-        className="mx-auto min-w-0 max-w-[960px] px-4 pb-10 pt-[calc(6.5rem+env(safe-area-inset-top))] sm:px-6 sm:pb-16 sm:pt-[calc(8rem+env(safe-area-inset-top))]"
+        className="mx-auto min-w-0 max-w-[960px] px-4 pb-10 pt-[calc(5.25rem+env(safe-area-inset-top))] sm:px-6 sm:pb-16 sm:pt-[calc(8rem+env(safe-area-inset-top))]"
       >
         {releaseMismatch ? (
           <div
@@ -249,6 +280,39 @@ export function RootLayout() {
     </div>
   );
 }
+
+function RememberedAccessButton({ count }: { count: number }) {
+  const badge = count > 99 ? "99+" : String(count);
+  return (
+    <Link
+      to="/authorizations"
+      aria-label={`Remembered access, ${count} active`}
+      title="Remembered access"
+      className="relative grid size-11 place-items-center rounded-control border border-subtle bg-surface text-secondary transition-colors hover:text-foreground"
+      activeProps={{ className: "text-foreground" }}
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.75"
+        className="size-[18px]"
+      >
+        <path d="M12 3 4.5 6v5.3c0 4.6 3.1 8.3 7.5 9.7 4.4-1.4 7.5-5.1 7.5-9.7V6L12 3Z" />
+        <path d="m8.7 12 2.1 2.1 4.5-4.5" />
+      </svg>
+      {count > 0 ? (
+        <span className="absolute -right-1 -top-1 min-w-5 rounded-pill border-2 border-background bg-danger-text px-1 text-center font-mono text-[10px] font-semibold leading-4 text-background">
+          {badge}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+
 function RefreshPageButton() {
   return (
     <button

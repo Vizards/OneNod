@@ -9,6 +9,7 @@ import { ActivityPage } from "./activity/activity-page";
 import { AuthorizationsPage } from "./authorizations/authorizations-page";
 import { NotFoundPage } from "./components/common";
 import { ManagementPage } from "./management/management-page";
+import { parseManagementSection } from "./management/management-section";
 import { RequestsPage } from "./requests/requests-page";
 import { RootLayout } from "./shell/root-layout";
 
@@ -47,6 +48,9 @@ const managementRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/management",
   component: ManagementPage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    section: parseManagementSection(search.section),
+  }),
 });
 
 const routeTree = rootRoute.addChildren([

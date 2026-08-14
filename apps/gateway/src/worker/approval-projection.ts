@@ -1,4 +1,5 @@
 import { projectStoredApplicationIdentity } from "./application-identity.js";
+import { projectApplicationRecognition } from "./approved-application-identities.js";
 import type {
   EnrollmentRow,
   RequestActivityRow,
@@ -55,6 +56,7 @@ export function readOnlyRequestState(row: RequestRow, now: number): RequestRow {
 export function projectHumanRequestSummary(row: RequestRow) {
   return {
     action: projectApprovalAction(row.action),
+    application_recognition: projectApplicationRecognition(row),
     ...(row.application_assurance === "verified-code-signature" &&
     row.action === "secret.read" &&
     row.application_scope_id === row.application_principal_id
@@ -97,6 +99,7 @@ export function projectHumanRequestSummary(row: RequestRow) {
 export function projectHumanActivitySummary(row: RequestActivityRow) {
   return {
     action: projectApprovalAction(row.action),
+    application_recognition: projectApplicationRecognition(row),
     client: {
       application: row.client_application,
       identity: projectStoredApplicationIdentity(row),
