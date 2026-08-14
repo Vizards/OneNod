@@ -14,6 +14,7 @@ import {
   getHumanState,
   getRequesterEnrollments,
   getRequests,
+  getServiceAccountQuota,
   lockGateway,
   verifyApprovalDecision,
   verifyGatewayUnlock,
@@ -35,7 +36,6 @@ import {
 } from "../hooks/live-clock";
 import { usePageTitle, useSessionExpiryRecovery } from "../hooks/human";
 import {
-  applicationSignerCopy,
   approvalQuestion,
   effectiveStatus,
   formatDateTime,
@@ -110,6 +110,7 @@ export function RequestsPage() {
       </header>
 
       <LockModeControl />
+      <ServiceAccountQuotaStatus />
 
       {pendingEnrollments.length > 0 ? (
         <section aria-labelledby="enrollment-title" className="mb-6">
@@ -214,16 +215,11 @@ function RequesterEnrollmentCard({
 
   return (
     <li className="rounded-card border border-warning-border bg-warning-muted/40 p-4">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <span className="text-xs font-medium text-warning">
-            {expired ? "Expired" : "New requester Mac"}
-          </span>
-          <h3 className="mt-1 truncate text-base font-medium">{enrollment.displayName}</h3>
-        </div>
-        <span className="shrink-0 text-xs tabular-nums text-secondary">
-          <LiveCountdown expiresAt={enrollment.expiresAt} label="Expires" now={now} />
+      <div className="min-w-0">
+        <span className="text-xs font-medium text-warning">
+          {expired ? "Expired" : "New requester Mac"}
         </span>
+        <h3 className="mt-1 truncate text-base font-medium">{enrollment.displayName}</h3>
       </div>
       <details className="group mt-2 border-t border-warning-border/60 pt-1">
         <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm text-secondary marker:content-none">
@@ -246,9 +242,20 @@ function RequesterEnrollmentCard({
           type="button"
           disabled={disabled}
           onClick={() => decision.mutate("reject")}
-          className="h-11 rounded-control border border-subtle bg-background px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          className="grid min-h-12 place-items-center rounded-control border border-subtle bg-background px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {decision.isPending && decision.variables === "reject" ? "Verifying…" : "Reject"}
+          {decision.isPending && decision.variables === "reject" ? (
+            "Verifying…"
+          ) : expired ? (
+            "Expired"
+          ) : (
+            <span className="grid leading-tight">
+              <span>Reject</span>
+              <span className="mt-0.5 text-[10px] font-normal tabular-nums text-secondary">
+                <LiveCountdown expiresAt={enrollment.expiresAt} label="Expires" now={now} />
+              </span>
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -344,6 +351,61 @@ function LockModeControl() {
   );
 }
 
+function ServiceAccountQuotaStatus() {
+  const quota = useQuery({
+    queryKey: ["service-account-quota"],
+    queryFn: getServiceAccountQuota,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: "always",
+  });
+  useSessionExpiryRecovery(quota.error);
+  const remaining = quota.data?.dailyRemaining;
+  const limit = quota.data?.dailyLimit;
+  const low = remaining !== undefined && limit !== undefined && remaining <= limit * 0.1;
+  const status = quota.isPending
+    ? "Checking…"
+    : quota.data?.exhausted
+      ? "Quota exhausted"
+      : remaining === undefined || limit === undefined
+        ? "24h remaining unavailable"
+        : `${remaining.toLocaleString()} of ${limit.toLocaleString()} remaining`;
+
+  return (
+    <section
+      aria-labelledby="service-account-quota-title"
+      className={`mb-4 rounded-card border px-3 py-2.5 ${
+        quota.data?.exhausted
+          ? "border-danger-border bg-danger-muted"
+          : low
+            ? "border-warning-border bg-warning-muted/40"
+            : "border-subtle bg-surface"
+      }`}
+      title={
+        remaining === undefined
+          ? "The Executor reports confirmed rate-limit exhaustion, but its SDK does not expose an authoritative account-wide remaining count."
+          : "Authoritative account-wide 24-hour Service Account quota reported by 1Password."
+      }
+    >
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <h2 id="service-account-quota-title" className="text-sm font-medium">
+          1Password quota
+        </h2>
+        <p
+          className={`text-xs tabular-nums ${
+            quota.data?.exhausted
+              ? "text-danger-text"
+              : low
+                ? "text-warning"
+                : "text-secondary"
+          }`}
+        >
+          {status}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function RequestCard({ now, request }: { now: number; request: RequestSummary }) {
   const status = effectiveStatus(request, now);
   const decision = useRequestDecision(request.requestId);
@@ -359,15 +421,12 @@ function RequestCard({ now, request }: { now: number; request: RequestSummary })
         {approvalQuestion(request)}
       </h2>
       <ApplicationIdentityDisclosure request={request} />
-      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 text-xs text-secondary">
-        <span className="min-w-0 truncate">{request.requesterName}</span>
-        <span className="shrink-0 tabular-nums">
-          <LiveCountdown expiresAt={request.expiresAt} label="Expires" now={now} />
-        </span>
-      </div>
+      <p className="mt-2 truncate text-xs text-secondary">
+        {request.requesterName} · {formatDateTime(request.createdAt)}
+      </p>
       <div className="mt-4">
         {canDecide ? (
-          <ApprovalControls canDecide decision={decision} request={request} />
+          <ApprovalControls canDecide decision={decision} now={now} request={request} />
         ) : (
           <StatusBadge status={status} />
         )}
@@ -383,11 +442,12 @@ function ApplicationIdentityDisclosure({ request }: { request: RequestSummary })
   const identity = request.client.identity;
   const recognition = request.applicationRecognition;
   const warning = recognition !== "approved-before";
-  const copy = applicationRecognitionCopy(recognition, request);
+  const copy = applicationRecognitionCopy(recognition);
+  const signer = applicationIdentitySigner(request);
 
   return (
     <details className="group mt-3 rounded-control border border-subtle bg-background/40">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 marker:content-none">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 marker:content-none">
         {warning ? (
           <span
             aria-hidden="true"
@@ -396,12 +456,15 @@ function ApplicationIdentityDisclosure({ request }: { request: RequestSummary })
             !
           </span>
         ) : null}
-        <span
-          className={`min-w-0 flex-1 truncate text-sm ${
-            warning ? "text-danger-text" : "text-secondary"
-          }`}
-        >
-          {copy}
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span
+            className={`shrink-0 text-xs font-medium ${
+              warning ? "text-danger-text" : "text-secondary"
+            }`}
+          >
+            {copy}
+          </span>
+          <span className="min-w-0 break-words text-sm text-foreground">{signer}</span>
         </span>
         <DisclosureChevron />
       </summary>
@@ -430,29 +493,27 @@ function ApplicationIdentityDisclosure({ request }: { request: RequestSummary })
             />
           </>
         ) : null}
-        <IdentityFact label="Requester" value={request.requesterName} />
-        <IdentityFact label="Created" value={formatDateTime(request.createdAt)} />
-        <IdentityFact label="Expires" value={formatDateTime(request.expiresAt)} />
       </dl>
     </details>
   );
 }
 
-function applicationRecognitionCopy(
-  recognition: ApplicationRecognition,
-  request: RequestSummary,
-): string {
+function applicationRecognitionCopy(recognition: ApplicationRecognition): string {
   if (recognition === "unverified") {
-    return "App signature not verified · One-time approval only";
+    return "Unverified app";
   }
   if (recognition === "first-approval") {
-    return "First approval for this app signature";
+    return "First request";
   }
-  if (request.client.identity.assurance !== "verified-code-signature") {
-    return "App signature not verified";
+  return "Known app";
+}
+
+function applicationIdentitySigner(request: RequestSummary): string {
+  const identity = request.client.identity;
+  if (identity.assurance !== "verified-code-signature") {
+    return request.client.application;
   }
-  const signer = applicationSignerCopy(request.client.identity);
-  return `Verified app signature${signer ? ` · ${signer}` : ""}`;
+  return identity.signerName?.trim() || identity.signingIdentifier;
 }
 
 function IdentityFact({ label, value }: { label: string; value: string }) {
@@ -529,10 +590,12 @@ function useRequestDecision(requestId: string) {
 function ApprovalControls({
   canDecide,
   decision,
+  now,
   request,
 }: {
   canDecide: boolean;
   decision: ReturnType<typeof useRequestDecision>;
+  now: number;
   request: RequestSummary;
 }) {
   const humanState = useQuery({
@@ -556,11 +619,18 @@ function ApprovalControls({
         aria-label={`Deny ${request.targetLabel}`}
         disabled={disabled}
         onClick={() => decision.mutate({ decision: "reject" })}
-        className="h-12 rounded-control border border-subtle bg-background px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+        className="grid min-h-12 place-items-center rounded-control border border-subtle bg-background px-4 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
       >
         {decision.isPending && decision.variables?.decision === "reject"
           ? "Verifying…"
-          : "Deny"}
+          : (
+              <span className="grid leading-tight">
+                <span>Deny</span>
+                <span className="mt-0.5 text-[10px] font-normal tabular-nums text-secondary">
+                  <LiveCountdown expiresAt={request.expiresAt} label="Expires" now={now} />
+                </span>
+              </span>
+            )}
       </button>
       <div className="flex min-w-0">
         <button

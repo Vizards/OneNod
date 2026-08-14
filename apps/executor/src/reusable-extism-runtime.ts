@@ -13,6 +13,7 @@ export interface ActivePluginLease {
   deadlineAt: number;
   generation: number;
   observeUpstreamRequest?: () => void;
+  observeUpstreamResponse?: (status: number) => void;
   signal: AbortSignal;
   upstreamRateLimited: boolean;
 }
@@ -52,6 +53,7 @@ export interface PluginLeaseOptions {
   credentialDigest?: string;
   deadlineAt: number;
   observeUpstreamRequest?: () => void;
+  observeUpstreamResponse?: (status: number) => void;
   signal?: AbortSignal;
 }
 
@@ -232,6 +234,9 @@ export class ReusableExtismRuntime implements PluginRuntime {
       ...(options.observeUpstreamRequest === undefined
         ? {}
         : { observeUpstreamRequest: options.observeUpstreamRequest }),
+      ...(options.observeUpstreamResponse === undefined
+        ? {}
+        : { observeUpstreamResponse: options.observeUpstreamResponse }),
       signal: options.signal,
       upstreamRateLimited: false,
     };

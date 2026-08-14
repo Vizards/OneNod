@@ -95,6 +95,7 @@ export function normalizeHumanManagement(value: unknown): HumanManagement {
         itemTitle: readRequiredString(item, "item_title"),
         itemVersion: readRequiredNumber(item, "item_version"),
         requesterDeviceId: readRequiredString(item, "requester_device_id"),
+        useCount: readRequiredNumber(item, "use_count"),
       };
     }),
     sshAuthorizations: sshAuthorizations.map((entry) => {
@@ -127,6 +128,7 @@ export function normalizeHumanManagement(value: unknown): HumanManagement {
         itemVersion: readRequiredNumber(item, "item_version"),
         requesterDeviceId: readRequiredString(item, "requester_device_id"),
         scopeKind,
+        useCount: readRequiredNumber(item, "use_count"),
       };
     }),
   };

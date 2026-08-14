@@ -55,6 +55,7 @@ export interface SecretAuthorizationSummary {
   itemTitle: string;
   itemVersion: number;
   requesterDeviceId: string;
+  useCount: number;
 }
 
 export interface SshAuthorizationSummary {
@@ -70,6 +71,7 @@ export interface SshAuthorizationSummary {
   itemVersion: number;
   requesterDeviceId: string;
   scopeKind: "application";
+  useCount: number;
 }
 
 export type VerifiedApplicationIdentity = Extract<
@@ -119,6 +121,14 @@ export interface AuthorizationSummary {
   activeCount: number;
   nextExpiryAt?: string;
   serverTime: string;
+}
+
+export interface ServiceAccountQuota {
+  dailyLimit?: number;
+  dailyRemaining?: number;
+  exhausted: boolean;
+  exhaustedAt?: string;
+  lastSuccessAt?: string;
 }
 
 export interface WebAuthnOptionsEnvelope<TOptions> {

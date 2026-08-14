@@ -28,6 +28,7 @@ export const EXECUTOR_BODY_DIGEST_HEADER = "x-1pr-body-digest";
 export const INTERNAL_ONEPASSWORD_PATHS = new Set([
   "/internal/health",
   "/internal/1password/catalog",
+  "/internal/1password/quota",
   "/internal/1password/secret/metadata",
   "/internal/1password/secret/read",
   "/internal/1password/item/metadata",

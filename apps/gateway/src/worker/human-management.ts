@@ -131,7 +131,7 @@ export class HumanManagement {
               application_team_identifier, application_signer_name,
               item_id, item_title, field_id, field_label, field_type,
               item_version, duration, lock_generation, created_at, expires_at,
-              revoked_at, authorized_by_credential_id
+              revoked_at, use_count, authorized_by_credential_id
        FROM secret_authorization_grants
        WHERE revoked_at IS NULL
          AND (expires_at IS NULL OR expires_at > ?)
@@ -153,6 +153,7 @@ export class HumanManagement {
       item_title: grant.item_title,
       item_version: grant.item_version,
       requester_device_id: grant.requester_device_id,
+      use_count: grant.use_count,
     }));
     const sshAuthorizations = this.rows<SshAuthorizationGrantRow>(
       `SELECT id, requester_device_id, agent_instance_public_key, scope_id,
@@ -161,7 +162,7 @@ export class HumanManagement {
               application_signer_name, item_id, item_title, item_version,
               fingerprint, duration,
               lock_generation, created_at, expires_at, revoked_at,
-              authorized_by_credential_id
+              use_count, authorized_by_credential_id
        FROM ssh_authorization_grants
        WHERE revoked_at IS NULL
          AND (expires_at IS NULL OR expires_at > ?)
@@ -182,6 +183,7 @@ export class HumanManagement {
       item_version: grant.item_version,
       requester_device_id: grant.requester_device_id,
       scope_kind: grant.scope_kind,
+      use_count: grant.use_count,
     }));
     return json({
       credentials,

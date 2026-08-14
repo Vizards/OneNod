@@ -247,6 +247,7 @@ export interface SecretAuthorizationGrantRow {
   requester_device_id: string;
   revoked_at: number | null;
   scope_id: string;
+  use_count: number;
 }
 
 export interface SshAuthorizationGrantRow {
@@ -270,6 +271,7 @@ export interface SshAuthorizationGrantRow {
   revoked_at: number | null;
   scope_id: string;
   scope_kind: string;
+  use_count: number;
 }
 
 export interface GatewayRuntimeStateRow {

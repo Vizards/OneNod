@@ -12,12 +12,14 @@ import {
   sanitizeItemReconciliationEnvelope,
   sanitizeSecretMetadataEnvelope,
   sanitizeSecretReadEnvelope,
+  sanitizeServiceAccountQuotaEnvelope,
   sanitizeSshSignEnvelope,
   type CatalogExecutorItem,
   type ItemMutationExecutorResult,
   type ItemReconciliationExecutorResult,
   type SecretMetadataExecutorResult,
   type SecretReadExecutorResult,
+  type ServiceAccountQuotaExecutorStatus,
   type SshSignExecutorResult,
 } from "./gateway-envelope.js";
 import { catalogMetadataCacheKey } from "./approval-projection.js";
@@ -60,6 +62,19 @@ export class ApprovalExecutor {
     );
     this.cacheCatalogMetadata(items);
     return items;
+  }
+
+  async executeServiceAccountQuota(): Promise<ServiceAccountQuotaExecutorStatus> {
+    const trusted = await this.callExecutor("/internal/1password/quota", {});
+    if (trusted.status !== 200) {
+      const failure = sanitizeExecutorEnvelope(() =>
+        sanitizeGatewayError(trusted.body, trusted.status),
+      );
+      throw new GatewayHttpError(failure.code, failure.status);
+    }
+    return sanitizeExecutorEnvelope(() =>
+      sanitizeServiceAccountQuotaEnvelope(trusted.body, trusted.status),
+    );
   }
 
   async executeSecretMetadata(

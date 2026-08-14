@@ -121,6 +121,7 @@ export function createRestrictedFetch(
         redirect: "manual",
         signal: controller.signal,
       });
+      lease.observeUpstreamResponse?.(response.status);
       if (response.status === 429) {
         lease.upstreamRateLimited = true;
       }

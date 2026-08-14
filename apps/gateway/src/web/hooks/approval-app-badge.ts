@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getRequesterEnrollments, getRequests } from "../api";
 import { effectiveStatus, isPast } from "../utils/presentation";
 
-export function useApprovalAppBadge(enabled: boolean): void {
+export function useApprovalAppBadge(enabled: boolean): number {
   const requests = useQuery({
     enabled,
     queryKey: ["requests"],
@@ -16,16 +16,23 @@ export function useApprovalAppBadge(enabled: boolean): void {
     queryFn: getRequesterEnrollments,
   });
 
+  const pendingCount =
+    enabled && requests.isSuccess && enrollments.isSuccess
+      ? requests.data.requests.filter(
+          (request) => effectiveStatus(request) === "pending",
+        ).length +
+        enrollments.data.enrollments.filter(
+          (enrollment) =>
+            enrollment.status === "pending" && !isPast(enrollment.expiresAt),
+        ).length
+      : 0;
+
   useEffect(() => {
     if (!enabled || !requests.isSuccess || !enrollments.isSuccess) return;
-    const pendingRequests = requests.data.requests.filter(
-      (request) => effectiveStatus(request) === "pending",
-    ).length;
-    const pendingEnrollments = enrollments.data.enrollments.filter(
-      (enrollment) => enrollment.status === "pending" && !isPast(enrollment.expiresAt),
-    ).length;
-    void updateAppBadge(pendingRequests + pendingEnrollments);
-  }, [enabled, enrollments.data, enrollments.isSuccess, requests.data, requests.isSuccess]);
+    void updateAppBadge(pendingCount);
+  }, [enabled, enrollments.isSuccess, pendingCount, requests.isSuccess]);
+
+  return pendingCount;
 }
 async function updateAppBadge(pendingCount: number): Promise<void> {
   const badgeNavigator = navigator as Navigator & {

@@ -68,6 +68,7 @@ export const EXECUTOR_VERSION_PATH = "/internal/version";
 const ACCEPTED_GATEWAY_PROTOCOL_MIN = 1;
 const ACCEPTED_GATEWAY_PROTOCOL_MAX = 1;
 const EXECUTOR_STATE_SCHEMA = 1;
+const QUOTA_EXHAUSTION_MAX_MS = 24 * 60 * 60_000;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -139,6 +140,19 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       { beforeInsert: () => this.assertJournalGrowthAllowed() },
     );
     this.journal.initialize();
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS onepassword_quota_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        exhausted_at INTEGER,
+        exhausted_until INTEGER,
+        last_success_at INTEGER
+      )`,
+    );
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO onepassword_quota_state
+        (singleton, exhausted_at, exhausted_until, last_success_at)
+       VALUES (1, NULL, NULL, NULL)`,
+    );
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -183,6 +197,11 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     }
 
     try {
+      if (url.pathname === "/internal/1password/quota") {
+        parseHealthRequest(await readJsonObject(request, 1_024));
+        return executorJson(this.serviceAccountQuotaStatus());
+      }
+
       if (url.pathname === "/internal/1password/catalog") {
         const query = parseCatalogRequest(await readJsonObject(request, 4_096));
         const items = await this.runGatewayOperation(request.signal, (client) =>
@@ -371,6 +390,8 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     let operationEntered = false;
     const invocationCounts = new Map<string, number>();
     let upstreamRequests = 0;
+    let sawSuccessfulUpstreamResponse = false;
+    let sawUpstreamRateLimit = false;
     const lifecycle = await runWithOnePasswordClient(
       this.runtime,
       {
@@ -382,6 +403,10 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         observeUpstreamRequest: () => {
           upstreamRequests += 1;
         },
+        observeUpstreamResponse: (status) => {
+          if (status === 429) sawUpstreamRateLimit = true;
+          if (status >= 200 && status < 300) sawSuccessfulUpstreamResponse = true;
+        },
         serviceAccountToken: this.env.OP_SERVICE_ACCOUNT_TOKEN!,
         signal,
       },
@@ -389,6 +414,10 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         operationEntered = true;
         return operation(client);
       },
+    );
+    this.recordQuotaObservation(
+      sawUpstreamRateLimit,
+      sawSuccessfulUpstreamResponse,
     );
     if (invocationCounts.size > 0 || upstreamRequests > 0) {
       console.log(
@@ -461,6 +490,64 @@ export class OnePasswordExecutor extends DurableObject<Env> {
           : "onepassword_operation_failed",
       timedOut ? 504 : rateLimited ? 429 : 502,
     );
+  }
+
+  private recordQuotaObservation(rateLimited: boolean, succeeded: boolean): void {
+    const now = Date.now();
+    if (rateLimited) {
+      this.ctx.storage.sql.exec(
+        `UPDATE onepassword_quota_state
+         SET exhausted_at = ?, exhausted_until = ? WHERE singleton = 1`,
+        now,
+        now + QUOTA_EXHAUSTION_MAX_MS,
+      );
+      return;
+    }
+    if (succeeded) {
+      this.ctx.storage.sql.exec(
+        `UPDATE onepassword_quota_state
+         SET exhausted_at = NULL, exhausted_until = NULL, last_success_at = ?
+         WHERE singleton = 1`,
+        now,
+      );
+    }
+  }
+
+  private serviceAccountQuotaStatus(): {
+    daily_limit: null;
+    daily_remaining: null;
+    exhausted: boolean;
+    exhausted_at?: string;
+    last_success_at?: string;
+    ok: true;
+  } {
+    const row = this.ctx.storage.sql
+      .exec<{
+        exhausted_at: number | null;
+        exhausted_until: number | null;
+        last_success_at: number | null;
+      }>(
+        `SELECT exhausted_at, exhausted_until, last_success_at
+         FROM onepassword_quota_state WHERE singleton = 1`,
+      )
+      .toArray()[0];
+    if (!row) throw new Error("onepassword_quota_state_missing");
+    const exhausted =
+      row.exhausted_at !== null &&
+      row.exhausted_until !== null &&
+      row.exhausted_until > Date.now();
+    return {
+      daily_limit: null,
+      daily_remaining: null,
+      exhausted,
+      ...(exhausted && row.exhausted_at !== null
+        ? { exhausted_at: new Date(row.exhausted_at).toISOString() }
+        : {}),
+      ...(row.last_success_at === null
+        ? {}
+        : { last_success_at: new Date(row.last_success_at).toISOString() }),
+      ok: true,
+    };
   }
 
 }

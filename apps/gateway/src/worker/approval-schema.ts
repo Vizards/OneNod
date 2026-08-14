@@ -172,6 +172,7 @@ class ApprovalSchema {
         created_at INTEGER NOT NULL,
         expires_at INTEGER,
         revoked_at INTEGER,
+        use_count INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0),
         authorized_by_credential_id TEXT NOT NULL
       )`,
       `CREATE TABLE IF NOT EXISTS secret_authorization_grants (
@@ -194,6 +195,7 @@ class ApprovalSchema {
         created_at INTEGER NOT NULL,
         expires_at INTEGER,
         revoked_at INTEGER,
+        use_count INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0),
         authorized_by_credential_id TEXT NOT NULL
       )`,
       `CREATE TABLE IF NOT EXISTS approved_application_identities (
@@ -415,6 +417,11 @@ class ApprovalSchema {
     this.ensureColumn("ssh_authorization_grants", "application_team_identifier", "TEXT");
     this.ensureColumn("ssh_authorization_grants", "application_signer_name", "TEXT");
     this.ensureColumn(
+      "ssh_authorization_grants",
+      "use_count",
+      "INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0)",
+    );
+    this.ensureColumn(
       "secret_authorization_grants",
       "application_principal_scheme",
       "TEXT NOT NULL DEFAULT 'legacy-v1'",
@@ -426,6 +433,11 @@ class ApprovalSchema {
     );
     this.ensureColumn("secret_authorization_grants", "application_team_identifier", "TEXT");
     this.ensureColumn("secret_authorization_grants", "application_signer_name", "TEXT");
+    this.ensureColumn(
+      "secret_authorization_grants",
+      "use_count",
+      "INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0)",
+    );
     this.sql.exec(
       `UPDATE ssh_authorization_grants SET revoked_at = ?
        WHERE scope_kind != 'application' AND revoked_at IS NULL`,
