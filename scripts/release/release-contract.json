@@ -57,14 +57,14 @@
         "min": 1,
         "max": 2
       },
-      "state_schema": 2
+      "state_schema": 3
     },
     "executor": {
       "accepted_gateway_protocol": {
         "min": 1,
         "max": 1
       },
-      "state_schema": 1
+      "state_schema": 2
     }
   },
   "upgrade": {

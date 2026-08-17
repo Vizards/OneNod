@@ -66,10 +66,47 @@ func runShellPluginEntrypoint(command string, arguments []string, deps dependenc
 	if err != nil {
 		return err
 	}
-	item, err := resolveShellPluginCatalogItem(cli, deps, binding.ItemID)
+	if binding.ItemVersion <= 0 {
+		binding, err = refreshShellPluginBindingMetadata(
+			cli, deps, config, binding, home,
+		)
+		if err != nil {
+			return err
+		}
+		config, err = readShellPluginConfig(home)
+		if err != nil {
+			return err
+		}
+	}
+	fieldIDs, err := shellPluginCredentialFieldIDs(definition, binding)
 	if err != nil {
 		return err
 	}
+	values, err := useApprovedCredential(
+		cli, deps, binding.ItemID, fieldIDs, binding.ItemVersion,
+	)
+	if isGatewayErrorCode(err, "item_stale") {
+		binding, err = refreshShellPluginBindingMetadata(
+			cli, deps, config, binding, home,
+		)
+		if err == nil {
+			fieldIDs, err = shellPluginCredentialFieldIDs(definition, binding)
+		}
+		if err == nil {
+			values, err = useApprovedCredential(
+				cli, deps, binding.ItemID, fieldIDs, binding.ItemVersion,
+			)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for fieldID := range values {
+			values[fieldID] = ""
+			delete(values, fieldID)
+		}
+	}()
 	fields := make(map[sdk.FieldName]string)
 	defer func() {
 		for name := range fields {
@@ -85,12 +122,9 @@ func runShellPluginEntrypoint(command string, arguments []string, deps dependenc
 			}
 			return fmt.Errorf("OneNod %s binding omits required field %s", command, field.Name)
 		}
-		if !catalogItemHasField(item, fieldBinding.FieldID) {
-			return fmt.Errorf("OneNod %s binding field %s is no longer present in the catalog item", command, field.Name)
-		}
-		value, err := readApprovedSecret(cli, deps, item.ItemID, fieldBinding.FieldID, item.Version)
-		if err != nil {
-			return err
+		value, exists := values[fieldBinding.FieldID]
+		if !exists {
+			return fmt.Errorf("OneNod %s credential response omitted field %s", command, field.Name)
 		}
 		fields[field.Name] = value
 	}
@@ -129,49 +163,103 @@ func runShellPluginEntrypoint(command string, arguments []string, deps dependenc
 	return runErr
 }
 
-func resolveShellPluginCatalogItem(
+func shellPluginCredentialFieldIDs(
+	definition shellPluginDefinition,
+	binding shellPluginBinding,
+) ([]string, error) {
+	fieldIDs := make([]string, 0, len(binding.CredentialFields))
+	seen := make(map[string]bool, len(binding.CredentialFields))
+	for _, field := range definition.Credential.Fields {
+		fieldBinding, exists := binding.CredentialFields[field.Name.String()]
+		if !exists {
+			if field.Optional {
+				continue
+			}
+			return nil, fmt.Errorf("OneNod %s binding omits required field %s", binding.Command, field.Name)
+		}
+		if seen[fieldBinding.FieldID] {
+			return nil, errors.New("OneNod shell plugin binding contains duplicate field IDs")
+		}
+		seen[fieldBinding.FieldID] = true
+		fieldIDs = append(fieldIDs, fieldBinding.FieldID)
+	}
+	sort.Strings(fieldIDs)
+	return fieldIDs, nil
+}
+
+func refreshShellPluginBindingMetadata(
 	config cliConfig,
 	deps dependencies,
-	itemID string,
-) (catalogItemResult, error) {
+	pluginConfig shellPluginConfig,
+	binding shellPluginBinding,
+	home string,
+) (shellPluginBinding, error) {
+	credentialFields := make(
+		map[string]shellPluginFieldBinding,
+		len(binding.CredentialFields),
+	)
+	for name, field := range binding.CredentialFields {
+		credentialFields[name] = field
+	}
+	binding.CredentialFields = credentialFields
 	credential, err := deps.keychain.Load()
 	if err != nil {
-		return catalogItemResult{}, err
+		return shellPluginBinding{}, err
 	}
 	client, err := newAPIClient(config.origin, credential, deps.httpClient)
 	if err != nil {
-		return catalogItemResult{}, err
+		return shellPluginBinding{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
-	defer cancel()
-	response, err := searchCatalogWithLocalFallback(ctx, client, itemID, deps)
+	item, err := readCatalogItemWithLocalFallback(
+		ctx,
+		client,
+		binding.ItemID,
+		deps,
+	)
+	cancel()
 	if err != nil {
-		return catalogItemResult{}, err
+		return shellPluginBinding{}, err
 	}
-	var selected *catalogItemResult
-	for index := range response.Items {
-		if response.Items[index].ItemID != itemID {
-			continue
-		}
-		if selected != nil {
-			return catalogItemResult{}, errors.New("catalog returned duplicate shell plugin items")
-		}
-		copy := response.Items[index]
-		selected = &copy
-	}
-	if selected == nil || selected.Version <= 0 {
-		return catalogItemResult{}, errors.New("shell plugin catalog item was not found at a positive version")
-	}
-	return *selected, nil
-}
-
-func catalogItemHasField(item catalogItemResult, fieldID string) bool {
+	metadata := make(map[string]catalogFieldResult, len(item.Fields))
 	for _, field := range item.Fields {
-		if field.FieldID == fieldID {
-			return true
+		if _, duplicate := metadata[field.FieldID]; duplicate {
+			return shellPluginBinding{}, errors.New("targeted item metadata contains duplicate field IDs")
 		}
+		metadata[field.FieldID] = field
 	}
-	return false
+	for name, fieldBinding := range binding.CredentialFields {
+		field, exists := metadata[fieldBinding.FieldID]
+		if !exists {
+			return shellPluginBinding{}, fmt.Errorf("OneNod %s binding field %s is no longer present in the credential item", binding.Command, name)
+		}
+		fieldBinding.Label = field.Label
+		binding.CredentialFields[name] = fieldBinding
+	}
+	binding.ItemTitle = item.Title
+	binding.ItemVersion = item.Version
+	if err := requireUnchangedShellPluginConfig(home, pluginConfig); err != nil {
+		return shellPluginBinding{}, err
+	}
+	index := exactShellPluginBindingIndex(
+		pluginConfig,
+		binding.Command,
+		binding.Scope,
+	)
+	if index < 0 || pluginConfig.Bindings[index].ItemID != binding.ItemID {
+		return shellPluginBinding{}, errors.New("OneNod shell plugin binding changed during metadata refresh")
+	}
+	pluginConfig.Bindings[index] = binding
+	if err := writeShellPluginConfig(home, pluginConfig); err != nil {
+		return shellPluginBinding{}, err
+	}
+	fmt.Fprintf(
+		writerOrDefault(deps.stderr, os.Stderr),
+		"Refreshed OneNod %s credential metadata at item version %d.\n",
+		binding.Command,
+		binding.ItemVersion,
+	)
+	return binding, nil
 }
 
 func shellPluginEnvironment(base []string, removed []string, overrides map[string]string) []string {

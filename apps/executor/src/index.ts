@@ -14,6 +14,7 @@ import {
   executeJournaledMutation,
   executeJournaledReconciliation,
   parseCatalogRequest,
+  parseCredentialUseRequest,
   parseHealthRequest,
   parseItemMetadataRequest,
   parseMutationRequest,
@@ -31,6 +32,7 @@ import {
 import {
   GatewayOperationError,
   executeCatalog,
+  executeCredentialUse,
   executeItemArchive,
   executeItemCreate,
   executeItemMetadata,
@@ -48,6 +50,7 @@ import {
   executorStoragePressure,
   isSqliteFullError,
 } from "./storage-policy";
+import { OnePasswordRateLimitCooldown } from "./onepassword-rate-limit-cooldown";
 
 interface Env {
   EXECUTOR_AUTH_TOKEN?: string;
@@ -67,7 +70,7 @@ const ONEPASSWORD_EXECUTOR_INSTANCE = "onepassword-primary";
 export const EXECUTOR_VERSION_PATH = "/internal/version";
 const ACCEPTED_GATEWAY_PROTOCOL_MIN = 1;
 const ACCEPTED_GATEWAY_PROTOCOL_MAX = 1;
-const EXECUTOR_STATE_SCHEMA = 1;
+const EXECUTOR_STATE_SCHEMA = 2;
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -129,6 +132,7 @@ function executorVersion(): {
 
 export class OnePasswordExecutor extends DurableObject<Env> {
   private readonly journal: ExecutionJournal;
+  private readonly rateLimitCooldown: OnePasswordRateLimitCooldown;
   private readonly runtime = createOnePasswordRuntime(coreModule);
   private storageWarningReported = false;
 
@@ -139,6 +143,8 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       { beforeInsert: () => this.assertJournalGrowthAllowed() },
     );
     this.journal.initialize();
+    this.rateLimitCooldown = new OnePasswordRateLimitCooldown(ctx.storage);
+    this.rateLimitCooldown.initialize();
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -185,17 +191,40 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     try {
       if (url.pathname === "/internal/1password/catalog") {
         const query = parseCatalogRequest(await readJsonObject(request, 4_096));
-        const items = await this.runGatewayOperation(request.signal, (client) =>
+        const items = await this.runGatewayOperation(request.signal, {
+          operation: "catalog.search",
+        }, (client) =>
           executeCatalog({ client, query, vaultId: this.env.OP_VAULT_ID }),
         );
         return executorJson({ ok: true, items });
+      }
+
+      if (url.pathname === "/internal/1password/credential/use") {
+        const target = parseCredentialUseRequest(
+          await readJsonObject(request, 8_192),
+        );
+        const result = await this.runGatewayOperation(request.signal, {
+          fieldCount: target.fieldIds.length,
+          operation: "credential.use",
+        }, (client) =>
+          executeCredentialUse({
+            client,
+            expectedVersion: target.expectedVersion,
+            fieldIds: target.fieldIds,
+            itemId: target.itemId,
+            vaultId: this.env.OP_VAULT_ID,
+          }),
+        );
+        return executorJson({ ok: true, ...result });
       }
 
       if (url.pathname === "/internal/1password/secret/metadata") {
         const target = parseSecretMetadataRequest(
           await readJsonObject(request, 4_096),
         );
-        const metadata = await this.runGatewayOperation(request.signal, (client) =>
+        const metadata = await this.runGatewayOperation(request.signal, {
+          operation: "secret.metadata",
+        }, (client) =>
           executeSecretReadMetadata({
             client,
             fieldId: target.fieldId,
@@ -208,7 +237,10 @@ export class OnePasswordExecutor extends DurableObject<Env> {
 
       if (url.pathname === "/internal/1password/secret/read") {
         const target = parseSecretReadRequest(await readJsonObject(request, 4_096));
-        const result = await this.runGatewayOperation(request.signal, (client) =>
+        const result = await this.runGatewayOperation(request.signal, {
+          fieldCount: 1,
+          operation: "secret.read",
+        }, (client) =>
           executeSecretRead({
             client,
             expectedVersion: target.expectedVersion,
@@ -224,7 +256,9 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         const itemId = parseItemMetadataRequest(
           await readJsonObject(request, 4_096),
         );
-        const item = await this.runGatewayOperation(request.signal, (client) =>
+        const item = await this.runGatewayOperation(request.signal, {
+          operation: "item.metadata",
+        }, (client) =>
           executeItemMetadata({ client, itemId, vaultId: this.env.OP_VAULT_ID }),
         );
         return executorJson({ item, ok: true });
@@ -234,7 +268,9 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         const target = parseSshSignRequest(
           await readJsonObject(request, 96 * 1_024),
         );
-        const result = await this.runGatewayOperation(request.signal, (client) =>
+        const result = await this.runGatewayOperation(request.signal, {
+          operation: "ssh.sign",
+        }, (client) =>
           executeSshSign({
             client,
             data: target.data,
@@ -261,6 +297,7 @@ export class OnePasswordExecutor extends DurableObject<Env> {
           invoke: () =>
             this.runGatewayOperation(
               request.signal,
+              { operation: mutation.action },
               (client) => this.executeMutation(client, mutation),
               true,
             ),
@@ -272,7 +309,9 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       const result = await executeJournaledReconciliation({
         identity,
         invoke: () =>
-          this.runGatewayOperation(request.signal, (client) =>
+          this.runGatewayOperation(request.signal, {
+            operation: `${mutation.action}.reconcile`,
+          }, (client) =>
             this.reconcileMutation(client, mutation),
           ),
         ...(mutation.action === "item.create" ? {} : { itemId: mutation.itemId }),
@@ -365,9 +404,21 @@ export class OnePasswordExecutor extends DurableObject<Env> {
 
   private async runGatewayOperation<T>(
     signal: AbortSignal,
+    telemetry: { fieldCount?: number; operation: string },
     operation: (client: OnePasswordCoreClient) => Promise<T>,
     mutation = false,
   ): Promise<T> {
+    const startedAt = Date.now();
+    if (!this.rateLimitCooldown.beforeOperation(
+      startedAt,
+      OPERATION_TIMEOUT_MS + 30_000,
+    )) {
+      console.log(JSON.stringify({
+        event: "executor_onepassword_cooldown_rejected",
+        ...telemetry,
+      }));
+      throw new GatewayOperationError("onepassword_rate_limited", 429);
+    }
     let operationEntered = false;
     const invocationCounts = new Map<string, number>();
     let upstreamRequests = 0;
@@ -398,6 +449,7 @@ export class OnePasswordExecutor extends DurableObject<Env> {
             0,
           ),
           event: "executor_onepassword_usage",
+          ...telemetry,
           operations: Object.fromEntries(
             [...invocationCounts.entries()].sort(([left], [right]) =>
               left.localeCompare(right),
@@ -408,7 +460,10 @@ export class OnePasswordExecutor extends DurableObject<Env> {
         }),
       );
     }
-    if (lifecycle.ok) return lifecycle.value;
+    if (lifecycle.ok) {
+      this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
+      return lifecycle.value;
+    }
     if (lifecycle.operationCompleted) {
       console.error(
         JSON.stringify({
@@ -416,9 +471,15 @@ export class OnePasswordExecutor extends DurableObject<Env> {
           cleanup: lifecycle.cleanup,
         }),
       );
+      this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
       return lifecycle.value;
     }
     if (lifecycle.error instanceof GatewayOperationError) {
+      if (lifecycle.error.code === "onepassword_rate_limited") {
+        this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt);
+      } else {
+        this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
+      }
       throw lifecycle.error;
     }
     const runtimeFailure =
@@ -447,6 +508,11 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     const rateLimited =
       lifecycle.error instanceof CoreAdapterError &&
       lifecycle.error.code === "onepassword_rate_limited";
+    if (rateLimited) {
+      this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt);
+    } else {
+      this.rateLimitCooldown.releaseProbe(Date.now(), startedAt);
+    }
     if (mutation && operationEntered) {
       throw new GatewayOperationError(
         "onepassword_write_outcome_unknown",

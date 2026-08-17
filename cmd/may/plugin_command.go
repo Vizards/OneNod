@@ -129,6 +129,7 @@ func runShellPluginEnable(args []string, cli cliConfig, deps dependencies) error
 		CredentialFields: fields,
 		ItemID:           item.ItemID,
 		ItemTitle:        item.Title,
+		ItemVersion:      item.Version,
 		Plugin:           definition.Plugin.Name,
 		Scope:            scope,
 		Target:           target,
@@ -243,6 +244,7 @@ func runShellPluginCredential(args []string, cli cliConfig, deps dependencies) e
 	}
 	config.Bindings[index].ItemID = item.ItemID
 	config.Bindings[index].ItemTitle = item.Title
+	config.Bindings[index].ItemVersion = item.Version
 	config.Bindings[index].CredentialFields = fields
 	config.Bindings[index].UpstreamRevision = shellPluginUpstreamRevision
 	if err := writeShellPluginConfig(home, config); err != nil {

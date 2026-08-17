@@ -54,6 +54,13 @@ export interface SecretReadExecutorResult
   value: string;
 }
 
+export interface CredentialUseExecutorResult {
+  fields: SecretReadExecutorResult[];
+  item_id: string;
+  item_title: string;
+  version: number;
+}
+
 export interface ItemMutationExecutorResult {
   item_id: string;
   version?: number;
@@ -120,6 +127,41 @@ export function sanitizeSecretReadEnvelope(
   };
   assertExpectedTarget(result, expected);
   return result;
+}
+
+export function sanitizeCredentialUseEnvelope(
+  body: Record<string, unknown>,
+  status: number,
+  expected: {
+    fields: Array<Required<SecretTargetExpectation>>;
+    item_id: string;
+    item_title: string;
+    version: number;
+  },
+): CredentialUseExecutorResult {
+  assertSuccessful(body, status);
+  const itemId = safeIdentifier(body.item_id);
+  const itemTitle = safeText(body.item_title, 256);
+  const version = safeVersion(body.version);
+  if (
+    itemId !== expected.item_id ||
+    itemTitle !== expected.item_title ||
+    version !== expected.version ||
+    !Array.isArray(body.fields) ||
+    body.fields.length !== expected.fields.length
+  ) {
+    throw new ExecutorTransportError("untrusted_response");
+  }
+  const fields = body.fields.map((candidate, index) => {
+    const field = record(candidate);
+    if (typeof field.value !== "string" || field.value.length > 32 * 1024) {
+      throw new ExecutorTransportError("untrusted_response");
+    }
+    const result = { ...sanitizeMetadata(field), value: field.value };
+    assertExpectedTarget(result, expected.fields[index]!);
+    return result;
+  });
+  return { fields, item_id: itemId, item_title: itemTitle, version };
 }
 
 export function sanitizeItemMetadataEnvelope(

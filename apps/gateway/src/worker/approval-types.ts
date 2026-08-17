@@ -88,6 +88,25 @@ export interface CatalogMetadataCacheRow {
   version: number;
 }
 
+export interface TrustedCatalogMetadataRow {
+  field_id: string;
+  field_label: string;
+  field_type: string;
+  item_id: string;
+  item_title: string;
+  item_version: number;
+  observed_at: number;
+}
+
+export interface RequestSecretFieldRow {
+  field_id: string;
+  field_label: string;
+  field_type: string;
+  ordinal: number;
+  request_id: string;
+  secret_grant_id: string | null;
+}
+
 export interface RequestActivityRow {
   action: string;
   application_assurance: string;

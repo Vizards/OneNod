@@ -110,6 +110,7 @@ export interface DecisionVerifyRequest {
 
 export interface DecisionVerifyResponse {
   grant_id?: string;
+  grant_ids?: string[];
   ok: true;
   status: "approved" | "rejected";
 }
@@ -146,6 +147,14 @@ export interface CatalogSearchRequest {
 
 export interface CatalogSearchResponse {
   items: CatalogItemResult[];
+}
+
+export interface CatalogItemRequest {
+  item_id: string;
+}
+
+export interface CatalogItemResponse {
+  item: CatalogItemResult;
 }
 
 export interface ClientObservationRequest {
@@ -219,6 +228,21 @@ export interface SecretReadCreateRequest {
   client: ClientObservationRequest;
   expected_version: number;
   field_id: string;
+  idempotency_key: string;
+  item_id: string;
+}
+
+/**
+ * Resolve a bounded set of fields from one pinned item version as one
+ * approval and one Executor operation. The field IDs are sorted and unique so
+ * the signed request has one canonical representation.
+ */
+export interface CredentialUseCreateRequest {
+  action: "credential.use";
+  authorization_scope?: ApplicationAuthorizationScopeRequest;
+  client: ClientObservationRequest;
+  expected_version: number;
+  field_ids: string[];
   idempotency_key: string;
   item_id: string;
 }
@@ -402,4 +426,18 @@ export interface ConsumeResponse {
   request_id: string;
   status: "consumed";
   value: string;
+}
+
+export interface CredentialUseFieldValue {
+  field_id: string;
+  value: string;
+}
+
+export interface CredentialUseConsumeResponse {
+  item_id: string;
+  ok: true;
+  request_id: string;
+  status: "consumed";
+  values: CredentialUseFieldValue[];
+  version: number;
 }

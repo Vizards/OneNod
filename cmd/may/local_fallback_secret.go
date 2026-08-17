@@ -30,7 +30,9 @@ type localFallbackVault struct {
 type localOnePasswordBackend interface {
 	ResolveAgentVault(context.Context) (localFallbackVault, error)
 	SearchCatalog(context.Context, string, string) (catalogSearchResponse, error)
+	ReadCatalogItem(context.Context, string, string) (catalogItemResult, error)
 	ReadSecret(context.Context, string, string, string, int64) (string, error)
+	ReadCredential(context.Context, string, string, []string, int64) (map[string]string, error)
 }
 
 type localOnePasswordFactory func(
@@ -65,6 +67,29 @@ func searchCatalogWithLocalFallback(
 	return response, nil
 }
 
+func readCatalogItemWithLocalFallback(
+	ctx context.Context,
+	client *apiClient,
+	itemID string,
+	deps dependencies,
+) (catalogItemResult, error) {
+	item, err := readCatalogItem(ctx, client, itemID)
+	if err == nil || !isGatewayErrorCode(err, "onepassword_rate_limited") {
+		return item, err
+	}
+	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
+	backend, config, localErr := openConfiguredLocalFallback(ctx, deps)
+	if localErr != nil {
+		return catalogItemResult{}, localFallbackUnavailable(err, localErr)
+	}
+	item, localErr = backend.ReadCatalogItem(ctx, config.VaultID, itemID)
+	if localErr != nil {
+		return catalogItemResult{}, localFallbackUnavailable(err, localErr)
+	}
+	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded.")
+	return item, nil
+}
+
 func readSecretWithLocalFallback(
 	ctx context.Context,
 	remoteErr error,
@@ -93,6 +118,36 @@ func readSecretWithLocalFallback(
 	}
 	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded. If the remote request had already entered execution, Gateway Activity may still show its Service Account quota failure.")
 	return value, nil
+}
+
+func readCredentialWithLocalFallback(
+	ctx context.Context,
+	remoteErr error,
+	deps dependencies,
+	itemID string,
+	fieldIDs []string,
+	expectedVersion int64,
+) (map[string]string, error) {
+	if !isGatewayErrorCode(remoteErr, "onepassword_rate_limited") {
+		return nil, remoteErr
+	}
+	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
+	backend, config, err := openConfiguredLocalFallback(ctx, deps)
+	if err != nil {
+		return nil, localFallbackUnavailable(remoteErr, err)
+	}
+	values, err := backend.ReadCredential(
+		ctx,
+		config.VaultID,
+		itemID,
+		fieldIDs,
+		expectedVersion,
+	)
+	if err != nil {
+		return nil, localFallbackUnavailable(remoteErr, err)
+	}
+	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded. If the remote request had already entered execution, Gateway Activity may still show its Service Account quota failure.")
+	return values, nil
 }
 
 func openConfiguredLocalFallback(
@@ -225,6 +280,25 @@ func (backend *sdkLocalOnePasswordBackend) SearchCatalog(
 	return result, nil
 }
 
+func (backend *sdkLocalOnePasswordBackend) ReadCatalogItem(
+	ctx context.Context,
+	vaultID string,
+	itemID string,
+) (catalogItemResult, error) {
+	defer runtime.KeepAlive(backend.client)
+	if !onePasswordVaultIDPattern.MatchString(vaultID) {
+		return catalogItemResult{}, errors.New("local Agent Vault ID is invalid")
+	}
+	if err := validateIdentifier(itemID, "item"); err != nil {
+		return catalogItemResult{}, err
+	}
+	item, err := backend.client.Items().Get(ctx, vaultID, itemID)
+	if err != nil {
+		return catalogItemResult{}, errors.New("read local Agent Vault item metadata failed")
+	}
+	return projectLocalCatalogItem(item, vaultID)
+}
+
 func (backend *sdkLocalOnePasswordBackend) ReadSecret(
 	ctx context.Context,
 	vaultID string,
@@ -232,44 +306,82 @@ func (backend *sdkLocalOnePasswordBackend) ReadSecret(
 	fieldID string,
 	expectedVersion int64,
 ) (string, error) {
+	values, err := backend.ReadCredential(
+		ctx,
+		vaultID,
+		itemID,
+		[]string{fieldID},
+		expectedVersion,
+	)
+	if err != nil {
+		return "", err
+	}
+	value, found := values[fieldID]
+	if !found {
+		return "", errors.New("local Agent Vault credential response omitted a field")
+	}
+	return value, nil
+}
+
+func (backend *sdkLocalOnePasswordBackend) ReadCredential(
+	ctx context.Context,
+	vaultID string,
+	itemID string,
+	fieldIDs []string,
+	expectedVersion int64,
+) (map[string]string, error) {
 	defer runtime.KeepAlive(backend.client)
 	if !onePasswordVaultIDPattern.MatchString(vaultID) {
-		return "", errors.New("local Agent Vault ID is invalid")
+		return nil, errors.New("local Agent Vault ID is invalid")
 	}
 	if err := validateIdentifier(itemID, "item"); err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := validateIdentifier(fieldID, "field"); err != nil {
-		return "", err
+	if len(fieldIDs) == 0 || len(fieldIDs) > 16 {
+		return nil, errors.New("local Agent Vault credential field set is invalid")
+	}
+	requested := make(map[string]bool, len(fieldIDs))
+	for _, fieldID := range fieldIDs {
+		if err := validateIdentifier(fieldID, "field"); err != nil {
+			return nil, err
+		}
+		if requested[fieldID] {
+			return nil, errors.New("local Agent Vault credential contains a duplicate requested field")
+		}
+		requested[fieldID] = true
 	}
 	item, err := backend.client.Items().Get(ctx, vaultID, itemID)
 	if err != nil {
-		return "", errors.New("read local Agent Vault item failed")
+		return nil, errors.New("read local Agent Vault item failed")
 	}
 	if item.ID != itemID || item.VaultID != vaultID || int64(item.Version) != expectedVersion {
-		return "", errors.New("local Agent Vault item version does not match the approved request")
+		return nil, errors.New("local Agent Vault item version does not match the approved request")
 	}
-	var value string
-	var found bool
-	if fieldID == localNotesFieldID && item.Notes != "" {
-		value, found = item.Notes, true
-	} else {
-		for _, field := range item.Fields {
-			if field.ID == fieldID {
-				if found {
-					return "", errors.New("local Agent Vault item contains a duplicate field ID")
+	values := make(map[string]string, len(fieldIDs))
+	for _, fieldID := range fieldIDs {
+		var value string
+		var found bool
+		if fieldID == localNotesFieldID && item.Notes != "" {
+			value, found = item.Notes, true
+		} else {
+			for _, field := range item.Fields {
+				if field.ID == fieldID {
+					if found {
+						return nil, errors.New("local Agent Vault item contains a duplicate field ID")
+					}
+					value, found = field.Value, true
 				}
-				value, found = field.Value, true
 			}
 		}
+		if !found {
+			return nil, errors.New("requested field does not exist in the local Agent Vault item")
+		}
+		if len(value) > maxLocalSecretBytes {
+			return nil, errors.New("local 1Password secret exceeded the OneNod size limit")
+		}
+		values[fieldID] = value
 	}
-	if !found {
-		return "", errors.New("requested field does not exist in the local Agent Vault item")
-	}
-	if len(value) > maxLocalSecretBytes {
-		return "", errors.New("local 1Password secret exceeded the OneNod size limit")
-	}
-	return value, nil
+	return values, nil
 }
 
 func projectLocalCatalogItem(

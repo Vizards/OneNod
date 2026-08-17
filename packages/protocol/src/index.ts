@@ -19,6 +19,7 @@ export type ApprovalStatus =
 
 export type ApprovalAction =
   | "catalog.search"
+  | "credential.use"
   | "secret.read"
   | "process.run"
   | "item.create"

@@ -2,7 +2,9 @@ import {
   canonicalJsonSha256Base64Url,
   decodeBase64Url,
   type ApplicationAuthorizationScopeRequest,
+  type CatalogItemRequest,
   type CatalogSearchRequest,
+  type CredentialUseCreateRequest,
   type ItemMutationRequest,
   type SecretReadCreateRequest,
   type SshSignCreateRequest,
@@ -73,6 +75,10 @@ import type {
   SshAuthorizationGrantRow,
   ValidatedClientObservation,
 } from "./approval-types.js";
+import {
+  storeTrustedCatalogItems,
+  trustedCatalogFields,
+} from "./trusted-catalog-metadata.js";
 
 const APPROVAL_TTL_MS = 2 * 60_000;
 const AUTHORIZATION_TTL_MS = 30_000;
@@ -154,6 +160,7 @@ export class ApprovalRequestAdmission {
     if (this.human.gatewayRuntimeState().locked === 1) {
       throw new GatewayHttpError("gateway_locked", 423);
     }
+    this.callbacks.assertStorageGrowthAllowed();
     // Best-effort protection for the external 1Password quota and runaway
     // requester loops. This in-memory window is deliberately not an auth gate.
     this.assertCatalogRate(requester.deviceId);
@@ -162,9 +169,32 @@ export class ApprovalRequestAdmission {
         ? ""
         : safeText(body.query, 128);
     const items = await this.executor.executeCatalog(query);
+    storeTrustedCatalogItems(this.ctx.storage, items);
     this.human.assertGatewayUnlocked();
     this.requester.assertRequesterActive(requester.deviceId);
     return json({ items });
+  }
+
+  async catalogItem(request: Request, path: string): Promise<Response> {
+    const body = await readJsonObject<CatalogItemRequest>(request);
+    const requester = await this.requester.authenticateSignedRequest(
+      request,
+      path,
+      body,
+    );
+    if (this.human.gatewayRuntimeState().locked === 1) {
+      throw new GatewayHttpError("gateway_locked", 423);
+    }
+    this.callbacks.assertStorageGrowthAllowed();
+    assertExactKeys(body, ["item_id"]);
+    this.assertCatalogRate(requester.deviceId);
+    const item = await this.executor.executeItemMetadata(
+      safeIdentifier(body.item_id, "item_id"),
+    );
+    storeTrustedCatalogItems(this.ctx.storage, [item]);
+    this.human.assertGatewayUnlocked();
+    this.requester.assertRequesterActive(requester.deviceId);
+    return json({ item });
   }
 
   async createApprovalRequest(
@@ -172,7 +202,7 @@ export class ApprovalRequestAdmission {
     path: string,
   ): Promise<Response> {
     const body = await readJsonObject<
-      SecretReadCreateRequest | ItemMutationRequest | SshSignCreateRequest
+      CredentialUseCreateRequest | SecretReadCreateRequest | ItemMutationRequest | SshSignCreateRequest
     >(request);
     let rateReservation: RequestCreationReservation | undefined;
     try {
@@ -219,6 +249,9 @@ export class ApprovalRequestAdmission {
           context,
           legacySshSignedConsume,
         );
+      }
+      if (body.action === "credential.use") {
+        return await this.createCredentialUseRequest(body, requester, context);
       }
       if (body.action !== "secret.read") {
         throw new GatewayHttpError("unsupported_action", 400);
@@ -396,6 +429,239 @@ export class ApprovalRequestAdmission {
       }
     } finally {
       if (rateReservation) this.callbacks.releaseRequestCreationRate(rateReservation);
+    }
+  }
+
+  private async createCredentialUseRequest(
+    body: CredentialUseCreateRequest,
+    requester: RequesterIdentity,
+    context: ValidatedClientObservation,
+  ): Promise<Response> {
+    assertExactKeys(body, [
+      "action",
+      ...(body.authorization_scope === undefined ? [] : ["authorization_scope"]),
+      "client",
+      "expected_version",
+      "field_ids",
+      "idempotency_key",
+      "item_id",
+    ]);
+    const authorizationScope = body.authorization_scope === undefined
+      ? undefined
+      : safeApplicationAuthorizationScope(body.authorization_scope);
+    if (
+      authorizationScope &&
+      (context.identity.assurance !== "verified-code-signature" ||
+        authorizationScope.scope_id !== context.identity.principal_id)
+    ) {
+      throw new GatewayHttpError("authorization_scope_invalid", 400);
+    }
+    const itemId = safeIdentifier(body.item_id, "item_id");
+    const expectedVersion = safePositiveInteger(
+      body.expected_version,
+      "expected_version",
+    );
+    if (
+      !Array.isArray(body.field_ids) ||
+      body.field_ids.length === 0 ||
+      body.field_ids.length > 16
+    ) {
+      throw new GatewayHttpError("credential_fields_invalid", 400);
+    }
+    const fieldIds = body.field_ids.map((fieldId) =>
+      safeIdentifier(fieldId, "field_id")
+    );
+    const canonicalFieldIds = [...new Set(fieldIds)].sort();
+    if (
+      canonicalFieldIds.length !== fieldIds.length ||
+      canonicalFieldIds.some((fieldId, index) => fieldId !== fieldIds[index])
+    ) {
+      throw new GatewayHttpError("credential_fields_invalid", 400);
+    }
+    const idempotencyKey = safeIdentifier(
+      body.idempotency_key,
+      "idempotency_key",
+    );
+    const bodyHash = await canonicalJsonSha256Base64Url(body);
+    const existing = this.first<{
+      body_hash: string;
+      expires_at: number;
+      id: string;
+      status: string;
+    }>(
+      `SELECT id, status, expires_at, body_hash FROM requests
+       WHERE requester_device_id = ? AND idempotency_key = ?`,
+      requester.deviceId,
+      idempotencyKey,
+    );
+    if (existing) {
+      if (existing.body_hash !== bodyHash) {
+        throw new GatewayHttpError("idempotency_conflict", 409);
+      }
+      return json({
+        expires_at: iso(existing.expires_at),
+        poll_token: await this.requester.requestPollingToken(
+          existing.id,
+          requester.deviceId,
+        ),
+        request_id: existing.id,
+        status: publicRequestState(existing.status),
+      });
+    }
+
+    const releaseApproval = this.callbacks.reserveNewApproval(
+      requester.deviceId,
+      false,
+    );
+    try {
+      const grants = fieldIds.map((fieldId) =>
+        authorizationScope
+          ? this.activeSecretAuthorization(
+              requester.deviceId,
+              authorizationScope,
+              itemId,
+              fieldId,
+              expectedVersion,
+            )
+          : undefined
+      );
+      for (const grant of grants) {
+        if (grant) {
+          this.callbacks.assertRememberedSecretReadRate(
+            requester.deviceId,
+            grant.id,
+          );
+        }
+      }
+
+      const metadataByField = new Map(
+        trustedCatalogFields(this.sql, itemId, expectedVersion, fieldIds).map(
+          (row) => [row.field_id, row] as const,
+        ),
+      );
+      for (const grant of grants) {
+        if (!grant || metadataByField.has(grant.field_id)) continue;
+        metadataByField.set(grant.field_id, {
+          field_id: grant.field_id,
+          field_label: grant.field_label,
+          field_type: grant.field_type,
+          item_id: grant.item_id,
+          item_title: grant.item_title,
+          item_version: grant.item_version,
+          observed_at: grant.created_at,
+        });
+      }
+      if (metadataByField.size !== fieldIds.length) {
+        const item = await this.executor.executeItemMetadata(itemId);
+        storeTrustedCatalogItems(this.ctx.storage, [item]);
+        if (item.version !== expectedVersion) {
+          throw new GatewayHttpError("item_stale", 409);
+        }
+        metadataByField.clear();
+        for (const row of trustedCatalogFields(
+          this.sql,
+          itemId,
+          expectedVersion,
+          fieldIds,
+        )) {
+          metadataByField.set(row.field_id, row);
+        }
+      }
+      if (metadataByField.size !== fieldIds.length) {
+        throw new GatewayHttpError("field_not_found", 404);
+      }
+      const metadata = fieldIds.map((fieldId) => metadataByField.get(fieldId)!);
+      const itemTitle = metadata[0]!.item_title;
+      if (metadata.some((field) => field.item_title !== itemTitle)) {
+        throw new GatewayHttpError("executor_untrusted_response", 502);
+      }
+
+      const allRemembered = Boolean(authorizationScope) &&
+        grants.every((grant) => grant !== undefined);
+      const now = Date.now();
+      const expiresAt = now + APPROVAL_TTL_MS;
+      const requestId = crypto.randomUUID();
+      const initialStatus = allRemembered ? "approved" : "pending";
+      const requestRecord = {
+        action: "credential.use",
+        application_scope_id: authorizationScope?.scope_id ?? null,
+        authorized_until: allRemembered ? now + AUTHORIZATION_TTL_MS : null,
+        body_hash: bodyHash,
+        client_application: context.application,
+        client_source: context.source,
+        consumed_at: null,
+        created_at: now,
+        decided_at: allRemembered ? now : null,
+        error_code: null,
+        execution_started_at: null,
+        expected_version: expectedVersion,
+        expires_at: expiresAt,
+        field_id: fieldIds[0]!,
+        field_label: metadata.map((field) => field.field_label).join(", "),
+        field_type: "Credential",
+        id: requestId,
+        idempotency_key: idempotencyKey,
+        item_id: itemId,
+        item_title: itemTitle,
+        legacy_ssh_signed_consume: 0,
+        requester_device_id: requester.deviceId,
+        requester_name: requester.displayName,
+        secret_grant_id: null,
+        ssh_agent_instance_public_key: null,
+        ssh_grant_id: null,
+        ssh_scope_id: null,
+        ssh_scope_kind: null,
+        status: initialStatus,
+        ...applicationIdentityColumns(context.identity),
+      };
+      this.ctx.storage.transactionSync(() => {
+        this.callbacks.assertStorageGrowthAllowed();
+        this.human.assertGatewayUnlocked();
+        insertRequest(this.sql, requestRecord);
+        metadata.forEach((field, ordinal) => {
+          this.sql.exec(
+            `INSERT INTO request_secret_fields
+              (request_id, ordinal, field_id, field_label, field_type,
+               secret_grant_id)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            requestId,
+            ordinal,
+            field.field_id,
+            field.field_label,
+            field.field_type,
+            grants[ordinal]?.id ?? null,
+          );
+        });
+        this.callbacks.audit(
+          allRemembered ? "request_auto_approved" : "request_created",
+          requestId,
+          allRemembered ? grants[0]!.id : requester.deviceId,
+        );
+      });
+      this.notifications.broadcastHumanEvent("request.changed", requestId);
+      if (!allRemembered) {
+        this.notifications.queueApprovalPush({
+          body: "Open the approval queue to approve or deny this request.",
+          requestId,
+          tag: `request-${requestId}`,
+          title: "New 1Password approval request",
+          url: `/requests#request-${requestId}`,
+        });
+      }
+      return json(
+        {
+          expires_at: iso(expiresAt),
+          poll_token: await this.requester.requestPollingToken(
+            requestId,
+            requester.deviceId,
+          ),
+          request_id: requestId,
+          status: initialStatus,
+        },
+        201,
+      );
+    } finally {
+      releaseApproval();
     }
   }
 
@@ -876,7 +1142,7 @@ export class ApprovalRequestAdmission {
     return json(
       projectRequesterStatus(
         projected,
-        projected.action === "secret.read"
+        projected.action === "secret.read" || projected.action === "credential.use"
           ? undefined
           : this.requestStore.requestOperation(projected.id),
       ),

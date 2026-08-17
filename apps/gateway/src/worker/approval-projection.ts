@@ -58,7 +58,7 @@ export function projectHumanRequestSummary(row: RequestRow) {
     action: projectApprovalAction(row.action),
     application_recognition: projectApplicationRecognition(row),
     ...(row.application_assurance === "verified-code-signature" &&
-    row.action === "secret.read" &&
+    (row.action === "secret.read" || row.action === "credential.use") &&
     row.application_scope_id === row.application_principal_id
       ? {
           authorization_scope: {
@@ -114,7 +114,7 @@ export function projectHumanActivitySummary(row: RequestActivityRow) {
     requester_name: row.requester_name,
     status: uiRequestState(row.status),
     target_label:
-      row.action === "secret.read"
+      row.action === "secret.read" || row.action === "credential.use"
         ? `${row.item_title} · ${row.field_label}`
         : row.item_title,
     verified_version: row.expected_version,
@@ -162,7 +162,7 @@ export function projectHumanRequestDetail(row: RequestRow) {
     field_id: row.field_id,
     item_id: row.item_id,
     verified_facts:
-      row.action === "secret.read"
+      row.action === "secret.read" || row.action === "credential.use"
         ? [
             { label: "Item", value: row.item_title },
             { label: "Field", value: row.field_label },
@@ -184,6 +184,7 @@ export function catalogMetadataCacheKey(
 function projectApprovalAction(value: string) {
   if (
     value === "secret.read" ||
+    value === "credential.use" ||
     value === "item.create" ||
     value === "item.patch" ||
     value === "item.archive" ||

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	shellPluginConfigSchema = 1
-	maxShellPluginConfig    = 64 * 1024
+	legacyShellPluginConfigSchema = 1
+	shellPluginConfigSchema       = 2
+	maxShellPluginConfig          = 64 * 1024
 )
 
 type shellPluginFieldBinding struct {
@@ -32,6 +33,7 @@ type shellPluginBinding struct {
 	CredentialFields map[string]shellPluginFieldBinding `json:"credential_fields"`
 	ItemID           string                             `json:"item_id"`
 	ItemTitle        string                             `json:"item_title,omitempty"`
+	ItemVersion      int64                              `json:"item_version,omitempty"`
 	Plugin           string                             `json:"plugin"`
 	Scope            shellPluginScope                   `json:"scope"`
 	Target           string                             `json:"target"`
@@ -70,6 +72,12 @@ func readShellPluginConfig(home string) (shellPluginConfig, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return shellPluginConfig{}, errors.New("OneNod shell plugin configuration has trailing data")
 	}
+	if config.SchemaVersion == legacyShellPluginConfigSchema {
+		// Schema 2 adds only a non-secret last-seen item version. Keep legacy
+		// bindings usable and let the first authenticated invocation populate it
+		// through the targeted metadata slow path.
+		config.SchemaVersion = shellPluginConfigSchema
+	}
 	if err := validateShellPluginConfig(config); err != nil {
 		return shellPluginConfig{}, err
 	}
@@ -106,6 +114,9 @@ func validateShellPluginConfig(config shellPluginConfig) error {
 	}
 	seen := make(map[string]bool)
 	for _, binding := range config.Bindings {
+		if len(binding.CredentialFields) == 0 || len(binding.CredentialFields) > 16 {
+			return errors.New("shell plugin credential field set must contain between 1 and 16 fields")
+		}
 		definition, found, err := shellPluginDefinitionByName(binding.Command)
 		if err != nil {
 			return err
@@ -119,6 +130,9 @@ func validateShellPluginConfig(config shellPluginConfig) error {
 		if binding.ItemTitle != "" && (len(binding.ItemTitle) > 256 || containsControl(binding.ItemTitle)) {
 			return errors.New("shell plugin item title metadata is invalid")
 		}
+		if binding.ItemVersion < 0 {
+			return errors.New("shell plugin item version metadata is invalid")
+		}
 		if !filepath.IsAbs(binding.Target) || filepath.Clean(binding.Target) != binding.Target ||
 			len(binding.Target) > 4096 || containsControl(binding.Target) {
 			return errors.New("shell plugin target must be a clean absolute path")
@@ -130,6 +144,7 @@ func validateShellPluginConfig(config shellPluginConfig) error {
 			return err
 		}
 		knownFields := make(map[string]bool)
+		boundFieldIDs := make(map[string]bool)
 		for _, field := range definition.Credential.Fields {
 			knownFields[field.Name.String()] = true
 			fieldBinding, exists := binding.CredentialFields[field.Name.String()]
@@ -142,6 +157,10 @@ func validateShellPluginConfig(config shellPluginConfig) error {
 			if err := validateIdentifier(fieldBinding.FieldID, "shell plugin field"); err != nil {
 				return err
 			}
+			if boundFieldIDs[fieldBinding.FieldID] {
+				return fmt.Errorf("shell plugin binding %s maps more than one credential field to %s", binding.Command, fieldBinding.FieldID)
+			}
+			boundFieldIDs[fieldBinding.FieldID] = true
 			if fieldBinding.Label != "" && (len(fieldBinding.Label) > 256 || containsControl(fieldBinding.Label)) {
 				return errors.New("shell plugin field label metadata is invalid")
 			}

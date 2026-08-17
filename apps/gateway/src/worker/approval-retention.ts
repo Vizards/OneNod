@@ -317,6 +317,7 @@ export class ApprovalRetention {
     this.storage.transactionSync(() => {
       for (const row of purgeRequests) {
         this.sql.exec(`DELETE FROM request_operations WHERE request_id = ?`, row.id);
+        this.sql.exec(`DELETE FROM request_secret_fields WHERE request_id = ?`, row.id);
         this.sql.exec(
           `DELETE FROM requests
            WHERE id = ? AND status IN ('rejected', 'expired', 'consumed', 'error')`,
