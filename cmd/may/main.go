@@ -46,7 +46,8 @@ func main() {
 		stdout:              os.Stdout,
 	}
 	var err error
-	if filepath.Base(os.Args[0]) == "may" && len(os.Args) > 1 && os.Args[1] == "__transport-finalize" {
+	binaryName := filepath.Base(os.Args[0])
+	if binaryName == "may" && len(os.Args) > 1 && os.Args[1] == "__transport-finalize" {
 		err = runInternalTransportFinalize(os.Args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "may: %v\n", err)
@@ -54,13 +55,26 @@ func main() {
 		}
 		return
 	}
-	switch filepath.Base(os.Args[0]) {
+	switch binaryName {
+	case "may":
+		err = runCLI(os.Args[1:], deps)
 	case gitSignAdapterBinaryName:
 		err = runGitSignAdapter(os.Args[1:], deps)
 	default:
-		err = runCLI(os.Args[1:], deps)
+		definition, found, registryErr := shellPluginDefinitionByName(binaryName)
+		if registryErr != nil {
+			err = registryErr
+		} else if found && definition.Command == binaryName {
+			err = runShellPluginEntrypoint(binaryName, os.Args[1:], deps)
+		} else {
+			err = runCLI(os.Args[1:], deps)
+		}
 	}
 	if err != nil {
+		var targetExit shellPluginProcessExitError
+		if errors.As(err, &targetExit) {
+			os.Exit(targetExit.code)
+		}
 		fmt.Fprintf(os.Stderr, "may: %v\n", err)
 		os.Exit(1)
 	}
@@ -111,33 +125,11 @@ func runCLI(args []string, deps dependencies) error {
 		return errors.New("a command is required")
 	}
 	if requesterCommand(remaining[0]) {
-		if config.origin == "" {
-			installedOrigin, err := installedUserOrigin()
-			if err != nil {
-				return err
-			}
-			config.origin = installedOrigin
-		}
-		if config.origin == "" {
-			return errors.New(
-				"Gateway origin is not configured; run may install --origin URL or pass --origin before the command",
-			)
-		}
-		keychainService, err := requesterKeychainService(config.origin)
+		var err error
+		config, deps, err = prepareRequesterInvocation(config, deps)
 		if err != nil {
 			return err
 		}
-		deps.keychain.service = keychainService
-		deps.keychain.origin = config.origin
-		activeSlot, selected, err := selectedRequesterSlot(config.origin)
-		if err != nil {
-			return err
-		}
-		if !selected {
-			activeSlot = "active"
-		}
-		deps.keychain.slot = activeSlot
-		deps.keychain.selected = selected
 	}
 
 	switch remaining[0] {
@@ -157,6 +149,8 @@ func runCLI(args []string, deps dependencies) error {
 		return runSSH(remaining[1:], config, deps)
 	case "agent":
 		return runAgent(remaining[1:], config, deps)
+	case "plugin":
+		return runPlugin(remaining[1:], config, deps)
 	case "install":
 		return runBinaryInstall(remaining[1:], deps)
 	case "version":
@@ -176,6 +170,40 @@ func runCLI(args []string, deps dependencies) error {
 		global.Usage()
 		return fmt.Errorf("unknown command %q", remaining[0])
 	}
+}
+
+func prepareRequesterInvocation(
+	config cliConfig,
+	deps dependencies,
+) (cliConfig, dependencies, error) {
+	if config.origin == "" {
+		installedOrigin, err := installedUserOrigin()
+		if err != nil {
+			return config, deps, err
+		}
+		config.origin = installedOrigin
+	}
+	if config.origin == "" {
+		return config, deps, errors.New(
+			"Gateway origin is not configured; run may install --origin URL or pass --origin before the command",
+		)
+	}
+	keychainService, err := requesterKeychainService(config.origin)
+	if err != nil {
+		return config, deps, err
+	}
+	deps.keychain.service = keychainService
+	deps.keychain.origin = config.origin
+	activeSlot, selected, err := selectedRequesterSlot(config.origin)
+	if err != nil {
+		return config, deps, err
+	}
+	if !selected {
+		activeSlot = "active"
+	}
+	deps.keychain.slot = activeSlot
+	deps.keychain.selected = selected
+	return config, deps, nil
 }
 
 func requesterCommand(command string) bool {
@@ -201,6 +229,11 @@ Usage:
   may configure local-fallback status
   may configure local-fallback apply [--account <1Password-account-name-or-UUID>]
   may configure local-fallback restore
+  may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>] [--target <path>]
+  may plugin status [plugin-or-command]
+  may plugin doctor <plugin-or-command>
+  may plugin credential <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>]
+  may plugin disable <plugin-or-command> --scope <global|directory>
   may [--origin URL] preflight
   may [--origin URL] enroll [--name "MacBook"] [--new-identity]
   may [--origin URL] catalog search <query>
@@ -316,6 +349,12 @@ var commandHelp = map[string]string{
 	"operator init":                    "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
 	"operator revoke-cloudflare":       "usage: may operator revoke-cloudflare",
 	"operator update":                  "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"plugin":                           shellPluginUsage,
+	"plugin credential":                shellPluginCredentialUsage,
+	"plugin disable":                   shellPluginDisableUsage,
+	"plugin doctor":                    shellPluginDoctorUsage,
+	"plugin enable":                    shellPluginEnableUsage,
+	"plugin status":                    shellPluginStatusUsage,
 	"preflight":                        "usage: may [global flags] preflight",
 	"read":                             "usage: may [global flags] read [--no-newline] op://Agent/<item>/<field>",
 	"secret":                           secretReadUsage,
