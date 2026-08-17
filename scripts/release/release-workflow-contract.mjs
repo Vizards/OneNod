@@ -137,8 +137,14 @@ export function validateReleaseWorkflow(value) {
     !exactBuildSigning.includes("--sign -") ||
     !exactBuildSigning.includes("--options runtime") ||
     !exactBuildSigning.includes("--timestamp=none") ||
+    !exactBuildSigning.includes("codesign --validate-constraint") ||
+    !exactBuildSigning.includes("--entitlements scripts/release/may-local-fallback-entitlements.plist") ||
+    !exactBuildSigning.includes("--library-constraint scripts/release/onepassword-sdk-library-constraint.plist") ||
+    !exactBuildSigning.includes("--enforce-constraint-validity") ||
     !exactBuildSigning.includes("com.github.vizards.onenod.may-ssh-sign") ||
     !exactBuildVerification.includes("codesign --verify --strict") ||
+    !exactBuildVerification.includes("onepassword-sdk") ||
+    !exactBuildVerification.includes("Has Library Load Constraints") ||
     !exactBuildVerification.includes("com.apple.security.get-task-allow") ||
     !exactBuildVerification.includes("com.apple.security.debugger") ||
     !exactBuildVerification.includes("com.apple.security.cs.disable-library-validation") ||
