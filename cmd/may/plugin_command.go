@@ -57,6 +57,14 @@ func runPlugin(args []string, config cliConfig, deps dependencies) error {
 	}
 }
 
+func parseShellPluginFlags(flags *flag.FlagSet, args []string) error {
+	if len(args) > 0 && args[0] != "--" && !strings.HasPrefix(args[0], "-") {
+		pluginName := args[0]
+		args = append(append([]string(nil), args[1:]...), pluginName)
+	}
+	return flags.Parse(args)
+}
+
 func runShellPluginEnable(args []string, cli cliConfig, deps dependencies) error {
 	flags := flag.NewFlagSet("plugin enable", flag.ContinueOnError)
 	flags.SetOutput(writerOrDefault(deps.stderr, os.Stderr))
@@ -66,7 +74,7 @@ func runShellPluginEnable(args []string, cli cliConfig, deps dependencies) error
 	targetValue := flags.String("target", "", "real executable path")
 	var fieldValues repeatedShellPluginFieldFlag
 	flags.Var(&fieldValues, "field", "credential field mapping Name=<id-or-label>; repeatable")
-	if err := flags.Parse(args); err != nil {
+	if err := parseShellPluginFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -173,7 +181,7 @@ func runShellPluginCredential(args []string, cli cliConfig, deps dependencies) e
 	searchQuery := flags.String("search", "", "Agent Vault catalog query")
 	var fieldValues repeatedShellPluginFieldFlag
 	flags.Var(&fieldValues, "field", "credential field mapping Name=<id-or-label>; repeatable")
-	if err := flags.Parse(args); err != nil {
+	if err := parseShellPluginFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -377,7 +385,7 @@ func runShellPluginDisable(args []string, deps dependencies) error {
 	flags := flag.NewFlagSet("plugin disable", flag.ContinueOnError)
 	flags.SetOutput(writerOrDefault(deps.stderr, os.Stderr))
 	scopeValue := flags.String("scope", "", "binding scope: global or directory")
-	if err := flags.Parse(args); err != nil {
+	if err := parseShellPluginFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {

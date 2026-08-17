@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,15 @@ import (
 )
 
 func TestSupportedShellPluginsUseOfficialNeedsAuthAndProvisioners(t *testing.T) {
+	flags := flag.NewFlagSet("plugin enable", flag.ContinueOnError)
+	scope := flags.String("scope", "", "")
+	if err := parseShellPluginFlags(flags, []string{"gh", "--scope", "global"}); err != nil {
+		t.Fatalf("parse documented plugin-first arguments: %v", err)
+	}
+	if *scope != "global" || flags.NArg() != 1 || flags.Arg(0) != "gh" {
+		t.Fatalf("documented plugin-first arguments parsed as scope=%q args=%v", *scope, flags.Args())
+	}
+
 	definitions, err := supportedShellPluginDefinitions()
 	if err != nil {
 		t.Fatalf("load supported shell plugins: %v", err)
