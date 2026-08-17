@@ -103,12 +103,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api --paginate --slurp \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            > "$RUNNER_TEMP/published-release-pages.json"
-          jq '[.[][] | select(.draft == false and .immutable == true) | .tag_name]' \
-            "$RUNNER_TEMP/published-release-pages.json" \
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 1001 \
+            --json tagName,isDraft,isImmutable \
+            > "$RUNNER_TEMP/release-lineage.json"
+          if [ "$(jq 'length' "$RUNNER_TEMP/release-lineage.json")" -ge 1001 ]; then
+            echo "Release blocked: published release lineage exceeds the bounded inventory." >&2
+            exit 1
+          fi
+          jq '[.[] | select(.isDraft == false and .isImmutable == true) | .tagName]' \
+            "$RUNNER_TEMP/release-lineage.json" \
             > "$RUNNER_TEMP/published-release-tags.json"
       - name: Derive the release from the manifest transition
         id: release

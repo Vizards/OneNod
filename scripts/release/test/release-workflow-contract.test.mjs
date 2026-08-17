@@ -58,8 +58,8 @@ test("prepare verifies the exact selected source before authorization", () => {
 test("candidate numbering cannot promote an unpublished tag into release lineage", () => {
   const changed = replaceOnce(
     workflow,
-    "select(.draft == false and .immutable == true)",
-    "select(.draft == false)",
+    "select(.isDraft == false and .isImmutable == true)",
+    "select(.isDraft == false)",
   );
   assert.throws(
     () => validateReleaseWorkflow(changed),
@@ -69,9 +69,22 @@ test("candidate numbering cannot promote an unpublished tag into release lineage
 
 test("published lineage inventory remains complete and versioned", () => {
   for (const [before, after] of [
-    ["gh api --paginate --slurp", "gh api --slurp"],
-    ["X-GitHub-Api-Version: 2026-03-10", "X-GitHub-Api-Version: 2022-11-28"],
-    [".draft == false and .immutable == true", ".immutable == true"],
+    ["gh release list", "gh release view"],
+    ['--repo "$GITHUB_REPOSITORY"', '--repo "example/untrusted"'],
+    ["--limit 1001", "--limit 1000"],
+    [
+      "--json tagName,isDraft,isImmutable",
+      "--json tagName,isDraft",
+    ],
+    [
+      'jq \'length\' "$RUNNER_TEMP/release-lineage.json"',
+      'jq \'length\' "$RUNNER_TEMP/wrong-lineage.json"',
+    ],
+    ["-ge 1001", "-gt 1001"],
+    [
+      ".isDraft == false and .isImmutable == true",
+      ".isImmutable == true",
+    ],
     [
       '> "$RUNNER_TEMP/published-release-tags.json"',
       '> "$RUNNER_TEMP/wrong-release-tags.json"',

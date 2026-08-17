@@ -50,13 +50,21 @@ export function validateReleaseWorkflow(value) {
   if (
     !isPinnedAction(prepareCheckout?.uses, "actions/checkout") ||
     !stepRun(alphaSource).includes("branches-where-head") ||
-    !stepRun(publishedLineage).includes("gh api --paginate --slurp") ||
+    !stepRun(publishedLineage).includes("gh release list") ||
+    !stepRun(publishedLineage).includes('--repo "$GITHUB_REPOSITORY"') ||
+    !stepRun(publishedLineage).includes("--limit 1001") ||
     !stepRun(publishedLineage).includes(
-      "X-GitHub-Api-Version: 2026-03-10",
+      "--json tagName,isDraft,isImmutable",
     ) ||
-    !stepRun(publishedLineage).includes("releases?per_page=100") ||
-    !stepRun(publishedLineage).includes(".draft == false") ||
-    !stepRun(publishedLineage).includes(".immutable == true") ||
+    !stepRun(publishedLineage).includes(
+      'jq \'length\' "$RUNNER_TEMP/release-lineage.json"',
+    ) ||
+    !stepRun(publishedLineage).includes("-ge 1001") ||
+    !stepRun(publishedLineage).includes(
+      ".isDraft == false and .isImmutable == true",
+    ) ||
+    !stepRun(publishedLineage).includes(".tagName") ||
+    stepRun(publishedLineage).includes("releases?per_page=") ||
     !stepRun(publishedLineage).includes(
       '> "$RUNNER_TEMP/published-release-tags.json"',
     ) ||
