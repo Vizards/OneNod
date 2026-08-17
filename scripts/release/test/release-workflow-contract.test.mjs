@@ -120,6 +120,18 @@ test("native artifacts cannot silently lose exact-build signing", () => {
   );
 });
 
+test("may cannot silently lose its constrained 1Password SDK loader policy", () => {
+  const changed = replaceOnce(
+    workflow,
+    "            --library-constraint scripts/release/onepassword-sdk-library-constraint.plist \\\n",
+    "",
+  );
+  assert.throws(
+    () => validateReleaseWorkflow(changed),
+    /must bind and verify deterministic ad-hoc Hardened Runtime exact builds/u,
+  );
+});
+
 function replaceOnce(value, before, after) {
   const changed = value.replace(before, after);
   assert.notEqual(changed, value, `fixture text is missing: ${before}`);

@@ -344,25 +344,35 @@ jobs:
           sign_exact_build() {
             binary="$1"
             identifier="$2"
+            shift 2
             replica="$RUNNER_TEMP/$(basename "$binary").unsigned-replica"
             cp "$binary" "$replica"
             /usr/bin/codesign --force --sign - \
               --identifier "$identifier" \
               --options runtime \
               --timestamp=none \
+              "$@" \
               "$binary"
             /usr/bin/codesign --force --sign - \
               --identifier "$identifier" \
               --options runtime \
               --timestamp=none \
+              "$@" \
               "$replica"
             if ! cmp -s "$binary" "$replica"; then
               echo "Release blocked: ad-hoc exact-build signing was not deterministic for $binary." >&2
               exit 1
             fi
           }
+          /usr/bin/codesign --validate-constraint \
+            scripts/release/onepassword-sdk-library-constraint.plist
           cp dist/build/may dist/build/may-ssh-sign
-          sign_exact_build dist/build/may com.github.vizards.onenod.may
+          sign_exact_build \
+            dist/build/may \
+            com.github.vizards.onenod.may \
+            --entitlements scripts/release/may-local-fallback-entitlements.plist \
+            --library-constraint scripts/release/onepassword-sdk-library-constraint.plist \
+            --enforce-constraint-validity
           sign_exact_build \
             dist/build/may-ssh-sign \
             com.github.vizards.onenod.may-ssh-sign
@@ -403,6 +413,7 @@ jobs:
           verify_exact_build() {
             binary="$1"
             identifier="$2"
+            policy="$3"
             /usr/bin/codesign --verify --strict --verbose=2 "$binary"
             details="$(/usr/bin/codesign -d --verbose=4 "$binary" 2>&1)"
             if ! grep -Fqx "Identifier=$identifier" <<<"$details"; then
@@ -415,31 +426,51 @@ jobs:
               echo "Release blocked: $binary is not an ad-hoc Hardened Runtime exact build." >&2
               exit 1
             fi
-            if /usr/bin/codesign -d --entitlements - "$binary" \
-              >"$RUNNER_TEMP/onenod-entitlements.plist" 2>/dev/null; then
+            entitlements="$RUNNER_TEMP/$(basename "$binary").entitlements.plist"
+            if /usr/bin/codesign -d --xml --entitlements - "$binary" \
+              >"$entitlements" 2>/dev/null; then
               for forbidden in \
                 com.apple.security.get-task-allow \
                 com.apple.security.debugger \
                 com.apple.security.cs.allow-dyld-environment-variables \
-                com.apple.security.cs.disable-library-validation \
                 com.apple.security.cs.disable-executable-page-protection \
                 com.apple.security.cs.allow-jit \
                 com.apple.security.cs.allow-unsigned-executable-memory; do
                 if /usr/libexec/PlistBuddy -c "Print :$forbidden" \
-                  "$RUNNER_TEMP/onenod-entitlements.plist" >/dev/null 2>&1; then
+                  "$entitlements" >/dev/null 2>&1; then
                   echo "Release blocked: $binary carries forbidden entitlement $forbidden." >&2
                   exit 1
                 fi
               done
             fi
+            if [ "$policy" = "onepassword-sdk" ]; then
+              if ! /usr/bin/plutil -convert json -o - "$entitlements" | \
+                jq -e 'type == "object" and length == 1 and .["com.apple.security.cs.disable-library-validation"] == true' \
+                  >/dev/null || \
+                ! grep -Fq "Has Library Load Constraints" <<<"$details"; then
+                echo "Release blocked: $binary lacks the exact constrained 1Password SDK loader policy." >&2
+                exit 1
+              fi
+            elif /usr/libexec/PlistBuddy -c \
+              "Print :com.apple.security.cs.disable-library-validation" \
+              "$entitlements" >/dev/null 2>&1 || \
+              grep -Fq "Has Library Load Constraints" <<<"$details"; then
+              echo "Release blocked: $binary carries the may-only 1Password SDK loader policy." >&2
+              exit 1
+            fi
           }
-          verify_exact_build dist/build/may com.github.vizards.onenod.may
+          verify_exact_build \
+            dist/build/may \
+            com.github.vizards.onenod.may \
+            onepassword-sdk
           verify_exact_build \
             dist/build/may-ssh-sign \
-            com.github.vizards.onenod.may-ssh-sign
+            com.github.vizards.onenod.may-ssh-sign \
+            strict
           verify_exact_build \
             dist/build/onenod-keychain-helper \
-            com.github.vizards.onenod.keychain-helper
+            com.github.vizards.onenod.keychain-helper \
+            strict
       - name: Verify embedded binary versions
         env:
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
