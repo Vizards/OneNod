@@ -263,10 +263,30 @@ export class ApprovalReview {
     const authorizedUntil =
       status === "approved" ? now + AUTHORIZATION_TTL_MS : null;
     const row = this.requestStore.requestRow(requestId);
+    const credentialFields = row.action === "credential.use"
+      ? this.requestStore.requestSecretFields(requestId)
+      : [];
+    if (
+      row.action === "credential.use" &&
+      (credentialFields.length === 0 || credentialFields.length > 16)
+    ) {
+      throw new GatewayHttpError("credential_fields_invalid", 500);
+    }
     const grantId =
-      status === "approved" && authorizationDuration
+      status === "approved" &&
+      authorizationDuration &&
+      (row.action === "secret.read" || row.action === "ssh.sign")
         ? crypto.randomUUID()
         : undefined;
+    const credentialGrants =
+      status === "approved" &&
+      authorizationDuration &&
+      row.action === "credential.use"
+        ? credentialFields.map((field) => ({
+            field,
+            id: crypto.randomUUID(),
+          }))
+        : [];
     this.ctx.storage.transactionSync(() => {
       const updated = this.rows<{ id: string }>(
         `UPDATE requests
@@ -289,6 +309,13 @@ export class ApprovalReview {
       if (status === "rejected") this.requestStore.clearPendingPayload(requestId);
       if (status === "approved") {
         recordApprovedApplicationIdentity(this.sql, row, now);
+        if (row.action === "credential.use" && !authorizationDuration) {
+          this.sql.exec(
+            `UPDATE request_secret_fields SET secret_grant_id = NULL
+             WHERE request_id = ?`,
+            requestId,
+          );
+        }
       }
       if (grantId && authorizationDuration) {
         const runtime = this.human.gatewayRuntimeState();
@@ -357,6 +384,58 @@ export class ApprovalReview {
           this.callbacks.audit("ssh_authorization_created", requestId, grantId);
         }
       }
+      if (credentialGrants.length > 0 && authorizationDuration) {
+        const runtime = this.human.gatewayRuntimeState();
+        const durationMs = AUTHORIZATION_DURATION_MS[authorizationDuration];
+        for (const credentialGrant of credentialGrants) {
+          const field = credentialGrant.field;
+          this.sql.exec(
+            `INSERT INTO secret_authorization_grants
+              (id, requester_device_id, scope_id, client_application,
+               application_principal_scheme, application_signing_identifier,
+               application_team_identifier, application_signer_name,
+               item_id, item_title, field_id, field_label, field_type,
+               item_version, duration, lock_generation, created_at, expires_at,
+               revoked_at, authorized_by_credential_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+            credentialGrant.id,
+            row.requester_device_id,
+            row.application_scope_id!,
+            row.client_application,
+            row.application_principal_scheme!,
+            row.application_signing_identifier!,
+            row.application_team_identifier,
+            row.application_signer_name,
+            row.item_id,
+            row.item_title,
+            field.field_id,
+            field.field_label,
+            field.field_type,
+            row.expected_version,
+            authorizationDuration as SecretAuthorizationDuration,
+            runtime.lock_generation,
+            now,
+            durationMs === undefined ? null : now + durationMs,
+            credentialId,
+          );
+          const linked = this.rows<{ request_id: string }>(
+            `UPDATE request_secret_fields SET secret_grant_id = ?
+             WHERE request_id = ? AND field_id = ?
+             RETURNING request_id`,
+            credentialGrant.id,
+            requestId,
+            field.field_id,
+          );
+          if (linked.length !== 1) {
+            throw new GatewayHttpError("execution_state_conflict", 409);
+          }
+          this.callbacks.audit(
+            "secret_authorization_created",
+            requestId,
+            credentialGrant.id,
+          );
+        }
+      }
       this.human.markChallengeUsed(body.challenge_id);
       this.callbacks.audit(
         status === "approved" ? "request_approved" : "request_rejected",
@@ -369,7 +448,20 @@ export class ApprovalReview {
     if (grantId) {
       this.notifications.broadcastHumanEvent("management.changed", grantId);
     }
-    return json({ ...(grantId ? { grant_id: grantId } : {}), ok: true, status });
+    for (const credentialGrant of credentialGrants) {
+      this.notifications.broadcastHumanEvent(
+        "management.changed",
+        credentialGrant.id,
+      );
+    }
+    return json({
+      ...(grantId ? { grant_id: grantId } : {}),
+      ...(credentialGrants.length > 0
+        ? { grant_ids: credentialGrants.map((grant) => grant.id) }
+        : {}),
+      ok: true,
+      status,
+    });
   }
 
   private approvalAuthorizationDuration(

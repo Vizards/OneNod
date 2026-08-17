@@ -305,6 +305,7 @@ export class HumanManagement {
       rejectQueuedRequestsForGrantSql(kind),
       now,
       grantId,
+      ...(kind === "secret" ? [grantId] : []),
     );
     for (const row of affected) {
       this.requestStore.clearPendingPayload(row.id);
@@ -320,6 +321,7 @@ export class HumanManagement {
     const affected = this.rows<{ id: string }>(
       REJECT_QUEUED_REQUESTS_FOR_CREDENTIAL_SQL,
       now,
+      credentialId,
       credentialId,
       credentialId,
     );

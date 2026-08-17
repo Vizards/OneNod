@@ -347,7 +347,7 @@ test("verified attestation establishes a reusable secret grant whose revoke stop
     .run(NOW, "secret-grant");
   assert.deepEqual(
     db.prepare(rejectQueuedRequestsForGrantSql("secret"))
-      .all(NOW, "secret-grant").map((row) => row.id),
+      .all(NOW, "secret-grant", "secret-grant").map((row) => row.id),
     ["queued-read"],
   );
   assert.equal(consume(db, "queued-read", "secret"), false);
@@ -483,7 +483,7 @@ test("credential and requester revocation reject all queued authority immediatel
   });
   assert.deepEqual(
     byCredential.prepare(REJECT_QUEUED_REQUESTS_FOR_CREDENTIAL_SQL)
-      .all(NOW, "passkey-a", "passkey-a")
+      .all(NOW, "passkey-a", "passkey-a", "passkey-a")
       .map((row) => row.id).sort(),
     ["secret-queued", "ssh-queued"],
   );

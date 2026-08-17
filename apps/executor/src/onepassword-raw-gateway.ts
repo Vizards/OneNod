@@ -106,6 +106,12 @@ export interface SecretReadOptions extends SecretTargetOptions {
   expectedVersion: number;
 }
 
+export interface CredentialUseOptions extends RawGatewayOptions {
+  expectedVersion: number;
+  fieldIds: string[];
+  itemId: string;
+}
+
 export interface ItemCreateOptions extends RawGatewayOptions {
   category: WritableItemCategory;
   fields: ItemCreateField[];
@@ -220,6 +226,45 @@ export async function executeSecretRead(
   return {
     ...projectSecretMetadata(item, target.fieldId, field),
     value: field.value,
+  };
+}
+
+export async function executeCredentialUse(
+  options: CredentialUseOptions,
+): Promise<{
+  fields: Array<SecretReadMetadata & { value: string }>;
+  item_id: string;
+  item_title: string;
+  version: number;
+}> {
+  const vaultId = itemIdentifier(options.vaultId);
+  const itemId = itemIdentifier(options.itemId);
+  if (
+    options.fieldIds.length === 0 ||
+    options.fieldIds.length > 16 ||
+    new Set(options.fieldIds).size !== options.fieldIds.length
+  ) {
+    throw new GatewayOperationError("item_operation_invalid", 400);
+  }
+  const item = await getItem(options.client, vaultId, itemId);
+  if (item.version !== options.expectedVersion) {
+    throw new GatewayOperationError("item_stale", 409);
+  }
+  const fields = options.fieldIds.map((fieldId) => {
+    const field = findField(item, fieldId);
+    if (field.value.length > MAX_SECRET_VALUE_LENGTH) {
+      throw new GatewayOperationError("onepassword_operation_failed", 502);
+    }
+    return {
+      ...projectSecretMetadata(item, fieldId, field),
+      value: field.value,
+    };
+  });
+  return {
+    fields,
+    item_id: item.id,
+    item_title: item.title,
+    version: item.version,
   };
 }
 

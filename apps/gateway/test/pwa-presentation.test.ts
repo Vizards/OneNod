@@ -11,6 +11,7 @@ test("countdown copy ticks at second precision and expires exactly at the deadli
   const deadlineMs = Date.parse(deadline);
   assert.equal(formatCountdown(deadline, deadlineMs - 8_420, "Expires"), "Expires in 00:09");
   assert.equal(formatCountdown(deadline, deadlineMs - 3_600_000, "Ends"), "Ends in 01:00:00");
+  assert.equal(formatCountdown(deadline, deadlineMs - 3_600_000), "01:00:00");
   assert.equal(formatCountdown(deadline, deadlineMs, "Ends"), "Expired");
 });
 

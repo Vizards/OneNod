@@ -6,6 +6,7 @@ import type {
   RequestActivityRow,
   RequestOperationRow,
   RequestRow,
+  RequestSecretFieldRow,
 } from "./approval-types.js";
 
 export class ApprovalRequestStore {
@@ -170,5 +171,14 @@ export class ApprovalRequestStore {
     );
     if (!row) throw new GatewayHttpError("request_operation_not_found", 500);
     return row;
+  }
+
+  requestSecretFields(requestId: string): RequestSecretFieldRow[] {
+    return this.rows<RequestSecretFieldRow>(
+      `SELECT request_id, ordinal, field_id, field_label, field_type,
+              secret_grant_id
+       FROM request_secret_fields WHERE request_id = ? ORDER BY ordinal ASC`,
+      requestId,
+    );
   }
 }

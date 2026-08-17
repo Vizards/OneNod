@@ -54,6 +54,8 @@ export const secretAuthorizationDurations: SecretAuthorizationDuration[] = [
 
 export function approvalActionCopy(action: ApprovalAction): string {
   switch (action) {
+    case "credential.use":
+      return "Use credential";
     case "secret.read":
       return "Read secret";
     case "item.create":
@@ -84,6 +86,8 @@ export function applicationSignerCopy(
 export function approvalQuestion(request: RequestSummary): string {
   const application = request.client.application;
   switch (request.action) {
+    case "credential.use":
+      return `Allow ${application} to use “${request.targetLabel}”?`;
     case "secret.read":
       return `Allow ${application} to read “${request.targetLabel}”?`;
     case "item.create":

@@ -54,6 +54,13 @@ export interface SecretReadExecutorResult
   value: string;
 }
 
+export interface CredentialUseExecutorResult {
+  fields: SecretReadExecutorResult[];
+  item_id: string;
+  item_title: string;
+  version: number;
+}
+
 export interface ItemMutationExecutorResult {
   item_id: string;
   version?: number;
@@ -72,14 +79,6 @@ export interface SshSignExecutorResult {
   public_key_blob: string;
   signature_blob: string;
   version: number;
-}
-
-export interface ServiceAccountQuotaExecutorStatus {
-  daily_limit?: number;
-  daily_remaining?: number;
-  exhausted: boolean;
-  exhausted_at?: string;
-  last_success_at?: string;
 }
 
 export interface SecretTargetExpectation {
@@ -128,6 +127,41 @@ export function sanitizeSecretReadEnvelope(
   };
   assertExpectedTarget(result, expected);
   return result;
+}
+
+export function sanitizeCredentialUseEnvelope(
+  body: Record<string, unknown>,
+  status: number,
+  expected: {
+    fields: Array<Required<SecretTargetExpectation>>;
+    item_id: string;
+    item_title: string;
+    version: number;
+  },
+): CredentialUseExecutorResult {
+  assertSuccessful(body, status);
+  const itemId = safeIdentifier(body.item_id);
+  const itemTitle = safeText(body.item_title, 256);
+  const version = safeVersion(body.version);
+  if (
+    itemId !== expected.item_id ||
+    itemTitle !== expected.item_title ||
+    version !== expected.version ||
+    !Array.isArray(body.fields) ||
+    body.fields.length !== expected.fields.length
+  ) {
+    throw new ExecutorTransportError("untrusted_response");
+  }
+  const fields = body.fields.map((candidate, index) => {
+    const field = record(candidate);
+    if (typeof field.value !== "string" || field.value.length > 32 * 1024) {
+      throw new ExecutorTransportError("untrusted_response");
+    }
+    const result = { ...sanitizeMetadata(field), value: field.value };
+    assertExpectedTarget(result, expected.fields[index]!);
+    return result;
+  });
+  return { fields, item_id: itemId, item_title: itemTitle, version };
 }
 
 export function sanitizeItemMetadataEnvelope(
@@ -222,45 +256,6 @@ export function sanitizeSshSignEnvelope(
     public_key_blob: publicKeyBlob,
     signature_blob: signatureBlob,
     version,
-  };
-}
-
-export function sanitizeServiceAccountQuotaEnvelope(
-  body: Record<string, unknown>,
-  status: number,
-): ServiceAccountQuotaExecutorStatus {
-  assertSuccessful(body, status);
-  if (typeof body.exhausted !== "boolean") {
-    throw new ExecutorTransportError("untrusted_response");
-  }
-  const exhaustedAt = body.exhausted_at === undefined
-    ? undefined
-    : safeTimestamp(body.exhausted_at);
-  const lastSuccessAt = body.last_success_at === undefined
-    ? undefined
-    : safeTimestamp(body.last_success_at);
-  const hasDailyQuota = body.daily_limit !== null || body.daily_remaining !== null;
-  let dailyLimit: number | undefined;
-  let dailyRemaining: number | undefined;
-  if (hasDailyQuota) {
-    if (
-      !Number.isInteger(body.daily_limit) ||
-      !Number.isInteger(body.daily_remaining) ||
-      (body.daily_limit as number) < 1 ||
-      (body.daily_remaining as number) < 0 ||
-      (body.daily_remaining as number) > (body.daily_limit as number)
-    ) {
-      throw new ExecutorTransportError("untrusted_response");
-    }
-    dailyLimit = body.daily_limit as number;
-    dailyRemaining = body.daily_remaining as number;
-  }
-  return {
-    ...(dailyLimit === undefined ? {} : { daily_limit: dailyLimit }),
-    ...(dailyRemaining === undefined ? {} : { daily_remaining: dailyRemaining }),
-    exhausted: body.exhausted,
-    ...(exhaustedAt === undefined ? {} : { exhausted_at: exhaustedAt }),
-    ...(lastSuccessAt === undefined ? {} : { last_success_at: lastSuccessAt }),
   };
 }
 

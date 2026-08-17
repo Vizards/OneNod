@@ -354,10 +354,6 @@ export class ApprovalCoordinator extends DurableObject<Env> {
     if (request.method === "GET" && path === "/v1/human/management") {
       return this.humanManagement.humanManagement(request);
     }
-    if (request.method === "GET" && path === "/v1/human/onepassword-quota") {
-      await this.human.requireHumanSession(request);
-      return json(await this.executor.executeServiceAccountQuota());
-    }
     if (
       request.method === "GET" &&
       path === "/v1/human/authorizations/summary"
@@ -533,6 +529,9 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       path === "/v1/catalog/search"
     ) {
       return this.requestAdmission.catalogSearch(request, path);
+    }
+    if (request.method === "POST" && path === "/v1/catalog/item") {
+      return this.requestAdmission.catalogItem(request, path);
     }
     if (request.method === "POST" && path === "/v1/requests") {
       return this.requestAdmission.createApprovalRequest(request, path);
@@ -726,15 +725,22 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       typeof input.authorization_session === "object"
     );
     const rememberedSecret = Boolean(
-      input.action === "secret.read" &&
+      (input.action === "secret.read" || input.action === "credential.use") &&
       input.authorization_scope &&
       typeof input.authorization_scope === "object"
     );
     if (rememberedSecret) {
       const remembered = this.first<{ count: number }>(
         `SELECT COUNT(*) AS count FROM requests
-         WHERE requester_device_id = ? AND action = 'secret.read'
-           AND secret_grant_id IS NOT NULL AND created_at >= ?`,
+         WHERE requester_device_id = ? AND created_at >= ?
+           AND (
+             (action = 'secret.read' AND secret_grant_id IS NOT NULL) OR
+             (action = 'credential.use' AND EXISTS (
+               SELECT 1 FROM request_secret_fields requested
+               WHERE requested.request_id = requests.id
+                 AND requested.secret_grant_id IS NOT NULL
+             ))
+           )`,
         requesterDeviceId,
         Date.now() - REQUEST_CREATE_RATE_WINDOW_MS,
       )?.count ?? 0;
@@ -792,9 +798,16 @@ export class ApprovalCoordinator extends DurableObject<Env> {
   ): void {
     const recent = this.first<{ count: number }>(
       `SELECT COUNT(*) AS count FROM requests
-       WHERE requester_device_id = ? AND secret_grant_id = ?
+       WHERE requester_device_id = ?
+         AND (
+           secret_grant_id = ? OR id IN (
+             SELECT request_id FROM request_secret_fields
+             WHERE secret_grant_id = ?
+           )
+         )
          AND created_at >= ?`,
       requesterDeviceId,
+      grantId,
       grantId,
       Date.now() - REQUEST_CREATE_RATE_WINDOW_MS,
     )?.count ?? 0;

@@ -209,6 +209,16 @@ class ApprovalSchema {
         approval_count INTEGER NOT NULL CHECK (approval_count > 0),
         PRIMARY KEY (principal_scheme, principal_id)
       )`,
+      `CREATE TABLE IF NOT EXISTS trusted_catalog_metadata (
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        item_title TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        field_label TEXT NOT NULL,
+        field_type TEXT NOT NULL,
+        observed_at INTEGER NOT NULL,
+        PRIMARY KEY (item_id, item_version, field_id)
+      )`,
       `CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY,
         requester_device_id TEXT NOT NULL,
@@ -247,6 +257,16 @@ class ApprovalSchema {
         consumed_at INTEGER,
         error_code TEXT,
         UNIQUE (requester_device_id, idempotency_key)
+      )`,
+      `CREATE TABLE IF NOT EXISTS request_secret_fields (
+        request_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        field_id TEXT NOT NULL,
+        field_label TEXT NOT NULL,
+        field_type TEXT NOT NULL,
+        secret_grant_id TEXT,
+        PRIMARY KEY (request_id, field_id),
+        UNIQUE (request_id, ordinal)
       )`,
       `CREATE TABLE IF NOT EXISTS request_operations (
         request_id TEXT PRIMARY KEY,
@@ -351,6 +371,10 @@ class ApprovalSchema {
          requester_device_id, scope_id, item_id, field_id, item_version,
          revoked_at
        )`,
+      `CREATE INDEX IF NOT EXISTS idx_request_secret_fields_grant
+       ON request_secret_fields(secret_grant_id, request_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_trusted_catalog_metadata_observed
+       ON trusted_catalog_metadata(observed_at, item_id, item_version)`,
     ]) {
       this.sql.exec(statement);
     }

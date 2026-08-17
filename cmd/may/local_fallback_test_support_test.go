@@ -56,6 +56,19 @@ func (backend *fakeLocalOnePasswordBackend) SearchCatalog(
 	return backend.catalog, nil
 }
 
+func (backend *fakeLocalOnePasswordBackend) ReadCatalogItem(
+	_ context.Context,
+	_ string,
+	itemID string,
+) (catalogItemResult, error) {
+	for _, item := range backend.catalog.Items {
+		if item.ItemID == itemID {
+			return item, nil
+		}
+	}
+	return catalogItemResult{}, nil
+}
+
 func (backend *fakeLocalOnePasswordBackend) ReadSecret(
 	_ context.Context,
 	vaultID string,
@@ -69,6 +82,30 @@ func (backend *fakeLocalOnePasswordBackend) ReadSecret(
 	backend.readField = fieldID
 	backend.readExpected = expectedVersion
 	return backend.secret, nil
+}
+
+func (backend *fakeLocalOnePasswordBackend) ReadCredential(
+	ctx context.Context,
+	vaultID string,
+	itemID string,
+	fieldIDs []string,
+	expectedVersion int64,
+) (map[string]string, error) {
+	values := make(map[string]string, len(fieldIDs))
+	for _, fieldID := range fieldIDs {
+		value, err := backend.ReadSecret(
+			ctx,
+			vaultID,
+			itemID,
+			fieldID,
+			expectedVersion,
+		)
+		if err != nil {
+			return nil, err
+		}
+		values[fieldID] = value
+	}
+	return values, nil
 }
 
 type fakeLocalSSHAgent struct {

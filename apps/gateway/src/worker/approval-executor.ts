@@ -6,24 +6,28 @@ import {
 
 import {
   sanitizeCatalogEnvelope,
+  sanitizeCredentialUseEnvelope,
   sanitizeGatewayError,
   sanitizeItemMetadataEnvelope,
   sanitizeItemMutationEnvelope,
   sanitizeItemReconciliationEnvelope,
   sanitizeSecretMetadataEnvelope,
   sanitizeSecretReadEnvelope,
-  sanitizeServiceAccountQuotaEnvelope,
   sanitizeSshSignEnvelope,
   type CatalogExecutorItem,
+  type CredentialUseExecutorResult,
   type ItemMutationExecutorResult,
   type ItemReconciliationExecutorResult,
   type SecretMetadataExecutorResult,
   type SecretReadExecutorResult,
-  type ServiceAccountQuotaExecutorStatus,
   type SshSignExecutorResult,
 } from "./gateway-envelope.js";
 import { catalogMetadataCacheKey } from "./approval-projection.js";
-import type { CatalogMetadataCacheRow, RequestRow } from "./approval-types.js";
+import type {
+  CatalogMetadataCacheRow,
+  RequestRow,
+  RequestSecretFieldRow,
+} from "./approval-types.js";
 import {
   GatewayHttpError,
   safeSshSignatureAlgorithm,
@@ -62,19 +66,6 @@ export class ApprovalExecutor {
     );
     this.cacheCatalogMetadata(items);
     return items;
-  }
-
-  async executeServiceAccountQuota(): Promise<ServiceAccountQuotaExecutorStatus> {
-    const trusted = await this.callExecutor("/internal/1password/quota", {});
-    if (trusted.status !== 200) {
-      const failure = sanitizeExecutorEnvelope(() =>
-        sanitizeGatewayError(trusted.body, trusted.status),
-      );
-      throw new GatewayHttpError(failure.code, failure.status);
-    }
-    return sanitizeExecutorEnvelope(() =>
-      sanitizeServiceAccountQuotaEnvelope(trusted.body, trusted.status),
-    );
   }
 
   async executeSecretMetadata(
@@ -188,6 +179,41 @@ export class ApprovalExecutor {
         field_id: row.field_id,
         field_label: row.field_label,
         field_type: row.field_type,
+        item_id: row.item_id,
+        item_title: row.item_title,
+        version: row.expected_version,
+      }),
+    );
+  }
+
+  async executeCredentialUse(
+    row: RequestRow,
+    fields: RequestSecretFieldRow[],
+  ): Promise<CredentialUseExecutorResult> {
+    const trusted = await this.callExecutor(
+      "/internal/1password/credential/use",
+      {
+        expected_version: row.expected_version,
+        field_ids: fields.map((field) => field.field_id),
+        item_id: row.item_id,
+      },
+    );
+    if (trusted.status !== 200) {
+      const failure = sanitizeExecutorEnvelope(() =>
+        sanitizeGatewayError(trusted.body, trusted.status),
+      );
+      throw new GatewayHttpError(failure.code, failure.status);
+    }
+    return sanitizeExecutorEnvelope(() =>
+      sanitizeCredentialUseEnvelope(trusted.body, trusted.status, {
+        fields: fields.map((field) => ({
+          field_id: field.field_id,
+          field_label: field.field_label,
+          field_type: field.field_type,
+          item_id: row.item_id,
+          item_title: row.item_title,
+          version: row.expected_version,
+        })),
         item_id: row.item_id,
         item_title: row.item_title,
         version: row.expected_version,

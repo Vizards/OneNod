@@ -22,6 +22,36 @@ export const ACTIVE_SECRET_GRANT_CONSUME_PREDICATE = `(
   )
 )`;
 
+export const ACTIVE_CREDENTIAL_GRANTS_CONSUME_PREDICATE = `(
+  EXISTS (
+    SELECT 1 FROM gateway_runtime_state runtime
+    WHERE runtime.singleton = 1 AND runtime.locked = 0
+  ) AND NOT EXISTS (
+  SELECT 1
+  FROM request_secret_fields requested
+  WHERE requested.request_id = requests.id
+    AND requested.secret_grant_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM secret_authorization_grants grant
+      JOIN gateway_runtime_state runtime ON runtime.singleton = 1
+      WHERE grant.id = requested.secret_grant_id
+        AND grant.requester_device_id = requests.requester_device_id
+        AND grant.scope_id = requests.application_scope_id
+        AND grant.item_id = requests.item_id
+        AND grant.field_id = requested.field_id
+        AND grant.item_version = requests.expected_version
+        AND grant.revoked_at IS NULL
+        AND (grant.expires_at IS NULL OR grant.expires_at > ?)
+        AND runtime.locked = 0
+        AND (
+          grant.duration != 'until-lock' OR
+          grant.lock_generation = runtime.lock_generation
+        )
+    )
+  )
+)`;
+
 export const ACTIVE_SSH_GRANT_CONSUME_PREDICATE = `(
   requests.ssh_grant_id IS NULL OR EXISTS (
     SELECT 1
@@ -77,10 +107,16 @@ export function rejectQueuedRequestsForGrantSql(
   kind: "secret" | "ssh",
 ): string {
   const grantColumn = kind === "secret" ? "secret_grant_id" : "ssh_grant_id";
+  const compoundReference = kind === "secret"
+    ? ` OR id IN (
+        SELECT request_id FROM request_secret_fields WHERE secret_grant_id = ?
+      )`
+    : "";
   return `UPDATE requests
     SET status = 'rejected', decided_at = ?, authorized_until = NULL,
         error_code = 'authorization_revoked'
-    WHERE ${grantColumn} = ? AND status IN ('pending', 'approved')
+    WHERE (${grantColumn} = ?${compoundReference})
+      AND status IN ('pending', 'approved')
     RETURNING id`;
 }
 
@@ -92,6 +128,12 @@ export const REJECT_QUEUED_REQUESTS_FOR_CREDENTIAL_SQL = `UPDATE requests
       secret_grant_id IN (
         SELECT id FROM secret_authorization_grants
         WHERE authorized_by_credential_id = ?
+      ) OR id IN (
+        SELECT requested.request_id
+        FROM request_secret_fields requested
+        JOIN secret_authorization_grants grant
+          ON grant.id = requested.secret_grant_id
+        WHERE grant.authorized_by_credential_id = ?
       ) OR ssh_grant_id IN (
         SELECT id FROM ssh_authorization_grants
         WHERE authorized_by_credential_id = ?
@@ -148,7 +190,7 @@ export function rememberedAuthorizationDurationAvailable(input: {
   ) {
     return false;
   }
-  if (input.action === "secret.read") {
+  if (input.action === "secret.read" || input.action === "credential.use") {
     return input.applicationScopeId === input.applicationPrincipalId &&
       input.duration !== "until-agent-quits";
   }

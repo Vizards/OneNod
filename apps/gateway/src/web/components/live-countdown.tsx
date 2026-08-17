@@ -6,7 +6,7 @@ export function LiveCountdown({
   now,
 }: {
   expiresAt: string;
-  label: "Ends" | "Expires";
+  label?: "Ends" | "Expires";
   now: number;
 }) {
   return (

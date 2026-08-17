@@ -1,7 +1,7 @@
 export function formatCountdown(
   value: string,
   now: number,
-  label: "Ends" | "Expires",
+  label?: "Ends" | "Expires",
 ): string {
   const remainingMilliseconds = Date.parse(value) - now;
   if (!Number.isFinite(remainingMilliseconds) || remainingMilliseconds <= 0) {
@@ -14,7 +14,7 @@ export function formatCountdown(
   const body = hours > 0
     ? `${padTime(hours)}:${padTime(minutes)}:${padTime(seconds)}`
     : `${padTime(minutes)}:${padTime(seconds)}`;
-  return `${label} in ${body}`;
+  return label ? `${label} in ${body}` : body;
 }
 
 export function shortIdentifier(value: string): string {

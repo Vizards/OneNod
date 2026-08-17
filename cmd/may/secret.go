@@ -289,6 +289,171 @@ func readApprovedSecret(
 	return value, nil
 }
 
+func useApprovedCredential(
+	config cliConfig,
+	deps dependencies,
+	itemID string,
+	fieldIDs []string,
+	expectedVersion int64,
+) (map[string]string, error) {
+	if err := validateIdentifier(itemID, "item"); err != nil {
+		return nil, err
+	}
+	if expectedVersion <= 0 {
+		return nil, errors.New("credential item version must be a positive integer")
+	}
+	if len(fieldIDs) == 0 || len(fieldIDs) > 16 {
+		return nil, errors.New("credential field set must contain between 1 and 16 fields")
+	}
+	for index, fieldID := range fieldIDs {
+		if err := validateIdentifier(fieldID, "field"); err != nil {
+			return nil, err
+		}
+		if index > 0 && fieldIDs[index-1] >= fieldID {
+			return nil, errors.New("credential field IDs must be sorted and unique")
+		}
+	}
+	credential, err := deps.keychain.Load()
+	if err != nil {
+		return nil, err
+	}
+	client, err := newAPIClient(config.origin, credential, deps.httpClient)
+	if err != nil {
+		return nil, err
+	}
+	idempotencyKey, err := newUUIDv7(time.Now())
+	if err != nil {
+		return nil, err
+	}
+	localClient := callingApplicationContext(config, deps)
+	defer localClient.Evidence.close()
+	request := credentialUseRequest{
+		Action:          "credential.use",
+		Client:          localClient.Observation,
+		ExpectedVersion: expectedVersion,
+		FieldIDs:        fieldIDs,
+		IdempotencyKey:  idempotencyKey,
+		ItemID:          itemID,
+	}
+	if localClient.ScopeKind == "application" && localClient.ScopeID != "" {
+		request.AuthorizationScope = &applicationAuthorizationScope{
+			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
+		}
+	}
+	var created requestStatusResponse
+	createContext, cancelCreate := context.WithTimeout(
+		context.Background(),
+		gatewayRequestTimeout,
+	)
+	err = client.doApplicationJSON(
+		createContext,
+		http.MethodPost,
+		"/v1/requests",
+		request,
+		&created,
+		localClient,
+	)
+	cancelCreate()
+	if err != nil {
+		fallbackContext, cancelFallback := context.WithTimeout(
+			context.Background(),
+			localFallbackOperationLimit,
+		)
+		defer cancelFallback()
+		return readCredentialWithLocalFallback(
+			fallbackContext,
+			err,
+			deps,
+			itemID,
+			fieldIDs,
+			expectedVersion,
+		)
+	}
+	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		return nil, errors.New("gateway returned an invalid request creation response")
+	}
+	status := normalizeStatus(created.Status)
+	if status == "pending" {
+		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
+		pollContext, cancelPoll, contextError := approvalWaitContext(
+			created.ExpiresAt,
+			config.timeout,
+		)
+		if contextError != nil {
+			return nil, contextError
+		}
+		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
+			var current requestStatusResponse
+			path := "/v1/requests/" + url.PathEscape(created.RequestID) + "/status"
+			if err := client.doPollingJSON(
+				pollContext,
+				path,
+				created.PollToken,
+				&current,
+			); err != nil {
+				return "", err
+			}
+			if current.RequestID != "" && current.RequestID != created.RequestID {
+				return "", errors.New("gateway status response changed the request ID")
+			}
+			return current.Status, nil
+		})
+		cancelPoll()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !isAuthorizedStatus(status) {
+		return nil, fmt.Errorf("request reached unexpected status %q", status)
+	}
+	var consumed secretConsumeResponse
+	consumeContext, cancelConsume := context.WithTimeout(
+		context.Background(),
+		gatewayRequestTimeout,
+	)
+	err = client.doCapabilityJSON(
+		consumeContext,
+		http.MethodPost,
+		"/v1/requests/"+url.PathEscape(created.RequestID)+"/consume",
+		consumeRequest{},
+		&consumed,
+		created.PollToken,
+	)
+	cancelConsume()
+	if err != nil {
+		fallbackContext, cancelFallback := context.WithTimeout(
+			context.Background(),
+			localFallbackOperationLimit,
+		)
+		defer cancelFallback()
+		return readCredentialWithLocalFallback(
+			fallbackContext,
+			err,
+			deps,
+			itemID,
+			fieldIDs,
+			expectedVersion,
+		)
+	}
+	if !consumed.OK || consumed.RequestID != created.RequestID ||
+		normalizeStatus(consumed.Status) != "consumed" ||
+		consumed.ItemID != itemID || consumed.Version != expectedVersion ||
+		len(consumed.Values) != len(fieldIDs) {
+		return nil, errors.New("gateway returned an invalid credential consume response")
+	}
+	for index, field := range consumed.Values {
+		if field.FieldID != fieldIDs[index] {
+			return nil, errors.New("credential consume response changed the requested field set")
+		}
+	}
+	values := make(map[string]string, len(fieldIDs))
+	for index, field := range consumed.Values {
+		values[field.FieldID] = field.Value
+		consumed.Values[index].Value = ""
+	}
+	return values, nil
+}
+
 func emitConsumedSecret(
 	stdout io.Writer,
 	stderr io.Writer,

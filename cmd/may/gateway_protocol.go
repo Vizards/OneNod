@@ -63,6 +63,14 @@ type catalogSearchResponse struct {
 	Items []catalogItemResult `json:"items"`
 }
 
+type catalogItemRequest struct {
+	ItemID string `json:"item_id"`
+}
+
+type catalogItemResponse struct {
+	Item catalogItemResult `json:"item"`
+}
+
 type clientObservation struct {
 	Application string              `json:"application"`
 	Identity    applicationIdentity `json:"identity"`
@@ -84,6 +92,16 @@ type createRequest struct {
 	ItemID             string                         `json:"item_id"`
 }
 
+type credentialUseRequest struct {
+	Action             string                         `json:"action"`
+	AuthorizationScope *applicationAuthorizationScope `json:"authorization_scope,omitempty"`
+	Client             clientObservation              `json:"client"`
+	ExpectedVersion    int64                          `json:"expected_version"`
+	FieldIDs           []string                       `json:"field_ids"`
+	IdempotencyKey     string                         `json:"idempotency_key"`
+	ItemID             string                         `json:"item_id"`
+}
+
 type requestStatusResponse struct {
 	Error     string `json:"error,omitempty"`
 	ExpiresAt string `json:"expires_at"`
@@ -95,10 +113,18 @@ type requestStatusResponse struct {
 type consumeRequest struct{}
 
 type secretConsumeResponse struct {
-	OK        bool    `json:"ok"`
-	RequestID string  `json:"request_id"`
-	Status    string  `json:"status"`
-	Value     *string `json:"value,omitempty"`
+	ItemID    string                 `json:"item_id,omitempty"`
+	OK        bool                   `json:"ok"`
+	RequestID string                 `json:"request_id"`
+	Status    string                 `json:"status"`
+	Value     *string                `json:"value,omitempty"`
+	Values    []credentialFieldValue `json:"values,omitempty"`
+	Version   int64                  `json:"version,omitempty"`
+}
+
+type credentialFieldValue struct {
+	FieldID string `json:"field_id"`
+	Value   string `json:"value"`
 }
 
 func (response secretConsumeResponse) secretValue() (string, bool) {

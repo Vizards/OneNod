@@ -57,6 +57,27 @@ func searchCatalog(
 	return response, nil
 }
 
+func readCatalogItem(
+	ctx context.Context,
+	client *apiClient,
+	itemID string,
+) (catalogItemResult, error) {
+	var response catalogItemResponse
+	if err := client.doJSON(
+		ctx,
+		http.MethodPost,
+		"/v1/catalog/item",
+		catalogItemRequest{ItemID: itemID},
+		&response,
+	); err != nil {
+		return catalogItemResult{}, err
+	}
+	if response.Item.ItemID != itemID || response.Item.Version <= 0 {
+		return catalogItemResult{}, errors.New("gateway returned invalid targeted item metadata")
+	}
+	return response.Item, nil
+}
+
 func resolveExpectedVersion(
 	ctx context.Context,
 	client *apiClient,

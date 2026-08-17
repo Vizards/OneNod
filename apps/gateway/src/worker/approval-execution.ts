@@ -1,10 +1,12 @@
 import type {
+  CredentialUseExecutorResult,
   ItemMutationExecutorResult,
   ItemReconciliationExecutorResult,
   SecretReadExecutorResult,
   SshSignExecutorResult,
 } from "./gateway-envelope.js";
 import {
+  ACTIVE_CREDENTIAL_GRANTS_CONSUME_PREDICATE,
   ACTIVE_SECRET_GRANT_CONSUME_PREDICATE,
   ACTIVE_SSH_GRANT_CONSUME_PREDICATE,
   incrementRememberedGrantUse,
@@ -103,6 +105,9 @@ export class ApprovalExecution {
     if (row.action === "ssh.sign") {
       return this.consumeSshSign(row, requester);
     }
+    if (row.action === "credential.use") {
+      return this.consumeCredentialUse(row, requester);
+    }
     if (row.action !== "secret.read") {
       return this.consumeItemMutation(row, requester);
     }
@@ -170,6 +175,94 @@ export class ApprovalExecution {
       request_id: requestId,
       status: "consumed",
       value: result.value,
+    });
+  }
+
+  private async consumeCredentialUse(
+    row: RequestRow,
+    requester: RequesterIdentity,
+  ): Promise<Response> {
+    const fields = this.requestStore.requestSecretFields(row.id);
+    if (
+      fields.length === 0 ||
+      fields.length > 16 ||
+      new Set(fields.map((field) => field.field_id)).size !== fields.length
+    ) {
+      throw new GatewayHttpError("credential_fields_invalid", 500);
+    }
+    const now = Date.now();
+    const updated = this.rows<{ id: string }>(
+      `UPDATE requests SET status = 'executing', execution_started_at = ?
+       WHERE id = ? AND requester_device_id = ? AND action = 'credential.use'
+         AND status = 'approved' AND authorized_until > ?
+         AND ${ACTIVE_CREDENTIAL_GRANTS_CONSUME_PREDICATE}
+       RETURNING id`,
+      now,
+      row.id,
+      requester.deviceId,
+      now,
+      now,
+    );
+    if (updated.length !== 1) {
+      throw new GatewayHttpError("authorization_not_consumable", 409);
+    }
+    this.callbacks.audit("request_execution_started", row.id, requester.deviceId);
+    this.callbacks.broadcastHumanEvent("request.changed", row.id);
+
+    let result: CredentialUseExecutorResult;
+    try {
+      result = await this.executor.executeCredentialUse(row, fields);
+    } catch (error) {
+      const code =
+        error instanceof GatewayHttpError ? error.code : "executor_unavailable";
+      this.sql.exec(
+        `UPDATE requests SET status = 'error', error_code = ?
+         WHERE id = ? AND status = 'executing'`,
+        code,
+        row.id,
+      );
+      this.requestStore.recordTerminalActivity(row.id);
+      this.callbacks.audit("request_execution_failed", row.id, code);
+      this.callbacks.broadcastHumanEvent("request.changed", row.id);
+      throw error;
+    }
+
+    this.ctx.storage.transactionSync(() => {
+      const consumed = this.rows<{ id: string }>(
+        `UPDATE requests
+         SET status = 'consumed', consumed_at = ?, error_code = NULL
+         WHERE id = ? AND status = 'executing'
+         RETURNING id`,
+        Date.now(),
+        row.id,
+      );
+      if (consumed.length !== 1) {
+        throw new GatewayHttpError("execution_state_conflict", 409);
+      }
+      const grantIds = new Set(
+        fields.flatMap((field) =>
+          field.secret_grant_id ? [field.secret_grant_id] : []
+        ),
+      );
+      for (const grantId of grantIds) {
+        if (!incrementRememberedGrantUse(this.sql, "secret", grantId)) {
+          throw new GatewayHttpError("execution_state_conflict", 409);
+        }
+      }
+      this.callbacks.audit("request_consumed", row.id, requester.deviceId);
+    });
+    this.requestStore.recordTerminalActivity(row.id);
+    this.callbacks.broadcastHumanEvent("request.changed", row.id);
+    return json({
+      item_id: result.item_id,
+      ok: true,
+      request_id: row.id,
+      status: "consumed",
+      values: result.fields.map((field) => ({
+        field_id: field.field_id,
+        value: field.value,
+      })),
+      version: result.version,
     });
   }
 
@@ -571,6 +664,11 @@ export class ApprovalExecution {
         result.item_id,
         result.version ?? null,
         row.id,
+      );
+      this.sql.exec(
+        `DELETE FROM trusted_catalog_metadata WHERE item_id IN (?, ?)`,
+        row.item_id,
+        result.item_id,
       );
       this.callbacks.audit("request_consumed", row.id, actorId);
     });

@@ -17,7 +17,7 @@ export type {
   ApprovalDecision, AuthorizationSummary, DeviceRegistrationInput, GatewaySystemHealthResponse,
   HumanCredentialSummary, HumanDeviceSummary, HumanManagement, HumanState,
   PaginatedRequestListResponse, RequesterEnrollment, RequesterSummary,
-  SecretAuthorizationSummary, ServiceAccountQuota, SshAuthorizationSummary,
+  SecretAuthorizationSummary, SshAuthorizationSummary,
   VerifyDecisionResponse,
 } from "./api-types";
 import type {
@@ -29,7 +29,6 @@ import type {
   HumanState,
   PaginatedRequestListResponse,
   RequesterEnrollment,
-  ServiceAccountQuota,
   VerifyDecisionResponse,
   WebAuthnOptionsEnvelope,
 } from "./api-types";
@@ -130,36 +129,6 @@ export function verifyDeviceRegistration(
 
 export async function getHumanManagement(): Promise<HumanManagement> {
   return normalizeHumanManagement(await fetchJson("/v1/human/management"));
-}
-
-export async function getServiceAccountQuota(): Promise<ServiceAccountQuota> {
-  const response = await fetchJson<{
-    daily_limit?: unknown;
-    daily_remaining?: unknown;
-    exhausted: unknown;
-    exhausted_at?: unknown;
-    last_success_at?: unknown;
-  }>("/v1/human/onepassword-quota");
-  if (typeof response.exhausted !== "boolean") {
-    throw new Error("The server returned an invalid 1Password quota status.");
-  }
-  const dailyLimit = optionalNonNegativeInteger(response.daily_limit, false);
-  const dailyRemaining = optionalNonNegativeInteger(response.daily_remaining, true);
-  if (
-    (dailyLimit === undefined) !== (dailyRemaining === undefined) ||
-    (dailyLimit !== undefined && dailyRemaining! > dailyLimit)
-  ) {
-    throw new Error("The server returned an invalid 1Password quota status.");
-  }
-  const exhaustedAt = optionalTimestamp(response.exhausted_at);
-  const lastSuccessAt = optionalTimestamp(response.last_success_at);
-  return {
-    ...(dailyLimit === undefined ? {} : { dailyLimit }),
-    ...(dailyRemaining === undefined ? {} : { dailyRemaining }),
-    exhausted: response.exhausted,
-    ...(exhaustedAt === undefined ? {} : { exhaustedAt }),
-    ...(lastSuccessAt === undefined ? {} : { lastSuccessAt }),
-  };
 }
 
 export function getPushConfig(): Promise<{
@@ -580,26 +549,4 @@ function readString(
   if (!record) return undefined;
   const value = record[key];
   return typeof value === "string" ? value : undefined;
-}
-
-function optionalNonNegativeInteger(
-  value: unknown,
-  allowZero: boolean,
-): number | undefined {
-  if (value === undefined) return undefined;
-  if (
-    !Number.isInteger(value) ||
-    (allowZero ? (value as number) < 0 : (value as number) < 1)
-  ) {
-    throw new Error("The server returned an invalid 1Password quota status.");
-  }
-  return value as number;
-}
-
-function optionalTimestamp(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-    throw new Error("The server returned an invalid 1Password quota status.");
-  }
-  return value;
 }

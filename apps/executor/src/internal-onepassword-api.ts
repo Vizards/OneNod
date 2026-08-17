@@ -28,7 +28,7 @@ export const EXECUTOR_BODY_DIGEST_HEADER = "x-1pr-body-digest";
 export const INTERNAL_ONEPASSWORD_PATHS = new Set([
   "/internal/health",
   "/internal/1password/catalog",
-  "/internal/1password/quota",
+  "/internal/1password/credential/use",
   "/internal/1password/secret/metadata",
   "/internal/1password/secret/read",
   "/internal/1password/item/metadata",
@@ -151,6 +151,36 @@ export function parseSecretReadRequest(body: Record<string, unknown>): {
   return {
     expectedVersion: takePositiveInteger(body, "expected_version"),
     fieldId: takeIdentifier(body, "field_id"),
+    itemId: takeIdentifier(body, "item_id"),
+  };
+}
+
+export function parseCredentialUseRequest(body: Record<string, unknown>): {
+  expectedVersion: number;
+  fieldIds: string[];
+  itemId: string;
+} {
+  assertKeys(body, ["expected_version", "field_ids", "item_id"]);
+  if (
+    !Array.isArray(body.field_ids) ||
+    body.field_ids.length === 0 ||
+    body.field_ids.length > 16
+  ) {
+    throw new TypeError("credential_field_ids_invalid");
+  }
+  const fieldIds = body.field_ids.map((value) =>
+    takeIdentifier({ value }, "value")
+  );
+  const canonical = [...new Set(fieldIds)].sort();
+  if (
+    canonical.length !== fieldIds.length ||
+    canonical.some((fieldId, index) => fieldId !== fieldIds[index])
+  ) {
+    throw new TypeError("credential_field_ids_invalid");
+  }
+  return {
+    expectedVersion: takePositiveInteger(body, "expected_version"),
+    fieldIds,
     itemId: takeIdentifier(body, "item_id"),
   };
 }
