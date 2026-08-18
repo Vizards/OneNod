@@ -182,3 +182,9 @@ through the user-level `~/.local/bin` path after a new login shell. Use `may
 version`, `may preflight`, and `may agent status` for installed-state questions;
 obtain their current syntax from command-specific `--help`, which must not need
 an Origin, requester credential, or network.
+
+Optional Shell Plugin bindings are machine-local configuration, not another
+installed runtime. Each managed bare command is a user-level symlink to the
+same stable `may`; its binding stores only the pinned real executable path,
+scope, upstream definition revision, item metadata, and field IDs. Credential
+values are never written into that configuration.

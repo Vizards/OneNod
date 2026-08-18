@@ -229,10 +229,10 @@ Usage:
   may configure local-fallback status
   may configure local-fallback apply [--account <1Password-account-name-or-UUID>]
   may configure local-fallback restore
-  may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>] [--target <path>]
+  may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--search <query>] [--field Name=<id-or-label>] [--target <path>]
   may plugin status [plugin-or-command]
   may plugin doctor <plugin-or-command>
-  may plugin credential <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>]
+  may plugin credential <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--search <query>] [--field Name=<id-or-label>]
   may plugin disable <plugin-or-command> --scope <global|directory>
   may [--origin URL] preflight
   may [--origin URL] enroll [--name "MacBook"] [--new-identity]

@@ -36,6 +36,14 @@ such as `gh` or `wrangler`. Do not add `may plugin run --`, invoke `op plugin
 run`, source 1Password's `plugins.sh`, or export a recovered credential into
 the parent shell.
 
+The enable and credential flows search only Agent Vault catalog metadata. Use
+`--item` for an exact item ID or title, `--search` for a narrower catalog
+query, and repeat `--field Name=<id-or-label>` only when automatic compatible
+field selection needs disambiguation. Without either item option, `may` uses
+the plugin platform name as its query. Multiple matching items or compatible
+fields require an interactive terminal selection before the default-no routing
+confirmation; a non-interactive Agent must not guess a choice.
+
 The managed bare command calls the pinned official 1Password Shell Plugin
 `NeedsAuth` rule first. Help, version, and other upstream-declared no-auth
 commands run without a OneNod request. An authenticated command obtains the
@@ -50,6 +58,11 @@ and field references. `may plugin disable` removes only the exact managed
 binding and entry; none of these commands delete or rewrite a 1Password item.
 Enabling, changing, or disabling routing requires the human to review and
 answer the default-no terminal confirmation. An Agent must not answer it.
+
+A global binding applies when no directory binding matches. A directory scope
+is anchored to the canonical current directory, applies recursively beneath
+it, and the most-specific matching root wins. The real executable path is
+pinned at enable time; changing PATH later does not silently retarget it.
 
 Only calls whose PATH resolution reaches the managed bare command are covered.
 Absolute executable paths, saved real targets, and project-local package

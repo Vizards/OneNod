@@ -255,6 +255,27 @@ separate review. For a Host that should select an `Agent` key, match the item by
 public fingerprint, export its public key with `may ssh public-key export`, and
 edit only that exact Host mapping. Never infer a mapping from an item title.
 
+## Optional Shell Plugin command routing
+
+After requester enrollment, a human may opt a supported command such as `gh`
+or `wrangler` into OneNod with `may plugin enable`. The upstream executable
+must already be installed. Choose an explicit `--scope global` or run from the
+intended project root with `--scope directory`; use `--target` only when the
+automatic real-executable discovery is not the intended binary.
+
+Credential selection is metadata-only: use an exact `--item`, a narrower
+`--search`, and optional repeatable `--field Name=<id-or-label>` mappings, or
+complete the numbered item/field choices in an interactive terminal. The CLI
+then displays the resolved executable, scope, item and field IDs, managed bare
+command path, and no-local-secret guarantee before one default-no confirmation.
+An Agent may prepare or inspect this plan but must not answer the confirmation.
+
+Afterward, use the normal bare command. Do not source 1Password Shell Plugin
+integration, add a `may plugin run` wrapper, or export a credential into the
+parent shell. Run `may plugin doctor <command>` to verify PATH coverage and
+bypass warnings. Bindings are local to one macOS user and Mac; repeat the
+attended setup independently wherever routing is wanted.
+
 ## Repeat by scope
 
 | Work | Repeat |
@@ -264,4 +285,5 @@ edit only that exact Host mapping. Never infer a mapping from an item title.
 | Local install, enrollment, and local update | Per macOS user on each requester Mac |
 | Optional OpenSSH or Git signing integration | Per user and Mac that opts in |
 | Optional local quota fallback and `agent.toml` entry | Per user and Mac that opts in |
+| Optional Shell Plugin command routing | Per user, Mac, command, and selected scope |
 | Human batch copy into `Agent` | Once per selected batch |

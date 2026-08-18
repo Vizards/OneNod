@@ -76,6 +76,13 @@ upgrade complete and the local update pending; finish later with the exact
 Repeat local update on every requester Mac. Preserve unrelated Skill discovery
 paths and stop if the CLI reports an unrecognized collision.
 
+Local updates preserve machine-local Shell Plugin bindings and their managed
+bare-command links. After an update that changes the pinned upstream plugin
+definitions, `may plugin status` reports the configured versus current
+revision. Review that difference and rerun the guided credential-binding flow
+when needed; do not hand-edit `~/.onenod/plugins.json` or replace the managed
+links.
+
 Local updates preserve the non-secret local quota-fallback binding and do not
 rewrite the human-owned 1Password `agent.toml`. After changing 1Password
 accounts, renaming or recreating `Agent`, or changing its SSH inventory, run

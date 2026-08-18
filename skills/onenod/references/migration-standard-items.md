@@ -25,8 +25,9 @@ After the human finishes:
 5. verify several items from different categories and risk levels rather than
    requiring a human ceremony for every item; and
 6. update Agent-controlled consumers to use the CLI's closed field-read or item
-   interface without exposing values. A bare `op://Agent` reference is not
-   automatically consumed by arbitrary software.
+   interface, or the attended `may plugin enable` flow for an explicitly
+   supported bare command, without exposing values. A bare `op://Agent`
+   reference is not automatically consumed by arbitrary software.
 
 The Agent owns this validation work. Ask for normal PWA approvals only when the
 real consumer requires a sensitive operation; do not turn migration into a
