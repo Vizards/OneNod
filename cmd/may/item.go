@@ -402,6 +402,7 @@ func submitAndConsumeItemMutation(
 	if err != nil {
 		return err
 	}
+	observeBeholderDirectRequest(deps, request)
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	err = client.doApplicationJSON(

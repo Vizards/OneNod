@@ -197,6 +197,7 @@ func readApprovedSecret(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
+	observeBeholderDirectRequest(deps, request)
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	err = client.doApplicationJSON(
@@ -340,6 +341,7 @@ func useApprovedCredential(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
+	observeBeholderDirectRequest(deps, request)
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(
 		context.Background(),

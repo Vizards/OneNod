@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,9 +62,13 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	}
 	responseSignature := append([]byte(nil), signature.Blob...)
 	consumeFailure := false
+	beholderUnavailable := false
+	createRequests := 0
+	var observedOperation *beholderOperationTarget
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/v1/requests":
+			createRequests++
 			var body sshSignRequest
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatal(err)
@@ -113,6 +120,21 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 		},
 		context: context.Background(),
 		deps: dependencies{
+			beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+				if beholderUnavailable {
+					return beholderWireResponse{}, errors.New("Core unavailable")
+				}
+				if request.Kind != "agent-operation" || request.Operation == nil {
+					t.Fatalf("unexpected Beholder operation: %+v", request)
+				}
+				copy := *request.Operation
+				observedOperation = &copy
+				return beholderWireResponse{
+					SchemaVersion: beholderProtocolSchemaVersion,
+					Accepted:      true,
+					Disposition:   "escalate",
+				}, nil
+			},
 			httpClient: &http.Client{Transport: transport},
 			keychain: keychainStore{backend: &recordingKeychainBackend{
 				found:  true,
@@ -124,13 +146,34 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	}
 	connection := approvalAgentConnection{
 		agent: agent,
-		state: sshAgentConnectionState{client: unknownLocalClientContext()},
+		state: sshAgentConnectionState{
+			beholderBinding: strings.Repeat("b", 32),
+			client:          unknownLocalClientContext(),
+		},
 	}
 	result, err := connection.Sign(signer.PublicKey(), data)
 	if err != nil || result == nil || result.Format != signature.Format ||
 		!bytes.Equal(result.Blob, signature.Blob) {
 		t.Fatalf("valid signature response failed: %+v, %v", result, err)
 	}
+	payloadDigest := sha256.Sum256(data)
+	if observedOperation == nil || observedOperation.Surface != "ssh-agent" ||
+		observedOperation.Operation != "ssh.opaque-signature" ||
+		observedOperation.TargetID != identity.catalog.ItemID ||
+		observedOperation.KeyFingerprint != identity.catalog.Metadata.Fingerprint ||
+		observedOperation.PayloadDigest != hex.EncodeToString(payloadDigest[:]) ||
+		connection.state.beholderBinding != "" {
+		t.Fatalf("actual Agent operation was not observed once: %+v", observedOperation)
+	}
+
+	connection.state.beholderBinding = strings.Repeat("c", 32)
+	beholderUnavailable = true
+	result, err = connection.Sign(signer.PublicKey(), data)
+	if err != nil || result == nil || !bytes.Equal(result.Blob, signature.Blob) ||
+		connection.state.beholderBinding != "" || createRequests != 2 {
+		t.Fatalf("Core outage did not preserve the human approval path: result=%+v creates=%d err=%v", result, createRequests, err)
+	}
+	beholderUnavailable = false
 
 	responseSignature[0] ^= 1
 	if _, err := connection.Sign(signer.PublicKey(), data); err == nil ||

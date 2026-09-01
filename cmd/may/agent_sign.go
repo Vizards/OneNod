@@ -42,6 +42,19 @@ func (agent approvalAgent) signForConnection(
 		return nil, err
 	}
 	operation := sshOperationForPayload(data, keyBlob, state.binding)
+	if state.beholderBinding != "" {
+		// The binding is one-use even when Core is unavailable. During E1 the
+		// disposition is observation-only: every signature still follows the
+		// existing Gateway/human-approval path below.
+		binding := state.beholderBinding
+		state.beholderBinding = ""
+		_, _ = observeBeholderAgentOperation(
+			agent.deps,
+			binding,
+			sshBeholderOperationTarget(operation, *identity, data),
+		)
+		binding = ""
+	}
 	result, err := requestSshSignature(
 		agent.context,
 		agent.config,

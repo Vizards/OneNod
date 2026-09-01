@@ -18,12 +18,14 @@ const approvalObservationGrace = 5 * time.Second
 type dependencies struct {
 	applicationResolver    applicationResolver
 	approvalAgentActivator func(*userCLIInstallPlan) error
+	beholder               beholderRoundTripFunc
 	cloudflareTransport    http.RoundTripper
 	httpClient             *http.Client
 	keychain               keychainStore
 	localOnePassword       localOnePasswordFactory
 	localSSHAgent          localSSHAgentFactory
 	platformProbe          func() (hostPlatform, error)
+	processExec            processExecFunc
 	releases               releaseSource
 	stderr                 io.Writer
 	stdin                  io.Reader
@@ -39,8 +41,10 @@ type cliConfig struct {
 func main() {
 	deps := dependencies{
 		applicationResolver: resolveApplicationWithHelper,
+		beholder:            defaultBeholderRoundTrip,
 		httpClient:          &http.Client{Timeout: gatewayRequestTimeout},
 		keychain:            keychainStore{},
+		processExec:         defaultProcessExec,
 		stderr:              os.Stderr,
 		stdin:               os.Stdin,
 		stdout:              os.Stdout,
@@ -58,6 +62,8 @@ func main() {
 	switch binaryName {
 	case "may":
 		err = runCLI(os.Args[1:], deps)
+	case beholderSSHShimBinaryName:
+		err = runBeholderSSHShim(os.Args[1:], deps)
 	case gitSignAdapterBinaryName:
 		err = runGitSignAdapter(os.Args[1:], deps)
 	default:

@@ -12,7 +12,7 @@ const gitSignAdapterBinaryName = "may-ssh-sign"
 // the system ssh-keygen implementation, while signatures are obtained through
 // may's fixed SSH_AUTH_SOCK.
 func runGitSignAdapter(args []string, deps dependencies) error {
-	socketPath := defaultAgentSocket()
+	socketPath := gitSignAgentSocket(deps)
 	if socketPath == "" {
 		return errors.New("resolve may SSH agent socket failed")
 	}
@@ -25,6 +25,13 @@ func runGitSignAdapter(args []string, deps dependencies) error {
 		return errors.New("system ssh-keygen command failed; inspect ~/.onenod/logs/ssh-agent.error.log for the OneNod request stage, request ID, and safe cause")
 	}
 	return nil
+}
+
+func gitSignAgentSocket(deps dependencies) string {
+	if lease, err := requestBeholderSSHLease(deps, beholderLeasePurposeGit); err == nil {
+		return lease.AgentSocket
+	}
+	return defaultAgentSocket()
 }
 
 func withEnvironmentValue(environment []string, name, value string) []string {
