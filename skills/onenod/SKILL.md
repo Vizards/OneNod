@@ -39,12 +39,23 @@ For migration, load the router plus only the applicable leaf:
 - Use the installed `may` requester for Agent work. `op` is reserved for a
   human-explicit 1Password administration or migration task described by this
   Skill; never route normal Agent access through `op` or another Skill.
-- Hand the terminal to the human from Wrangler account selection, browser
-  OAuth when needed, or 1Password unlock through the CLI's current-Mac
-  Cloudflare revocation check.
-- Treat Passkeys, macOS security prompts, account selection, production
-  deployment confirmation, revocation, and optional integration changes as
-  human decisions.
+- Outside an explicitly declared OneNod dogfooding stage, hand the terminal to
+  the human from Wrangler account selection, browser OAuth when needed, or
+  1Password unlock through the CLI's current-Mac Cloudflare revocation check.
+- When the human explicitly declares OneNod dogfooding and authorizes an exact
+  update in the current task, the Agent may drive that release-owned update
+  through deployment confirmation and verification under the guardrails in
+  [Update](references/update.md). This exception does not cover account
+  selection, new OAuth, Passkeys, 1Password unlock, a changed Keychain helper,
+  secret injection, manual rollback outside `may`'s built-in recovery, or an
+  Origin/RP-ID change.
+- Update or deployment authority never implies Wrangler revocation authority.
+  In dogfooding, retain every existing Wrangler profile and answer the CLI's
+  revocation prompt negatively unless the human separately and explicitly asks
+  to revoke the exact current-Mac authority in the current task.
+- Outside that narrow dogfooding exception, treat Passkeys, macOS security
+  prompts, account selection, production deployment confirmation, revocation,
+  and optional integration changes as human decisions.
 - Do not expose a Service Account token, recovered field, private key,
   bootstrap capability, or secret-bearing payload through Agent-visible
   output or storage.

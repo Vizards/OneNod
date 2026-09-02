@@ -102,3 +102,35 @@ traffic, checks exact versions, promotes them in release order, verifies the
 result, and then offers default-yes revocation of this Mac's Cloudflare
 authority. If Wrangler returns an unknown result, let the CLI reconcile the
 recorded transaction before any retry.
+
+### Explicit dogfooding exception
+
+This exception applies only when the human explicitly says the current OneNod
+work is dogfooding and authorizes the exact update target in the current task.
+Do not infer dogfooding from a repository name, prerelease channel, test fixture,
+or earlier experiment.
+
+The Agent may complete `may update --version ...` and `may operator update
+--version ...`, including entering the deployment confirmation, when all of the
+following remain true:
+
+- the selected immutable Release is the exact version the human authorized;
+- the operator plan matches the receipt-bound Cloudflare account, Worker names,
+  Origin, RP ID, channel, and expected current version;
+- an existing authenticated Wrangler profile is selected automatically for the
+  receipt-bound account, so no account selection or browser OAuth is needed;
+- the Keychain helper is unchanged and no Passkey, macOS security prompt,
+  1Password unlock, secret injection, manual rollback outside `may`'s built-in
+  recovery, or scope expansion is requested.
+
+At the post-deployment revocation prompt, answer **no** and preserve every
+existing Wrangler profile. Never infer revocation permission from permission to
+update or deploy. Revoke only when the human separately asks to revoke the exact
+current-Mac Cloudflare authority in the current task; otherwise an unexpected
+revocation path is a stopping condition.
+
+After the first remote mutation, finish the CLI's built-in verification and
+transaction reconciliation. If the result is unknown, do not retry or switch to
+raw Wrangler commands; rerun only the same `may operator update --version ...`
+reconciliation path. Stop for the human if any prerequisite or plan field
+differs from the authorized plan.
