@@ -7,12 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -228,6 +231,227 @@ func TestDirectObservationSkipsCoreWithoutThreadCandidate(t *testing.T) {
 	}, itemArchiveRequest{Action: "item.archive", ItemID: "item-1", ExpectedVersion: 1})
 	if called {
 		t.Fatal("direct request without a thread candidate reached Core")
+	}
+}
+
+func TestBeholderRequesterContextPreservesEnvironmentAndRedactsSecrets(t *testing.T) {
+	t.Setenv("E2_OBS_DIAGNOSTIC_CONTEXT", "diagnostic-value")
+	t.Setenv("E2_OBS_API_KEY", "abcdefghijklmnopqrstuvwxyz123456")
+	target, ok := directBeholderOperationTarget(itemArchiveRequest{
+		Action: "item.archive", ItemID: "fixture-a", ExpectedVersion: 7,
+		Client: clientObservation{Application: "Codex"},
+	}, []byte(`{"action":"item.archive"}`), cliConfig{
+		origin:       "https://user:credential@example.invalid/gateway?token=credential",
+		pollInterval: 2 * time.Second, timeout: 3 * time.Minute,
+	})
+	if !ok || target.RequesterContext == "" || !json.Valid([]byte(target.RequesterContext)) {
+		t.Fatalf("requester context was unavailable: %+v", target)
+	}
+	if strings.Contains(target.RequesterContext, "abcdefghijklmnopqrstuvwxyz123456") ||
+		!strings.Contains(target.RequesterContext, "diagnostic-value") ||
+		!strings.Contains(target.RequesterContext, "[REDACTED:CREDENTIAL]") ||
+		!strings.Contains(target.RequesterContext, `"redaction_rule":"sensitive-requester-environment"`) ||
+		!strings.Contains(target.RequesterContext, `"gateway_origin":"https://example.invalid/gateway"`) ||
+		strings.Contains(target.RequesterContext, "user:credential") || strings.Contains(target.RequesterContext, "token=credential") {
+		t.Fatalf("requester environment evidence was incomplete or unsafe: %s", target.RequesterContext)
+	}
+}
+
+func TestBeholderOutcomeTrackerCorrelatesInteractiveApprovalWithoutCredentialMaterial(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+	const evidenceID = "shadow-0123456789abcdef0123456789abcdef"
+	var capturedOutcome beholderWireRequest
+	calls := 0
+	deps := dependencies{beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+		calls++
+		switch request.Kind {
+		case "direct-operation":
+			return beholderWireResponse{
+				SchemaVersion: beholderProtocolSchemaVersion, Accepted: true,
+				Disposition: "allow", EvidenceID: evidenceID,
+			}, nil
+		case "human-outcome":
+			capturedOutcome = request
+			return beholderWireResponse{
+				SchemaVersion: beholderProtocolSchemaVersion, Accepted: true, EvidenceID: evidenceID,
+			}, nil
+		default:
+			t.Fatalf("unexpected Beholder request kind %q", request.Kind)
+			return beholderWireResponse{}, nil
+		}
+	}}
+	request := createRequest{
+		Action: "secret.read", Client: clientObservation{Application: "Codex"},
+		ExpectedVersion: 3, FieldID: "credential", IdempotencyKey: "not-persisted",
+		ItemID: "fixture-a",
+	}
+	observation := observeBeholderDirectRequest(deps, request)
+	tracker := newBeholderOutcomeTracker(deps, observation, true)
+	tracker.setRequest("request-0001", "pending")
+	tracker.observeStatus("approved")
+	tracker.observeStatus("consumed")
+	tracker.finish(nil, true)
+	if calls != 2 || capturedOutcome.EvidenceID != evidenceID || capturedOutcome.Operation == nil ||
+		capturedOutcome.HumanOutcome == nil {
+		t.Fatalf("outcome was not correlated: calls=%d request=%+v", calls, capturedOutcome)
+	}
+	outcome := capturedOutcome.HumanOutcome
+	if outcome.AuthorizationSource != "pwa-interactive" || outcome.Decision != "approved" ||
+		!outcome.OperationCompleted || !outcome.CredentialDelivered || outcome.OneNodRequestID == nil ||
+		*outcome.OneNodRequestID != "request-0001" || len(outcome.StatusTimeline) != 3 {
+		t.Fatalf("unexpected interactive outcome: %+v", outcome)
+	}
+	encoded, err := json.Marshal(capturedOutcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"poll_token", "credential-value", "Authorization: Bearer ", "idempotency_key"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("outcome wire included forbidden material %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestBeholderOutcomeTrackerDistinguishesRememberedRejectedTimeoutAndFallback(t *testing.T) {
+	tests := []struct {
+		name, initial, source, decision string
+		err                             error
+		fallback, completed             bool
+	}{
+		{name: "remembered", initial: "approved", source: "remembered-grant", decision: "approved", completed: true},
+		{name: "rejected", initial: "pending", source: "pwa-interactive", decision: "rejected", err: errors.New("request rejected")},
+		{name: "timeout", initial: "pending", source: "pwa-interactive", decision: "timed_out", err: errors.New("timed out waiting for approval")},
+		{name: "fallback", initial: "", source: "local-fallback", decision: "approved", fallback: true, completed: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const evidenceID = "shadow-abcdef0123456789abcdef0123456789"
+			var captured *beholderHumanOutcome
+			deps := dependencies{beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+				if request.Kind == "human-outcome" {
+					captured = request.HumanOutcome
+				}
+				return beholderWireResponse{SchemaVersion: 1, Accepted: true, EvidenceID: evidenceID}, nil
+			}}
+			observation := beholderObservation{EvidenceID: evidenceID, Target: beholderOperationTarget{
+				SchemaVersion: 1, Surface: "direct-may", Operation: "secret.read",
+				TargetKind: "onepassword-item", PayloadDigest: strings.Repeat("a", 64),
+			}}
+			tracker := newBeholderOutcomeTracker(deps, observation, true)
+			if test.initial != "" {
+				tracker.setRequest("request-0002", test.initial)
+			}
+			if test.name == "rejected" {
+				tracker.observeStatus("rejected")
+			}
+			if test.fallback {
+				tracker.useLocalFallback()
+			}
+			tracker.finish(test.err, test.completed)
+			if captured == nil || captured.AuthorizationSource != test.source || captured.Decision != test.decision {
+				t.Fatalf("unexpected outcome: %+v", captured)
+			}
+			if captured.ObservedAt.Before(time.Now().Add(-time.Minute)) {
+				t.Fatalf("outcome timestamp is stale: %s", captured.ObservedAt)
+			}
+		})
+	}
+}
+
+func TestBeholderDispositionAndRecordingFailurePreserveDirectApprovalPath(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+	credential, err := credentialFromSeed("beholder-approval-invariance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedCredential, err := json.Marshal(credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		disposition string
+		observeErr  error
+		wantCalls   int
+	}{
+		{name: "allow", disposition: "allow", wantCalls: 2},
+		{name: "escalate", disposition: "escalate", wantCalls: 2},
+		{name: "core unavailable", observeErr: errors.New("Core unavailable"), wantCalls: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gatewayPaths := []string{}
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				gatewayPaths = append(gatewayPaths, request.URL.Path)
+				switch request.URL.Path {
+				case "/v1/requests":
+					return jsonHTTPResponse(http.StatusCreated, `{
+						"expires_at":"2099-01-01T00:00:00Z",
+						"poll_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+						"request_id":"request-beholder-invariance",
+						"status":"pending"
+					}`), nil
+				case "/v1/requests/request-beholder-invariance/status":
+					return jsonHTTPResponse(http.StatusOK, `{
+						"request_id":"request-beholder-invariance",
+						"status":"approved"
+					}`), nil
+				case "/v1/requests/request-beholder-invariance/consume":
+					return jsonHTTPResponse(http.StatusOK, `{
+						"ok":true,
+						"request_id":"request-beholder-invariance",
+						"status":"consumed",
+						"value":"dummy-approved-value"
+					}`), nil
+				default:
+					t.Fatalf("unexpected Gateway path %q", request.URL.Path)
+					return nil, nil
+				}
+			})
+			beholderCalls := 0
+			deps := dependencies{
+				beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+					beholderCalls++
+					if request.Kind == "direct-operation" {
+						if test.observeErr != nil {
+							return beholderWireResponse{}, test.observeErr
+						}
+						return beholderWireResponse{
+							SchemaVersion: beholderProtocolSchemaVersion,
+							Accepted:      true,
+							Disposition:   test.disposition,
+							EvidenceID:    "shadow-approval-invariance",
+						}, nil
+					}
+					if request.Kind != "human-outcome" {
+						t.Fatalf("unexpected Beholder request kind %q", request.Kind)
+					}
+					return beholderWireResponse{}, errors.New("evidence store unavailable")
+				},
+				httpClient: &http.Client{Transport: transport},
+				keychain: keychainStore{backend: &recordingKeychainBackend{
+					found: true, output: encodedCredential,
+				}},
+				stderr: io.Discard,
+			}
+			value, err := readApprovedSecret(cliConfig{
+				origin:       "https://onenod.example-account.workers.dev",
+				pollInterval: time.Millisecond,
+				timeout:      time.Second,
+			}, deps, "fixture-a", "credential", 1)
+			if err != nil || value != "dummy-approved-value" {
+				t.Fatalf("Beholder changed the approved credential result: value=%q err=%v", value, err)
+			}
+			wantPaths := []string{
+				"/v1/requests",
+				"/v1/requests/request-beholder-invariance/status",
+				"/v1/requests/request-beholder-invariance/consume",
+			}
+			if !reflect.DeepEqual(gatewayPaths, wantPaths) || beholderCalls != test.wantCalls {
+				t.Fatalf("approval path changed: Gateway=%v Beholder calls=%d", gatewayPaths, beholderCalls)
+			}
+		})
 	}
 }
 

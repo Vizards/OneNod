@@ -19,7 +19,7 @@ func (agent approvalAgent) signForConnection(
 	keyBlob []byte,
 	data []byte,
 	flags uint32,
-) (*ssh.Signature, error) {
+) (resultSignature *ssh.Signature, returnErr error) {
 	if len(keyBlob) == 0 {
 		return nil, errors.New("invalid key blob")
 	}
@@ -42,19 +42,22 @@ func (agent approvalAgent) signForConnection(
 		return nil, err
 	}
 	operation := sshOperationForPayload(data, keyBlob, state.binding)
+	var observation beholderObservation
 	if state.beholderBinding != "" {
 		// The binding is one-use even when Core is unavailable. During E1 the
 		// disposition is observation-only: every signature still follows the
 		// existing Gateway/human-approval path below.
 		binding := state.beholderBinding
 		state.beholderBinding = ""
-		_, _ = observeBeholderAgentOperation(
+		_, observation, _ = observeBeholderAgentOperationWithEvidence(
 			agent.deps,
 			binding,
-			sshBeholderOperationTarget(operation, *identity, data),
+			sshBeholderOperationTarget(operation, *identity, data, agent.config),
 		)
 		binding = ""
 	}
+	outcome := newBeholderOutcomeTracker(agent.deps, observation, false)
+	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	result, err := requestSshSignature(
 		agent.context,
 		agent.config,
@@ -65,6 +68,7 @@ func (agent approvalAgent) signForConnection(
 		operation,
 		algorithm,
 		data,
+		outcome,
 	)
 	if err != nil {
 		return nil, err
@@ -102,6 +106,7 @@ func requestSshSignature(
 	operation sshOperation,
 	algorithm string,
 	data []byte,
+	outcome *beholderOutcomeTracker,
 ) (sshSignConsumeResponse, error) {
 	credential, err := deps.keychain.Load()
 	if err != nil {
@@ -142,6 +147,8 @@ func requestSshSignature(
 	cancelCreate()
 	if err != nil {
 		if isGatewayErrorCode(err, "onepassword_rate_limited") {
+			outcome.failAt("gateway-create")
+			outcome.useLocalFallback()
 			fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting approval from the local 1Password SSH Agent on this Mac.")
 			fallbackContext, cancelFallback := context.WithTimeout(
 				ctx,
@@ -160,16 +167,20 @@ func requestSshSignature(
 			}
 			return result, nil
 		}
+		outcome.failAt("gateway-create")
 		return sshSignConsumeResponse{}, fmt.Errorf("create SSH approval request failed: %w", err)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		outcome.failAt("gateway-create-response")
 		return sshSignConsumeResponse{}, errors.New("gateway returned an invalid SSH approval response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "SSH sign request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContextFrom(ctx, created.ExpiresAt, config.timeout)
 		if contextError != nil {
+			outcome.failAt("approval-wait-setup")
 			return sshSignConsumeResponse{}, fmt.Errorf(
 				"prepare SSH request %s approval wait failed: %w",
 				created.RequestID,
@@ -185,10 +196,12 @@ func requestSshSignature(
 			if current.RequestID != "" && current.RequestID != created.RequestID {
 				return "", errors.New("gateway status response changed the request ID")
 			}
+			outcome.observeStatus(current.Status)
 			return current.Status, nil
 		})
 		cancelPoll()
 		if err != nil {
+			outcome.failAt("approval-wait")
 			return sshSignConsumeResponse{}, fmt.Errorf(
 				"poll SSH request %s status failed: %w",
 				created.RequestID,
@@ -197,6 +210,8 @@ func requestSshSignature(
 		}
 	}
 	if !isAuthorizedStatus(status) {
+		outcome.observeStatus(status)
+		outcome.failAt("authorization-status")
 		return sshSignConsumeResponse{}, fmt.Errorf(
 			"SSH request %s reached unexpected status %q",
 			created.RequestID,
@@ -216,6 +231,8 @@ func requestSshSignature(
 	cancelConsume()
 	if err != nil {
 		if isGatewayErrorCode(err, "onepassword_rate_limited") {
+			outcome.failAt("gateway-consume")
+			outcome.useLocalFallback()
 			fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting approval from the local 1Password SSH Agent on this Mac.")
 			fallbackContext, cancelFallback := context.WithTimeout(
 				ctx,
@@ -234,6 +251,7 @@ func requestSshSignature(
 			}
 			return result, nil
 		}
+		outcome.failAt("gateway-consume")
 		return sshSignConsumeResponse{}, fmt.Errorf(
 			"consume SSH request %s failed: %w",
 			created.RequestID,
@@ -247,10 +265,12 @@ func requestSshSignature(
 		consumed.Fingerprint != identity.catalog.Metadata.Fingerprint ||
 		consumed.Algorithm != algorithm ||
 		consumed.PublicKeyBlob != identity.catalog.Metadata.PublicKeyBlob {
+		outcome.failAt("gateway-consume-response")
 		return sshSignConsumeResponse{}, fmt.Errorf(
 			"gateway returned a mismatched SSH signature response for request %s",
 			created.RequestID,
 		)
 	}
+	outcome.observeStatus(consumed.Status)
 	return consumed, nil
 }

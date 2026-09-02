@@ -145,7 +145,7 @@ func readApprovedSecret(
 	itemID string,
 	fieldID string,
 	expectedVersion int64,
-) (string, error) {
+) (result string, returnErr error) {
 	if err := validateIdentifier(itemID, "item"); err != nil {
 		return "", err
 	}
@@ -197,7 +197,9 @@ func readApprovedSecret(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
-	observeBeholderDirectRequest(deps, request)
+	observation := observeBeholderDirectRequest(deps, request, config)
+	outcome := newBeholderOutcomeTracker(deps, observation, true)
+	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	err = client.doApplicationJSON(
@@ -210,6 +212,8 @@ func readApprovedSecret(
 	)
 	cancelCreate()
 	if err != nil {
+		outcome.failAt("gateway-create")
+		outcome.useLocalFallback()
 		fallbackContext, cancelFallback := context.WithTimeout(
 			context.Background(),
 			localFallbackOperationLimit,
@@ -225,13 +229,16 @@ func readApprovedSecret(
 		)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		outcome.failAt("gateway-create-response")
 		return "", errors.New("gateway returned an invalid request creation response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContext(created.ExpiresAt, config.timeout)
 		if contextError != nil {
+			outcome.failAt("approval-wait-setup")
 			return "", contextError
 		}
 		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
@@ -243,14 +250,18 @@ func readApprovedSecret(
 			if current.RequestID != "" && current.RequestID != created.RequestID {
 				return "", errors.New("gateway status response changed the request ID")
 			}
+			outcome.observeStatus(current.Status)
 			return current.Status, nil
 		})
 		cancelPoll()
 		if err != nil {
+			outcome.failAt("approval-wait")
 			return "", err
 		}
 	}
 	if !isAuthorizedStatus(status) {
+		outcome.observeStatus(status)
+		outcome.failAt("authorization-status")
 		return "", fmt.Errorf("request reached unexpected status %q", status)
 	}
 	var consumed secretConsumeResponse
@@ -265,6 +276,8 @@ func readApprovedSecret(
 	)
 	cancelConsume()
 	if err != nil {
+		outcome.failAt("gateway-consume")
+		outcome.useLocalFallback()
 		fallbackContext, cancelFallback := context.WithTimeout(
 			context.Background(),
 			localFallbackOperationLimit,
@@ -281,10 +294,13 @@ func readApprovedSecret(
 	}
 	if !consumed.OK || consumed.RequestID != created.RequestID ||
 		normalizeStatus(consumed.Status) != "consumed" {
+		outcome.failAt("gateway-consume-response")
 		return "", errors.New("gateway returned an invalid consume response")
 	}
+	outcome.observeStatus(consumed.Status)
 	value, ok := consumed.secretValue()
 	if !ok {
+		outcome.failAt("credential-delivery")
 		return "", errors.New("consume response did not include a secret value")
 	}
 	return value, nil
@@ -296,7 +312,7 @@ func useApprovedCredential(
 	itemID string,
 	fieldIDs []string,
 	expectedVersion int64,
-) (map[string]string, error) {
+) (result map[string]string, returnErr error) {
 	if err := validateIdentifier(itemID, "item"); err != nil {
 		return nil, err
 	}
@@ -341,7 +357,9 @@ func useApprovedCredential(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
-	observeBeholderDirectRequest(deps, request)
+	observation := observeBeholderDirectRequest(deps, request, config)
+	outcome := newBeholderOutcomeTracker(deps, observation, true)
+	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(
 		context.Background(),
@@ -357,6 +375,8 @@ func useApprovedCredential(
 	)
 	cancelCreate()
 	if err != nil {
+		outcome.failAt("gateway-create")
+		outcome.useLocalFallback()
 		fallbackContext, cancelFallback := context.WithTimeout(
 			context.Background(),
 			localFallbackOperationLimit,
@@ -372,9 +392,11 @@ func useApprovedCredential(
 		)
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		outcome.failAt("gateway-create-response")
 		return nil, errors.New("gateway returned an invalid request creation response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContext(
@@ -382,6 +404,7 @@ func useApprovedCredential(
 			config.timeout,
 		)
 		if contextError != nil {
+			outcome.failAt("approval-wait-setup")
 			return nil, contextError
 		}
 		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
@@ -398,14 +421,18 @@ func useApprovedCredential(
 			if current.RequestID != "" && current.RequestID != created.RequestID {
 				return "", errors.New("gateway status response changed the request ID")
 			}
+			outcome.observeStatus(current.Status)
 			return current.Status, nil
 		})
 		cancelPoll()
 		if err != nil {
+			outcome.failAt("approval-wait")
 			return nil, err
 		}
 	}
 	if !isAuthorizedStatus(status) {
+		outcome.observeStatus(status)
+		outcome.failAt("authorization-status")
 		return nil, fmt.Errorf("request reached unexpected status %q", status)
 	}
 	var consumed secretConsumeResponse
@@ -423,6 +450,8 @@ func useApprovedCredential(
 	)
 	cancelConsume()
 	if err != nil {
+		outcome.failAt("gateway-consume")
+		outcome.useLocalFallback()
 		fallbackContext, cancelFallback := context.WithTimeout(
 			context.Background(),
 			localFallbackOperationLimit,
@@ -441,10 +470,13 @@ func useApprovedCredential(
 		normalizeStatus(consumed.Status) != "consumed" ||
 		consumed.ItemID != itemID || consumed.Version != expectedVersion ||
 		len(consumed.Values) != len(fieldIDs) {
+		outcome.failAt("gateway-consume-response")
 		return nil, errors.New("gateway returned an invalid credential consume response")
 	}
+	outcome.observeStatus(consumed.Status)
 	for index, field := range consumed.Values {
 		if field.FieldID != fieldIDs[index] {
+			outcome.failAt("credential-field-binding")
 			return nil, errors.New("credential consume response changed the requested field set")
 		}
 	}

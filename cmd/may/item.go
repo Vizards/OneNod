@@ -393,7 +393,7 @@ func submitAndConsumeItemMutation(
 	localClient localClientContext,
 	config cliConfig,
 	deps dependencies,
-) error {
+) (returnErr error) {
 	credential, err := deps.keychain.Load()
 	if err != nil {
 		return err
@@ -402,7 +402,9 @@ func submitAndConsumeItemMutation(
 	if err != nil {
 		return err
 	}
-	observeBeholderDirectRequest(deps, request)
+	observation := observeBeholderDirectRequest(deps, request, config)
+	outcome := newBeholderOutcomeTracker(deps, observation, false)
+	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	err = client.doApplicationJSON(
@@ -415,16 +417,20 @@ func submitAndConsumeItemMutation(
 	)
 	cancelCreate()
 	if err != nil {
+		outcome.failAt("gateway-create")
 		return err
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		outcome.failAt("gateway-create-response")
 		return errors.New("gateway returned an invalid item request response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContext(created.ExpiresAt, config.timeout)
 		if contextError != nil {
+			outcome.failAt("approval-wait-setup")
 			return contextError
 		}
 		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
@@ -436,14 +442,18 @@ func submitAndConsumeItemMutation(
 			if current.RequestID != created.RequestID {
 				return "", errors.New("gateway status response changed the request ID")
 			}
+			outcome.observeStatus(current.Status)
 			return current.Status, nil
 		})
 		cancelPoll()
 		if err != nil {
+			outcome.failAt("approval-wait")
 			return err
 		}
 	}
 	if !isAuthorizedStatus(status) {
+		outcome.observeStatus(status)
+		outcome.failAt("authorization-status")
 		return fmt.Errorf("request reached unexpected status %q", status)
 	}
 
@@ -460,12 +470,15 @@ func submitAndConsumeItemMutation(
 	)
 	cancelConsume()
 	if err != nil {
+		outcome.failAt("gateway-consume")
 		return fmt.Errorf("consume item request %s: %w", created.RequestID, err)
 	}
 	if !consumed.OK || consumed.RequestID != created.RequestID {
+		outcome.failAt("gateway-consume-response")
 		return errors.New("gateway returned an invalid item consume response")
 	}
 	if normalizeStatus(consumed.Status) == "unknown" {
+		outcome.observeStatus(consumed.Status)
 		fmt.Fprintf(
 			deps.stderr,
 			"Request %s has an unknown write outcome; waiting for read-only reconciliation.\n",
@@ -478,12 +491,16 @@ func submitAndConsumeItemMutation(
 			config,
 		)
 		if err != nil {
+			outcome.failAt("item-reconciliation")
 			return err
 		}
 	}
 	if normalizeStatus(consumed.Status) != "consumed" || consumed.ItemID == "" {
+		outcome.failAt("item-completion")
 		return errors.New("gateway returned an invalid completed item response")
 	}
+	outcome.observeStatus(consumed.Status)
+	outcome.finish(nil, true)
 	return writeSafeJSON(deps.stdout, consumed)
 }
 
