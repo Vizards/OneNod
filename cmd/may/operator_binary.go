@@ -24,6 +24,9 @@ const (
 	gatewayReadinessPollInterval  = 2 * time.Second
 	updateConvergenceTimeout      = 30 * time.Second
 	updateConvergencePollInterval = 2 * time.Second
+	workerVersionInspectAttempts  = 5
+	workerVersionInspectTimeout   = 10 * time.Second
+	workerVersionInspectDelay     = 2 * time.Second
 	bootstrapCompletionTimeout    = 30 * time.Minute
 	bootstrapPollInterval         = 2 * time.Second
 	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
