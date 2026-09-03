@@ -19,6 +19,7 @@ type dependencies struct {
 	applicationResolver    applicationResolver
 	approvalAgentActivator func(*userCLIInstallPlan) error
 	beholder               beholderRoundTripFunc
+	beholderOutcomeRoot    beholderOutcomeRootFunc
 	cloudflareTransport    http.RoundTripper
 	httpClient             *http.Client
 	keychain               keychainStore
@@ -42,6 +43,7 @@ func main() {
 	deps := dependencies{
 		applicationResolver: resolveApplicationWithHelper,
 		beholder:            defaultBeholderRoundTrip,
+		beholderOutcomeRoot: defaultBeholderOutcomeRoot,
 		httpClient:          &http.Client{Timeout: gatewayRequestTimeout},
 		keychain:            keychainStore{},
 		processExec:         defaultProcessExec,
@@ -59,6 +61,7 @@ func main() {
 		}
 		return
 	}
+	flushPendingBeholderOutcomes(deps)
 	switch binaryName {
 	case "may":
 		err = runCLI(os.Args[1:], deps)

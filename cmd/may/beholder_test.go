@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,6 +357,120 @@ func TestBeholderOutcomeTrackerDistinguishesRememberedRejectedTimeoutAndFallback
 			}
 		})
 	}
+}
+
+func TestBeholderOutcomeSpoolSurvivesFailureAndRetriesOnANewInvocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const evidenceID = "shadow-durable-outcome-0000000000000001"
+	target := beholderOperationTarget{
+		SchemaVersion: 1, Surface: "direct-may", Operation: "secret.read",
+		TargetKind: "onepassword-item", PayloadDigest: strings.Repeat("a", 64),
+	}
+	targetSHA256, ok := beholderOperationTargetSHA256(target)
+	if !ok {
+		t.Fatal("target digest failed")
+	}
+	now := time.Now().UTC()
+	outcome := beholderHumanOutcome{
+		SchemaVersion: 1, RecordType: "beholder_human_outcome", EvidenceID: evidenceID,
+		OperationTargetSHA256: targetSHA256, AuthorizationSource: "pwa-interactive",
+		Decision: "approved", StatusTimeline: []beholderOutcomeStatus{{Status: "approved", ObservedAt: now}},
+		OperationCompleted: true, CredentialDelivered: true, ObservedAt: now,
+	}
+	root := func() (string, error) {
+		return filepath.Join(home, userAgentDirectoryName, "beholder-outcomes", "v1"), nil
+	}
+	failedCalls := 0
+	recordBeholderHumanOutcome(dependencies{
+		beholderOutcomeRoot: root,
+		beholder: func(beholderWireRequest) (beholderWireResponse, error) {
+			failedCalls++
+			return beholderWireResponse{}, errors.New("Core restarting")
+		},
+	}, beholderObservation{EvidenceID: evidenceID, Target: target}, outcome)
+	entries, err := os.ReadDir(filepath.Join(home, userAgentDirectoryName, "beholder-outcomes", "v1"))
+	if err != nil || len(entries) != 1 || failedCalls != 1 {
+		t.Fatalf("failed outcome was not retained: entries=%d calls=%d err=%v", len(entries), failedCalls, err)
+	}
+
+	delivered := 0
+	flushPendingBeholderOutcomes(dependencies{
+		beholderOutcomeRoot: root,
+		beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+			delivered++
+			if request.Kind != "human-outcome" || request.EvidenceID != evidenceID ||
+				request.HumanOutcome == nil || request.HumanOutcome.OperationTargetSHA256 != targetSHA256 {
+				t.Fatalf("retried outcome changed: %+v", request)
+			}
+			return beholderWireResponse{
+				SchemaVersion: beholderProtocolSchemaVersion, Accepted: true, EvidenceID: evidenceID,
+			}, nil
+		},
+	})
+	entries, err = os.ReadDir(filepath.Join(home, userAgentDirectoryName, "beholder-outcomes", "v1"))
+	if err != nil || len(entries) != 0 || delivered != 1 {
+		t.Fatalf("acknowledged outcome was not retired: entries=%d calls=%d err=%v", len(entries), delivered, err)
+	}
+}
+
+func TestBeholderOutcomeSpoolRejectsSymlinkAndCoalescesConcurrentExactWrites(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		outside := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(home, userAgentDirectoryName)); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(home, userAgentDirectoryName, "beholder-outcomes", "v1")
+		if err := ensureBeholderOutcomeRoot(root); err == nil {
+			t.Fatal("symlinked OneNod root was accepted for outcome evidence")
+		}
+	})
+	t.Run("concurrent-exact", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		root := filepath.Join(home, userAgentDirectoryName, "beholder-outcomes", "v1")
+		if err := ensureBeholderOutcomeRoot(root); err != nil {
+			t.Fatal(err)
+		}
+		const evidenceID = "shadow-concurrent-outcome-0000000000001"
+		target := beholderOperationTarget{
+			SchemaVersion: 1, Surface: "direct-may", Operation: "secret.read",
+			TargetKind: "onepassword-item", PayloadDigest: strings.Repeat("b", 64),
+		}
+		targetSHA256, _ := beholderOperationTargetSHA256(target)
+		now := time.Now().UTC()
+		pending := beholderPendingOutcome{
+			SchemaVersion: 1, RecordType: "beholder_pending_human_outcome", EvidenceID: evidenceID,
+			Target: target, HumanOutcome: beholderHumanOutcome{
+				SchemaVersion: 1, RecordType: "beholder_human_outcome", EvidenceID: evidenceID,
+				OperationTargetSHA256: targetSHA256, AuthorizationSource: "remembered-grant",
+				Decision: "approved", StatusTimeline: []beholderOutcomeStatus{{Status: "approved", ObservedAt: now}},
+				OperationCompleted: true, CredentialDelivered: true, ObservedAt: now,
+			},
+		}
+		errorsFound := make(chan error, 32)
+		var wait sync.WaitGroup
+		for index := 0; index < 32; index++ {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				if err := persistPendingBeholderOutcome(root, pending); err != nil {
+					errorsFound <- err
+				}
+			}()
+		}
+		wait.Wait()
+		close(errorsFound)
+		for err := range errorsFound {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("concurrent exact outcomes did not coalesce: entries=%d err=%v", len(entries), err)
+		}
+	})
 }
 
 func TestBeholderDispositionAndRecordingFailurePreserveDirectApprovalPath(t *testing.T) {

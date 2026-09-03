@@ -2,11 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import coreModule from "./core.wasm";
 import { tokensMatch } from "./auth";
+import { runBestEffortCooldownUpdate } from "./cooldown-housekeeping";
 import {
   ExecutionJournal,
   ExecutionJournalError,
   SqliteExecutionJournalStore,
 } from "./execution-journal";
+import { classifyExecutorFailure } from "./executor-failure";
 import {
   EXECUTOR_PROTOCOL_HEADER,
   EXECUTOR_PROTOCOL_VERSION,
@@ -46,10 +48,7 @@ import {
 } from "./onepassword-raw-gateway";
 import { OPERATION_TIMEOUT_MS, createOnePasswordRuntime } from "./runtime";
 import { EXECUTOR_RELEASE } from "./release";
-import {
-  executorStoragePressure,
-  isSqliteFullError,
-} from "./storage-policy";
+import { executorStoragePressure } from "./storage-policy";
 import { OnePasswordRateLimitCooldown } from "./onepassword-rate-limit-cooldown";
 
 interface Env {
@@ -409,10 +408,11 @@ export class OnePasswordExecutor extends DurableObject<Env> {
     mutation = false,
   ): Promise<T> {
     const startedAt = Date.now();
-    if (!this.rateLimitCooldown.beforeOperation(
+    const cooldownAdmission = this.rateLimitCooldown.beforeOperation(
       startedAt,
       OPERATION_TIMEOUT_MS + 30_000,
-    )) {
+    );
+    if (cooldownAdmission === "rejected") {
       console.log(JSON.stringify({
         event: "executor_onepassword_cooldown_rejected",
         ...telemetry,
@@ -461,7 +461,16 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       );
     }
     if (lifecycle.ok) {
-      this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
+      runBestEffortCooldownUpdate({
+        operation: telemetry.operation,
+        stage: "record_success",
+        update: () =>
+          this.rateLimitCooldown.recordSuccess(
+            cooldownAdmission,
+            Date.now(),
+            startedAt,
+          ),
+      });
       return lifecycle.value;
     }
     if (lifecycle.operationCompleted) {
@@ -471,14 +480,37 @@ export class OnePasswordExecutor extends DurableObject<Env> {
           cleanup: lifecycle.cleanup,
         }),
       );
-      this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
+      runBestEffortCooldownUpdate({
+        operation: telemetry.operation,
+        stage: "record_success",
+        update: () =>
+          this.rateLimitCooldown.recordSuccess(
+            cooldownAdmission,
+            Date.now(),
+            startedAt,
+          ),
+      });
       return lifecycle.value;
     }
     if (lifecycle.error instanceof GatewayOperationError) {
       if (lifecycle.error.code === "onepassword_rate_limited") {
-        this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt);
+        runBestEffortCooldownUpdate({
+          operation: telemetry.operation,
+          stage: "record_rate_limit",
+          update: () =>
+            this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt),
+        });
       } else {
-        this.rateLimitCooldown.recordSuccess(Date.now(), startedAt);
+        runBestEffortCooldownUpdate({
+          operation: telemetry.operation,
+          stage: "record_success",
+          update: () =>
+            this.rateLimitCooldown.recordSuccess(
+              cooldownAdmission,
+              Date.now(),
+              startedAt,
+            ),
+        });
       }
       throw lifecycle.error;
     }
@@ -509,9 +541,23 @@ export class OnePasswordExecutor extends DurableObject<Env> {
       lifecycle.error instanceof CoreAdapterError &&
       lifecycle.error.code === "onepassword_rate_limited";
     if (rateLimited) {
-      this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt);
+      runBestEffortCooldownUpdate({
+        operation: telemetry.operation,
+        stage: "record_rate_limit",
+        update: () =>
+          this.rateLimitCooldown.recordRateLimit(Date.now(), startedAt),
+      });
     } else {
-      this.rateLimitCooldown.releaseProbe(Date.now(), startedAt);
+      runBestEffortCooldownUpdate({
+        operation: telemetry.operation,
+        stage: "release_probe",
+        update: () =>
+          this.rateLimitCooldown.releaseProbe(
+            cooldownAdmission,
+            Date.now(),
+            startedAt,
+          ),
+      });
     }
     if (mutation && operationEntered) {
       throw new GatewayOperationError(
@@ -545,33 +591,20 @@ async function authorizeExecutor(
 }
 
 function executorGatewayError(error: unknown, path: string): Response {
-  let classified: GatewayOperationError;
-  if (error instanceof GatewayOperationError) {
-    classified = error;
-  } else if (
-    (error instanceof ExecutionJournalError &&
-      error.code === "journal_storage_pressure") ||
-    isSqliteFullError(error)
-  ) {
-    classified = new GatewayOperationError("executor_storage_pressure", 507);
-  } else {
-    classified = new GatewayOperationError(
-      path === "/internal/1password/catalog"
-        ? "catalog_query_invalid"
-        : path === "/internal/1password/ssh/sign"
-          ? "ssh_sign_request_invalid"
-          : "item_operation_invalid",
-      400,
-    );
-  }
+  const classified = classifyExecutorFailure(error, path);
   console.error(
     JSON.stringify({
-      errorCode: classified.code,
+      errorCode: classified.error.code,
+      errorName: classified.errorName,
       event: "executor_gateway_operation_failed",
+      failureKind: classified.kind,
       path,
     }),
   );
-  return executorJson({ error: classified.code, ok: false }, classified.status);
+  return executorJson(
+    { error: classified.error.code, ok: false },
+    classified.error.status,
+  );
 }
 
 function executorJson(body: unknown, status = 200): Response {

@@ -79,17 +79,18 @@ type beholderOutcomeStatus struct {
 }
 
 type beholderHumanOutcome struct {
-	SchemaVersion       int                     `json:"schema_version"`
-	RecordType          string                  `json:"record_type"`
-	EvidenceID          string                  `json:"evidence_id"`
-	OneNodRequestID     *string                 `json:"onenod_request_id"`
-	AuthorizationSource string                  `json:"authorization_source"`
-	Decision            string                  `json:"decision"`
-	StatusTimeline      []beholderOutcomeStatus `json:"status_timeline"`
-	OperationCompleted  bool                    `json:"operation_completed"`
-	CredentialDelivered bool                    `json:"credential_delivered"`
-	FailureStage        string                  `json:"failure_stage,omitempty"`
-	ObservedAt          time.Time               `json:"observed_at"`
+	SchemaVersion         int                     `json:"schema_version"`
+	RecordType            string                  `json:"record_type"`
+	EvidenceID            string                  `json:"evidence_id"`
+	OperationTargetSHA256 string                  `json:"operation_target_sha256"`
+	OneNodRequestID       *string                 `json:"onenod_request_id"`
+	AuthorizationSource   string                  `json:"authorization_source"`
+	Decision              string                  `json:"decision"`
+	StatusTimeline        []beholderOutcomeStatus `json:"status_timeline"`
+	OperationCompleted    bool                    `json:"operation_completed"`
+	CredentialDelivered   bool                    `json:"credential_delivered"`
+	FailureStage          string                  `json:"failure_stage,omitempty"`
+	ObservedAt            time.Time               `json:"observed_at"`
 }
 
 type beholderObservation struct {
@@ -242,18 +243,30 @@ func recordBeholderHumanOutcome(
 		!validBeholderHumanOutcome(outcome) {
 		return
 	}
-	_, _ = deps.beholder(beholderWireRequest{
-		SchemaVersion: beholderProtocolSchemaVersion,
-		Kind:          "human-outcome",
-		EvidenceID:    observation.EvidenceID,
-		Operation:     &observation.Target,
-		HumanOutcome:  &outcome,
-	})
+	pending := beholderPendingOutcome{
+		SchemaVersion: beholderOutcomeSpoolSchema,
+		RecordType:    "beholder_pending_human_outcome", EvidenceID: observation.EvidenceID,
+		Target: observation.Target, HumanOutcome: outcome,
+	}
+	if deps.beholderOutcomeRoot == nil {
+		_, _ = sendPendingBeholderOutcome(deps, pending)
+		return
+	}
+	root, err := deps.beholderOutcomeRoot()
+	if err != nil || ensureBeholderOutcomeRoot(root) != nil ||
+		persistPendingBeholderOutcome(root, pending) != nil {
+		// Evidence recording remains observational: a spool failure must never
+		// alter the existing authorization or credential-delivery result.
+		_, _ = sendPendingBeholderOutcome(deps, pending)
+		return
+	}
+	flushPendingBeholderOutcomes(deps)
 }
 
 func validBeholderHumanOutcome(outcome beholderHumanOutcome) bool {
 	if outcome.SchemaVersion != 1 || outcome.RecordType != "beholder_human_outcome" ||
 		!safeBeholderToken(outcome.EvidenceID, 8, 96) || outcome.ObservedAt.IsZero() ||
+		!validBeholderSHA256(outcome.OperationTargetSHA256) ||
 		!beholderOneOf(outcome.AuthorizationSource, "pwa-interactive", "remembered-grant", "local-fallback", "not-requested", "unknown") ||
 		!beholderOneOf(outcome.Decision, "approved", "rejected", "timed_out", "expired", "error", "not_requested", "unknown") ||
 		(outcome.OneNodRequestID != nil && !safeBeholderField(*outcome.OneNodRequestID, 256, false)) ||
@@ -266,6 +279,24 @@ func validBeholderHumanOutcome(outcome beholderHumanOutcome) bool {
 		}
 	}
 	return true
+}
+
+func validBeholderSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func beholderOperationTargetSHA256(target beholderOperationTarget) (string, bool) {
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		return "", false
+	}
+	defer clear(encoded)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), true
 }
 
 func beholderOneOf(value string, allowed ...string) bool {

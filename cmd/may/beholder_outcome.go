@@ -100,6 +100,9 @@ func (tracker *beholderOutcomeTracker) finish(resultErr error, operationComplete
 		CredentialDelivered: operationCompleted && tracker.credentialOperation,
 		FailureStage:        tracker.failureStage, ObservedAt: time.Now().UTC(),
 	}
+	if targetSHA256, ok := beholderOperationTargetSHA256(tracker.observation.Target); ok {
+		outcome.OperationTargetSHA256 = targetSHA256
+	}
 	recordBeholderHumanOutcome(tracker.deps, tracker.observation, outcome)
 }
 

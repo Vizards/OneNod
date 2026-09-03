@@ -110,6 +110,8 @@ func TestGatewayErrorHeaderExposesOnlyOneStableSafeCode(t *testing.T) {
 		status int
 		want   string
 	}{
+		{header: "executor_internal_error", status: http.StatusServiceUnavailable, want: "gateway returned executor_internal_error (HTTP 503)"},
+		{header: "executor_internal_error", status: http.StatusBadRequest, want: "gateway returned HTTP 400"},
 		{header: "onepassword_rate_limited", status: http.StatusTooManyRequests, want: "gateway returned onepassword_rate_limited (HTTP 429)"},
 		{header: "onepassword_rate_limited", status: http.StatusBadGateway, want: "gateway returned HTTP 502"},
 		{header: "private_item_identifier", status: http.StatusTooManyRequests, want: "gateway returned HTTP 429"},

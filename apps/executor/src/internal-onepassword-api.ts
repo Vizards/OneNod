@@ -1,6 +1,7 @@
 import { base64urlnopad } from "@scure/base";
 import canonicalize from "canonicalize";
 
+import { ExecutorRequestError } from "./executor-request-error";
 import {
   type ExecutionAction,
   type ExecutionIdentity,
@@ -75,19 +76,19 @@ export async function readJsonObject(
 ): Promise<Record<string, unknown>> {
   const contentType = request.headers.get("content-type");
   if (contentType?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    throw new TypeError("request_content_type_invalid");
+    throw new ExecutorRequestError("request_content_type_invalid");
   }
 
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null) {
     const length = Number(declaredLength);
     if (!Number.isInteger(length) || length < 1 || length > maximumBytes) {
-      throw new TypeError("request_body_size_invalid");
+      throw new ExecutorRequestError("request_body_size_invalid");
     }
   }
 
   const reader = request.body?.getReader();
-  if (!reader) throw new TypeError("request_body_required");
+  if (!reader) throw new ExecutorRequestError("request_body_required");
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -97,14 +98,14 @@ export async function readJsonObject(
       size += value.byteLength;
       if (size > maximumBytes) {
         await reader.cancel();
-        throw new TypeError("request_body_too_large");
+        throw new ExecutorRequestError("request_body_too_large");
       }
       chunks.push(value);
     }
   } finally {
     reader.releaseLock();
   }
-  if (size === 0) throw new TypeError("request_body_required");
+  if (size === 0) throw new ExecutorRequestError("request_body_required");
 
   const bytes = new Uint8Array(size);
   let offset = 0;
@@ -117,7 +118,7 @@ export async function readJsonObject(
   try {
     parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    throw new TypeError("request_json_invalid");
+    throw new ExecutorRequestError("request_json_invalid");
   }
   return takeObject(parsed);
 }
@@ -166,7 +167,7 @@ export function parseCredentialUseRequest(body: Record<string, unknown>): {
     body.field_ids.length === 0 ||
     body.field_ids.length > 16
   ) {
-    throw new TypeError("credential_field_ids_invalid");
+    throw new ExecutorRequestError("credential_field_ids_invalid");
   }
   const fieldIds = body.field_ids.map((value) =>
     takeIdentifier({ value }, "value")
@@ -176,7 +177,7 @@ export function parseCredentialUseRequest(body: Record<string, unknown>): {
     canonical.length !== fieldIds.length ||
     canonical.some((fieldId, index) => fieldId !== fieldIds[index])
   ) {
-    throw new TypeError("credential_field_ids_invalid");
+    throw new ExecutorRequestError("credential_field_ids_invalid");
   }
   return {
     expectedVersion: takePositiveInteger(body, "expected_version"),
@@ -239,7 +240,7 @@ export function parseMutationRequest(body: Record<string, unknown>): ParsedMutat
       itemId: takeIdentifier(body, "item_id"),
     };
   }
-  throw new TypeError("mutation_action_invalid");
+  throw new ExecutorRequestError("mutation_action_invalid");
 }
 
 export async function readExecutionIdentity(
@@ -255,13 +256,13 @@ export async function readExecutionIdentity(
     !REQUEST_ID_PATTERN.test(requestId) ||
     !BODY_DIGEST_PATTERN.test(bodyDigest)
   ) {
-    throw new TypeError("execution_identity_invalid");
+    throw new ExecutorRequestError("execution_identity_invalid");
   }
   if (action === "item.create" && body.request_id !== requestId) {
-    throw new TypeError("execution_identity_invalid");
+    throw new ExecutorRequestError("execution_identity_invalid");
   }
   if ((await canonicalJsonSha256Base64Url(body)) !== bodyDigest) {
-    throw new TypeError("execution_body_digest_mismatch");
+    throw new ExecutorRequestError("execution_body_digest_mismatch");
   }
   return { action, bodyDigest, requestId };
 }
@@ -530,7 +531,7 @@ function takeCreateFields(
 ): ItemCreateField[] {
   const value = body[name];
   if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   const fields = value.map((candidate) => {
     const field = takeObject(candidate);
@@ -549,10 +550,10 @@ function takeCreateFields(
       fields[0].field_type !== "SshKey" ||
       fields[0].label !== "private key"
     ) {
-      throw new TypeError("ssh_key_create_shape_invalid");
+      throw new ExecutorRequestError("ssh_key_create_shape_invalid");
     }
   } else if (fields.some((field) => field.field_type === "SshKey")) {
-    throw new TypeError("ssh_key_category_invalid");
+    throw new ExecutorRequestError("ssh_key_category_invalid");
   }
   return fields;
 }
@@ -563,7 +564,7 @@ function takePatchOperations(
 ): ItemPatchOperation[] {
   const value = body[name];
   if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value.map((candidate) => {
     const operation = takeObject(candidate);
@@ -589,7 +590,7 @@ function takePatchOperations(
       assertKeys(operation, ["field_id", "op"]);
       return { field_id: takeIdentifier(operation, "field_id"), op: "remove" };
     }
-    throw new TypeError("patch_operation_invalid");
+    throw new ExecutorRequestError("patch_operation_invalid");
   });
 }
 
@@ -605,7 +606,7 @@ function takeWritableCategory(
     value !== "SecureNote" &&
     value !== "SshKey"
   ) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value;
 }
@@ -621,7 +622,7 @@ function takeSshSignatureAlgorithm(value: unknown): SshSignatureAlgorithm {
     value !== "rsa-sha2-256" &&
     value !== "rsa-sha2-512"
   ) {
-    throw new TypeError("ssh_algorithm_unsupported");
+    throw new ExecutorRequestError("ssh_algorithm_unsupported");
   }
   return value;
 }
@@ -631,7 +632,7 @@ function takeSshFingerprint(value: unknown): string {
     typeof value !== "string" ||
     !/^SHA256:[A-Za-z0-9+/]{43}$/u.test(value)
   ) {
-    throw new TypeError("ssh_fingerprint_invalid");
+    throw new ExecutorRequestError("ssh_fingerprint_invalid");
   }
   return value;
 }
@@ -647,27 +648,27 @@ function takeBase64UrlBytes(
     value.length === 0 ||
     !/^[A-Za-z0-9_-]+$/u.test(value)
   ) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   let decoded: Uint8Array;
   try {
     decoded = base64urlnopad.decode(value);
   } catch {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   if (
     decoded.byteLength === 0 ||
     decoded.byteLength > maximumBytes ||
     encodeBase64Url(decoded) !== value
   ) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return decoded;
 }
 
 function takeWritableFieldType(value: unknown): WritableItemFieldType {
   if (value !== "Concealed" && value !== "Email" && value !== "Text" && value !== "Url") {
-    throw new TypeError("field_type_invalid");
+    throw new ExecutorRequestError("field_type_invalid");
   }
   return value;
 }
@@ -675,7 +676,7 @@ function takeWritableFieldType(value: unknown): WritableItemFieldType {
 function takeSecretValue(body: Record<string, unknown>, name: string): string {
   const value = body[name];
   if (typeof value !== "string" || value.length > MAX_SECRET_VALUE_LENGTH) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value;
 }
@@ -687,7 +688,7 @@ function takeText(
 ): string {
   const value = takeString(body, name, maximumLength).normalize("NFC");
   if (value.length === 0 || hasControlCharacter(value)) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value;
 }
@@ -695,7 +696,7 @@ function takeText(
 function takeIdentifier(body: Record<string, unknown>, name: string): string {
   const value = takeString(body, name, 256);
   if (value.length === 0 || hasControlCharacter(value)) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value;
 }
@@ -712,7 +713,7 @@ function takeString(
     (!allowEmpty && value.length === 0) ||
     value.length > maximumLength
   ) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value;
 }
@@ -720,14 +721,14 @@ function takeString(
 function takePositiveInteger(body: Record<string, unknown>, name: string): number {
   const value = body[name];
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
-    throw new TypeError(`invalid_${name}`);
+    throw new ExecutorRequestError(`invalid_${name}`);
   }
   return value as number;
 }
 
 function takeObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("request_object_invalid");
+    throw new ExecutorRequestError("request_object_invalid");
   }
   return value as Record<string, unknown>;
 }
@@ -739,7 +740,7 @@ function assertKeys(body: Record<string, unknown>, expected: string[]): void {
     actual.length !== sortedExpected.length ||
     actual.some((key, index) => key !== sortedExpected[index])
   ) {
-    throw new TypeError("request_fields_invalid");
+    throw new ExecutorRequestError("request_fields_invalid");
   }
 }
 
@@ -753,7 +754,9 @@ function hasControlCharacter(value: string): boolean {
 
 function canonicalizeJson(value: unknown): string {
   const serialized = canonicalize(value);
-  if (serialized === undefined) throw new TypeError("canonical_json_invalid");
+  if (serialized === undefined) {
+    throw new ExecutorRequestError("canonical_json_invalid");
+  }
   return serialized;
 }
 

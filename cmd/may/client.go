@@ -30,6 +30,7 @@ const (
 
 var workersDevHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.workers\.dev$`)
 var safeGatewayErrorCodes = map[string]int{
+	"executor_internal_error":  http.StatusServiceUnavailable,
 	"field_not_found":          http.StatusNotFound,
 	"item_stale":               http.StatusConflict,
 	"onepassword_rate_limited": http.StatusTooManyRequests,
