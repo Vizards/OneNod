@@ -61,7 +61,17 @@ func (agent approvalAgent) signForConnection(
 		fmt.Fprintln(agent.deps.stderr, "Beholder SSH outcome correlation is unavailable for this operation.")
 	}
 	outcome := newBeholderOutcomeTracker(agent.deps, observation, false)
-	defer func() { outcome.finish(returnErr, returnErr == nil) }()
+	defer func() {
+		status := outcome.finish(returnErr, returnErr == nil)
+		if observation.EvidenceID != "" && agent.deps.stderr != nil {
+			fmt.Fprintf(
+				agent.deps.stderr,
+				"Beholder SSH human outcome %s: %s.\n",
+				observation.EvidenceID,
+				status,
+			)
+		}
+	}()
 	result, err := requestSshSignature(
 		agent.context,
 		agent.config,
