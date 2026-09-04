@@ -69,14 +69,13 @@ func TestBeholderDirectObservationSendsOnlyMetadataAndCanonicalDigest(t *testing
 	}
 }
 
-func TestBeholderLeaseSelectsAValidatedSocketForSSHAndGit(t *testing.T) {
+func TestBeholderLeaseReturnsAValidatedClientNonceForSSHAndGit(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
-	listener, socketPath := temporaryUnixListener(t)
-	defer listener.Close()
+	nonce := bytes.Repeat([]byte{0x42}, 32)
 
 	var purposes []string
 	deps := dependencies{beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
-		if request.Kind != "ssh-proxy-lease" || request.ThreadID != os.Getenv("CODEX_THREAD_ID") ||
+		if request.Kind != "ssh-client-lease" || request.ThreadID != os.Getenv("CODEX_THREAD_ID") ||
 			request.Binding != "" {
 			t.Fatalf("unexpected lease request: %+v", request)
 		}
@@ -84,87 +83,99 @@ func TestBeholderLeaseSelectsAValidatedSocketForSSHAndGit(t *testing.T) {
 		return beholderWireResponse{
 			SchemaVersion: beholderProtocolSchemaVersion,
 			Accepted:      true,
-			AgentSocket:   socketPath,
+			Binding:       base64.RawURLEncoding.EncodeToString(nonce),
 		}, nil
 	}}
 	lease, err := requestBeholderSSHLease(deps, beholderLeasePurposeSSH)
-	if err != nil || lease.AgentSocket != socketPath {
+	if err != nil || !bytes.Equal(lease.Nonce, nonce) {
 		t.Fatalf("SSH lease failed: %+v, %v", lease, err)
 	}
-	if selected := gitSignAgentSocket(deps); selected != socketPath {
-		t.Fatalf("Git signing did not select its task lease: %q", selected)
+	lease.clear()
+	gitLease, err := requestBeholderSSHLease(deps, beholderLeasePurposeGit)
+	if err != nil || !bytes.Equal(gitLease.Nonce, nonce) {
+		t.Fatalf("Git lease failed: %+v, %v", gitLease, err)
 	}
+	gitLease.clear()
 	if !reflect.DeepEqual(purposes, []string{beholderLeasePurposeSSH, beholderLeasePurposeGit}) {
 		t.Fatalf("unexpected lease purposes: %v", purposes)
 	}
 }
 
-func TestGitSigningFallsBackToTheExistingAgentWithoutABeholderLease(t *testing.T) {
+func TestBeholderLeaseFailurePreservesTheExistingAgentFallback(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
 	called := false
-	selected := gitSignAgentSocket(dependencies{
+	_, err := requestBeholderSSHLease(dependencies{
 		beholder: func(beholderWireRequest) (beholderWireResponse, error) {
 			called = true
 			return beholderWireResponse{}, errors.New("Core unavailable")
 		},
-	})
-	if !called || selected != defaultAgentSocket() {
-		t.Fatalf("Git signing did not preserve the existing Agent fallback: called=%t socket=%q", called, selected)
+	}, beholderLeasePurposeGit)
+	if !called || err == nil {
+		t.Fatalf("unavailable Core unexpectedly issued a lease: called=%t err=%v", called, err)
 	}
 }
 
 func TestGitSigningDoesNotContactCoreOutsideACodexTask(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	called := false
-	selected := gitSignAgentSocket(dependencies{
+	_, err := requestBeholderSSHLease(dependencies{
 		beholder: func(beholderWireRequest) (beholderWireResponse, error) {
 			called = true
 			return beholderWireResponse{}, errors.New("must not be called")
 		},
-	})
-	if called || selected != defaultAgentSocket() {
-		t.Fatalf("unattributed Git signing changed its existing Agent path: called=%t socket=%q", called, selected)
+	}, beholderLeasePurposeGit)
+	if called || err == nil {
+		t.Fatalf("unattributed Git signing contacted Core: called=%t err=%v", called, err)
 	}
 }
 
 func TestTransparentSSHShimPreservesTheNativeCommandSurface(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
-	spaceRoot, err := os.MkdirTemp("", "beholder space-")
+	spaceRoot, err := os.MkdirTemp("/tmp", "beholder-space-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(spaceRoot)
-	listener, err := net.Listen("unix", filepath.Join(spaceRoot, "agent.sock"))
+	t.Setenv("HOME", spaceRoot)
+	agentRoot := filepath.Join(spaceRoot, userAgentDirectoryName)
+	if err := os.Mkdir(agentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(agentRoot, "agent.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	socketPath := listener.Addr().String()
 	defer listener.Close()
 	original := []string{"-p", "2222", "git@example.invalid", "git-upload-pack 'repo.git'"}
 	var capturedPath string
 	var capturedArguments []string
 	err = runBeholderSSHShim(original, dependencies{
-		beholder: func(beholderWireRequest) (beholderWireResponse, error) {
+		beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+			if request.Kind != "ssh-client-lease" {
+				t.Fatalf("unexpected request: %+v", request)
+			}
 			return beholderWireResponse{
 				SchemaVersion: beholderProtocolSchemaVersion,
 				Accepted:      true,
-				AgentSocket:   socketPath,
+				Binding:       base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)),
 			}, nil
 		},
-		processExec: func(path string, arguments, _ []string) error {
+		processRun: func(
+			path string, arguments, _ []string, _ io.Reader, _, _ io.Writer, started func(int),
+		) error {
 			capturedPath = path
 			capturedArguments = append([]string(nil), arguments...)
+			started(os.Getpid())
 			return nil
 		},
 	})
 	if err != nil || capturedPath != systemSSHPath {
 		t.Fatalf("transparent ssh dispatch failed: %q, %v", capturedPath, err)
 	}
-	expected := append(
-		[]string{systemSSHPath, "-o", "IdentityAgent=" + quoteOpenSSHConfigValue(socketPath)},
-		original...,
-	)
-	if !reflect.DeepEqual(capturedArguments, expected) {
+	if len(capturedArguments) != len(original)+3 ||
+		capturedArguments[0] != systemSSHPath || capturedArguments[1] != "-o" ||
+		!strings.HasPrefix(capturedArguments[2], "IdentityAgent=\"") ||
+		!reflect.DeepEqual(capturedArguments[3:], original) {
 		t.Fatalf("ssh arguments changed unexpectedly: %q", capturedArguments)
 	}
 }
@@ -176,6 +187,223 @@ func TestOpenSSHConfigValueQuotingPreservesSpacesAndEscapesSyntax(t *testing.T) 
 	}
 	if got, want := quoteOpenSSHConfigValue(`a\b"c`), `"a\\b\"c"`; got != want {
 		t.Fatalf("OpenSSH quoted value escaped incorrectly: got %q want %q", got, want)
+	}
+}
+
+func TestClientHostedProxyBindsAndForwardsOnTheOriginalUserProcess(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "beholder-client-proxy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	t.Setenv("HOME", root)
+	agentRoot := filepath.Join(root, userAgentDirectoryName)
+	if err := os.Mkdir(agentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := net.Listen("unix", filepath.Join(agentRoot, "agent.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	nonce := bytes.Repeat([]byte{0x5a}, 32)
+	serverResult := make(chan error, 1)
+	go func() {
+		connection, acceptErr := upstream.Accept()
+		if acceptErr != nil {
+			serverResult <- acceptErr
+			return
+		}
+		defer connection.Close()
+		extension, readErr := readBeholderAgentFrame(connection)
+		if readErr != nil || len(extension) < 2 || extension[0] != 27 {
+			serverResult <- errors.New("binding extension was not first")
+			return
+		}
+		reader := wireReader{value: extension[1:]}
+		name, nameErr := reader.string()
+		contents := append([]byte(nil), reader.value[reader.offset:]...)
+		decoded, decodeErr := parseBeholderBindingExtension(contents)
+		clear(contents)
+		if nameErr != nil || string(name) != beholderBindingExtensionName || decodeErr != nil ||
+			!bytes.Equal(decoded, nonce) {
+			serverResult <- errors.New("binding extension was invalid")
+			return
+		}
+		clear(decoded)
+		if writeBeholderAgentFrame(connection, []byte{sshAgentSuccessResponse}) != nil {
+			serverResult <- errors.New("binding acknowledgement failed")
+			return
+		}
+		standard, standardErr := readBeholderAgentFrame(connection)
+		if standardErr != nil || !bytes.Equal(standard, []byte{11}) {
+			serverResult <- errors.New("standard request was not forwarded")
+			return
+		}
+		serverResult <- writeBeholderAgentFrame(connection, []byte{12})
+	}()
+	proxy, err := startBeholderClientProxy(nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+	proxy.expectPeer(os.Getpid())
+	connection, err := net.Dial("unix", proxy.socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBeholderAgentFrame(connection, []byte{11}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readBeholderAgentFrame(connection)
+	_ = connection.Close()
+	if err != nil || !bytes.Equal(response, []byte{12}) {
+		t.Fatalf("proxy response=%x err=%v", response, err)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientHostedProxyRejectsAConnectionFromTheWrongChildProcess(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "beholder-client-proxy-peer-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	t.Setenv("HOME", root)
+	agentRoot := filepath.Join(root, userAgentDirectoryName)
+	if err := os.Mkdir(agentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := net.Listen("unix", filepath.Join(agentRoot, "agent.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+
+	proxy, err := startBeholderClientProxy(bytes.Repeat([]byte{0x33}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+	proxy.expectPeer(os.Getpid() + 1)
+	connection, err := net.Dial("unix", proxy.socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(time.Second))
+	if err := writeBeholderAgentFrame(connection, []byte{11}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBeholderAgentFrame(connection); err == nil {
+		t.Fatal("proxy forwarded a connection from an unexpected child process")
+	}
+	if unixListener, ok := upstream.(*net.UnixListener); ok {
+		_ = unixListener.SetDeadline(time.Now().Add(50 * time.Millisecond))
+	}
+	if unexpected, err := upstream.Accept(); err == nil {
+		_ = unexpected.Close()
+		t.Fatal("proxy contacted OneNod after rejecting the downstream peer")
+	}
+}
+
+func TestClientHostedProxyFallsBackToTheHumanControlledAgentPath(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "beholder-client-proxy-fallback-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	t.Setenv("HOME", root)
+	agentRoot := filepath.Join(root, userAgentDirectoryName)
+	if err := os.Mkdir(agentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := net.Listen("unix", filepath.Join(agentRoot, "agent.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	serverResult := make(chan error, 1)
+	go func() {
+		bindingConnection, acceptErr := upstream.Accept()
+		if acceptErr != nil {
+			serverResult <- acceptErr
+			return
+		}
+		bindingFrame, readErr := readBeholderAgentFrame(bindingConnection)
+		if readErr != nil || len(bindingFrame) == 0 || bindingFrame[0] != 27 {
+			_ = bindingConnection.Close()
+			serverResult <- errors.New("binding extension was not attempted")
+			return
+		}
+		if writeBeholderAgentFrame(bindingConnection, []byte{5}) != nil {
+			_ = bindingConnection.Close()
+			serverResult <- errors.New("binding rejection failed")
+			return
+		}
+		_ = bindingConnection.Close()
+
+		fallbackConnection, acceptErr := upstream.Accept()
+		if acceptErr != nil {
+			serverResult <- acceptErr
+			return
+		}
+		defer fallbackConnection.Close()
+		standard, readErr := readBeholderAgentFrame(fallbackConnection)
+		if readErr != nil || !bytes.Equal(standard, []byte{11}) {
+			serverResult <- errors.New("standard request did not use the fallback connection")
+			return
+		}
+		serverResult <- writeBeholderAgentFrame(fallbackConnection, []byte{12})
+	}()
+
+	proxy, err := startBeholderClientProxy(bytes.Repeat([]byte{0x44}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+	proxy.expectPeer(os.Getpid())
+	connection, err := net.Dial("unix", proxy.socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBeholderAgentFrame(connection, []byte{11}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readBeholderAgentFrame(connection)
+	_ = connection.Close()
+	if err != nil || !bytes.Equal(response, []byte{12}) {
+		t.Fatalf("fallback response=%x err=%v", response, err)
+	}
+	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSSHBeholderTargetCarriesTheApplicationIdentitySeenByOneNod(t *testing.T) {
+	client := clientObservation{
+		Application: "Codex",
+		Identity: applicationIdentity{
+			Assurance: applicationAssuranceVerified, Platform: "macos",
+			PrincipalScheme: macOSPrincipalScheme, PrincipalID: "codex-principal",
+			SigningIdentifier: "com.openai.codex", TeamIdentifier: "2DC432GLL2",
+		},
+		Source: "process-ancestry",
+	}
+	target := sshBeholderOperationTarget(
+		sshOperation{Kind: "ssh.authentication"},
+		servedSSHIdentity{catalog: sshCatalogIdentity{
+			ItemID: "item-1", Metadata: catalogSSHMetadata{Fingerprint: "SHA256:fixture"},
+		}},
+		client,
+		[]byte("payload"),
+	)
+	if !strings.Contains(target.RequestContext, `"application":"Codex"`) ||
+		!strings.Contains(target.RequestContext, `"signing_identifier":"com.openai.codex"`) ||
+		!strings.Contains(target.RequestContext, `"operation":{"kind":"ssh.authentication"}`) {
+		t.Fatalf("SSH decision context omitted application identity: %s", target.RequestContext)
 	}
 }
 

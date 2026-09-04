@@ -108,7 +108,15 @@ const (
 )
 
 type beholderSSHLease struct {
-	AgentSocket string
+	Nonce []byte
+}
+
+func (lease *beholderSSHLease) clear() {
+	if lease == nil {
+		return
+	}
+	clear(lease.Nonce)
+	lease.Nonce = nil
 }
 
 func defaultBeholderRoundTrip(request beholderWireRequest) (beholderWireResponse, error) {
@@ -139,16 +147,22 @@ func requestBeholderSSHLease(deps dependencies, purpose string) (beholderSSHLeas
 	}
 	response, err := deps.beholder(beholderWireRequest{
 		SchemaVersion: beholderProtocolSchemaVersion,
-		Kind:          "ssh-proxy-lease",
+		Kind:          "ssh-client-lease",
 		ThreadID:      threadID,
 		Purpose:       purpose,
 	})
 	threadID = ""
 	if err != nil || !response.Accepted || response.ErrorCode != nil ||
-		!validBeholderAgentSocket(response.AgentSocket) {
+		!safeBeholderToken(response.Binding, 32, 256) {
 		return beholderSSHLease{}, errors.New("Beholder SSH lease is unavailable")
 	}
-	return beholderSSHLease{AgentSocket: response.AgentSocket}, nil
+	nonce, err := base64.RawURLEncoding.Strict().DecodeString(response.Binding)
+	response.Binding = ""
+	if err != nil || len(nonce) < 16 || len(nonce) > 128 {
+		clear(nonce)
+		return beholderSSHLease{}, errors.New("Beholder SSH lease is unavailable")
+	}
+	return beholderSSHLease{Nonce: nonce}, nil
 }
 
 func consumeBeholderAgentBinding(deps dependencies, nonce []byte) (string, error) {
@@ -451,10 +465,15 @@ func directBeholderOperationTarget(
 func sshBeholderOperationTarget(
 	operation sshOperation,
 	identity servedSSHIdentity,
+	client clientObservation,
 	data []byte,
 	configurations ...cliConfig,
 ) beholderOperationTarget {
 	digest := sha256.Sum256(data)
+	requestContext := struct {
+		Client    clientObservation `json:"client"`
+		Operation sshOperation      `json:"operation"`
+	}{Client: client, Operation: operation}
 	return beholderOperationTarget{
 		SchemaVersion:      beholderProtocolSchemaVersion,
 		Surface:            "ssh-agent",
@@ -464,7 +483,7 @@ func sshBeholderOperationTarget(
 		KeyFingerprint:     identity.catalog.Metadata.Fingerprint,
 		RemoteUser:         operation.RemoteUsername,
 		HostKeyFingerprint: operation.ServerHostKeyFingerprint,
-		RequestContext:     mustSafeJSON(operation),
+		RequestContext:     mustSafeJSON(requestContext),
 		RequesterContext:   beholderRequesterContext(configurations...),
 		PayloadDigest:      hex.EncodeToString(digest[:]),
 	}

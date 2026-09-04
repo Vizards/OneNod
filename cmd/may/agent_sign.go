@@ -53,7 +53,7 @@ func (agent approvalAgent) signForConnection(
 		_, observation, _ = observeBeholderAgentOperationWithEvidence(
 			agent.deps,
 			binding,
-			sshBeholderOperationTarget(operation, *identity, data, agent.config),
+			sshBeholderOperationTarget(operation, *identity, state.client.Observation, data, agent.config),
 		)
 		binding = ""
 	}

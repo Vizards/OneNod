@@ -27,6 +27,7 @@ type dependencies struct {
 	localSSHAgent          localSSHAgentFactory
 	platformProbe          func() (hostPlatform, error)
 	processExec            processExecFunc
+	processRun             processRunFunc
 	releases               releaseSource
 	stderr                 io.Writer
 	stdin                  io.Reader
@@ -47,6 +48,7 @@ func main() {
 		httpClient:          &http.Client{Timeout: gatewayRequestTimeout},
 		keychain:            keychainStore{},
 		processExec:         defaultProcessExec,
+		processRun:          defaultProcessRun,
 		stderr:              os.Stderr,
 		stdin:               os.Stdin,
 		stdout:              os.Stdout,
