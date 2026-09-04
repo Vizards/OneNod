@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -103,7 +104,15 @@ func (tracker *beholderOutcomeTracker) finish(resultErr error, operationComplete
 	if targetSHA256, ok := beholderOperationTargetSHA256(tracker.observation.Target); ok {
 		outcome.OperationTargetSHA256 = targetSHA256
 	}
-	recordBeholderHumanOutcome(tracker.deps, tracker.observation, outcome)
+	status := recordBeholderHumanOutcome(tracker.deps, tracker.observation, outcome)
+	if tracker.deps.stderr != nil {
+		fmt.Fprintf(
+			tracker.deps.stderr,
+			"Beholder human outcome %s: %s.\n",
+			tracker.observation.EvidenceID,
+			status,
+		)
+	}
 }
 
 func classifyBeholderHumanDecision(err error, timeline []beholderOutcomeStatus) string {

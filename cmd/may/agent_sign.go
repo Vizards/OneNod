@@ -43,7 +43,8 @@ func (agent approvalAgent) signForConnection(
 	}
 	operation := sshOperationForPayload(data, keyBlob, state.binding)
 	var observation beholderObservation
-	if state.beholderBinding != "" {
+	hadBeholderBinding := state.beholderBinding != ""
+	if hadBeholderBinding {
 		// The binding is one-use even when Core is unavailable. During E1 the
 		// disposition is observation-only: every signature still follows the
 		// existing Gateway/human-approval path below.
@@ -55,6 +56,9 @@ func (agent approvalAgent) signForConnection(
 			sshBeholderOperationTarget(operation, *identity, data, agent.config),
 		)
 		binding = ""
+	}
+	if hadBeholderBinding && observation.EvidenceID == "" && agent.deps.stderr != nil {
+		fmt.Fprintln(agent.deps.stderr, "Beholder SSH outcome correlation is unavailable for this operation.")
 	}
 	outcome := newBeholderOutcomeTracker(agent.deps, observation, false)
 	defer func() { outcome.finish(returnErr, returnErr == nil) }()

@@ -98,6 +98,15 @@ type beholderObservation struct {
 	Target     beholderOperationTarget
 }
 
+type beholderOutcomeRecordStatus string
+
+const (
+	beholderOutcomeDelivered      beholderOutcomeRecordStatus = "delivered"
+	beholderOutcomeQueued         beholderOutcomeRecordStatus = "durably-queued"
+	beholderOutcomeInvalid        beholderOutcomeRecordStatus = "invalid"
+	beholderOutcomeDeliveryFailed beholderOutcomeRecordStatus = "delivery-failed"
+)
+
 type beholderSSHLease struct {
 	AgentSocket string
 }
@@ -237,11 +246,11 @@ func recordBeholderHumanOutcome(
 	deps dependencies,
 	observation beholderObservation,
 	outcome beholderHumanOutcome,
-) {
+) beholderOutcomeRecordStatus {
 	if deps.beholder == nil || observation.EvidenceID == "" ||
 		observation.EvidenceID != outcome.EvidenceID || !validBeholderOperationTarget(observation.Target) ||
 		!validBeholderHumanOutcome(outcome) {
-		return
+		return beholderOutcomeInvalid
 	}
 	pending := beholderPendingOutcome{
 		SchemaVersion: beholderOutcomeSpoolSchema,
@@ -249,18 +258,32 @@ func recordBeholderHumanOutcome(
 		Target: observation.Target, HumanOutcome: outcome,
 	}
 	if deps.beholderOutcomeRoot == nil {
-		_, _ = sendPendingBeholderOutcome(deps, pending)
-		return
+		acknowledged, _ := sendPendingBeholderOutcome(deps, pending)
+		if acknowledged {
+			return beholderOutcomeDelivered
+		}
+		return beholderOutcomeDeliveryFailed
 	}
 	root, err := deps.beholderOutcomeRoot()
 	if err != nil || ensureBeholderOutcomeRoot(root) != nil ||
 		persistPendingBeholderOutcome(root, pending) != nil {
 		// Evidence recording remains observational: a spool failure must never
 		// alter the existing authorization or credential-delivery result.
-		_, _ = sendPendingBeholderOutcome(deps, pending)
-		return
+		acknowledged, _ := sendPendingBeholderOutcome(deps, pending)
+		if acknowledged {
+			return beholderOutcomeDelivered
+		}
+		return beholderOutcomeDeliveryFailed
 	}
 	flushPendingBeholderOutcomes(deps)
+	_, err = os.Lstat(pendingBeholderOutcomePath(root, pending.EvidenceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return beholderOutcomeDelivered
+	}
+	if err != nil {
+		return beholderOutcomeDeliveryFailed
+	}
+	return beholderOutcomeQueued
 }
 
 func validBeholderHumanOutcome(outcome beholderHumanOutcome) bool {

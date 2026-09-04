@@ -25,6 +25,9 @@ import (
 )
 
 func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const evidenceID = "shadow-ssh-outcome-0123456789abcdef01234567"
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -63,8 +66,10 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	responseSignature := append([]byte(nil), signature.Blob...)
 	consumeFailure := false
 	beholderUnavailable := false
+	outcomeUnavailable := true
 	createRequests := 0
 	var observedOperation *beholderOperationTarget
+	var observedOutcome *beholderHumanOutcome
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/v1/requests":
@@ -124,18 +129,40 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 				if beholderUnavailable {
 					return beholderWireResponse{}, errors.New("Core unavailable")
 				}
-				if request.Kind != "agent-operation" || request.Operation == nil {
-					t.Fatalf("unexpected Beholder operation: %+v", request)
+				switch request.Kind {
+				case "agent-operation":
+					if request.Operation == nil {
+						t.Fatalf("Beholder operation target is missing: %+v", request)
+					}
+					copy := *request.Operation
+					observedOperation = &copy
+					return beholderWireResponse{
+						SchemaVersion: beholderProtocolSchemaVersion,
+						Accepted:      true,
+						Disposition:   "allow",
+						EvidenceID:    evidenceID,
+					}, nil
+				case "human-outcome":
+					if outcomeUnavailable {
+						return beholderWireResponse{}, errors.New("Core outcome endpoint unavailable")
+					}
+					if request.EvidenceID != evidenceID || request.HumanOutcome == nil || request.Operation == nil {
+						t.Fatalf("unexpected Beholder human outcome: %+v", request)
+					}
+					copy := *request.HumanOutcome
+					observedOutcome = &copy
+					return beholderWireResponse{
+						SchemaVersion: beholderProtocolSchemaVersion,
+						Accepted:      true,
+						EvidenceID:    evidenceID,
+					}, nil
+				default:
+					t.Fatalf("unexpected Beholder request kind: %+v", request)
+					return beholderWireResponse{}, nil
 				}
-				copy := *request.Operation
-				observedOperation = &copy
-				return beholderWireResponse{
-					SchemaVersion: beholderProtocolSchemaVersion,
-					Accepted:      true,
-					Disposition:   "escalate",
-				}, nil
 			},
-			httpClient: &http.Client{Transport: transport},
+			beholderOutcomeRoot: defaultBeholderOutcomeRoot,
+			httpClient:          &http.Client{Transport: transport},
 			keychain: keychainStore{backend: &recordingKeychainBackend{
 				found:  true,
 				output: encodedRequester,
@@ -164,6 +191,23 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 		observedOperation.PayloadDigest != hex.EncodeToString(payloadDigest[:]) ||
 		connection.state.beholderBinding != "" {
 		t.Fatalf("actual Agent operation was not observed once: %+v", observedOperation)
+	}
+	spoolRoot, err := defaultBeholderOutcomeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(spoolRoot)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("SSH outcome was not durably queued before retry: entries=%d err=%v", len(entries), err)
+	}
+	outcomeUnavailable = false
+	flushPendingBeholderOutcomes(agent.deps)
+	entries, err = os.ReadDir(spoolRoot)
+	if err != nil || len(entries) != 0 || observedOutcome == nil ||
+		observedOutcome.EvidenceID != evidenceID || observedOutcome.Decision != "approved" ||
+		!observedOutcome.OperationCompleted || observedOutcome.CredentialDelivered ||
+		observedOutcome.OneNodRequestID == nil || *observedOutcome.OneNodRequestID != "request-ssh-1" {
+		t.Fatalf("SSH outcome was not correlated and acknowledged: entries=%d outcome=%+v err=%v", len(entries), observedOutcome, err)
 	}
 
 	connection.state.beholderBinding = strings.Repeat("c", 32)
