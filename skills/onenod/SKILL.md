@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Route the OneNod lifecycle for deploying, installing, updating, operating, troubleshooting, and migrating 1Password credentials for remote coding Agents. Use for the human-controlled Cloudflare ceremony, requester or PWA enrollment, optional SSH and local quota-fallback integration, full-stack updates, approved secret or SSH operations, and reversible batch copies into the Agent Vault.
+description: Install or operate OneNod for Gateway deployment, requester/PWA enrollment, updates, troubleshooting, approved 1Password secret reads and item changes, SSH authentication or Git signing, quota-fallback integration, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod
@@ -10,6 +10,10 @@ Use the installed `may` binary's help for flags, argument shapes, detected
 state, and version-specific recovery instructions. Stable command-family names
 are included here so an Agent can choose the correct entry point.
 
+This distributed Skill serves installed-product operations. Editing OneNod source
+or documentation does not itself authorize installing a development build,
+changing the installed Skill, or running a production update.
+
 Treat this Skill as the complete OneNod lifecycle entry point. Do not require a
 project checkout, private maintainer documentation, or another 1Password Skill.
 Before `may` exists, use the bootstrap guidance in the Setup reference; after
@@ -17,7 +21,9 @@ installation, let `may` own executable plans and version-specific mechanics.
 
 ## Route the task
 
-Load one primary reference:
+Choose the reference for the requested operation; load another only when the task
+crosses that boundary. Routine reads or SSH signing do not require repeating
+setup, migration readiness, or a deployment ceremony:
 
 | Route | Load when |
 | --- | --- |
