@@ -26,8 +26,9 @@ If a Cloudflare or scope gate fails, do not place real credentials in `Agent`.
 
 ## Human 1Password boundary
 
-Ask the human to identify the exact account, source Vaults, and destination
-Vault `Agent`. When human-explicit metadata inventory is useful, run from a
+Resolve the exact account, source Vaults, and destination `Agent` from the
+human's request and existing task context. Ask only when that scope is missing
+or ambiguous. When human-explicit metadata inventory is useful, run from a
 local graphical Mac session:
 
 ```sh

@@ -8,9 +8,11 @@ Agent use. The first-preview migration model is deliberately reversible:
 3. the Agent refreshes OneNod, configures consumers, and performs verification;
 4. the human removes old copies only later, outside this workflow, if desired.
 
-OneNod does not use `op item move`, migrate one item at a time, or require a
-human approval ceremony for every copied key. The human controls the Vault copy
-boundary; the Agent owns repeatable configuration and verification afterward.
+Use a batch sized to the human's request; a single item is a valid batch. Do not
+expand it for convenience or require a separate copy ceremony for every key in
+an already selected batch. OneNod does not use `op item move`. The human controls
+the Vault copy boundary; the Agent owns repeatable configuration and verification
+afterward.
 
 ## Load references progressively
 
@@ -36,5 +38,6 @@ items are not mistaken for capabilities OneNod provides.
 - Never reveal or export secret fields to perform migration.
 - Never use the Executor Service Account as a Vault administrator.
 - Do not delete source items as part of migration.
-- Stop on ambiguous duplicates, unsupported item types, unexpected item-count
-  changes, or an unknown 1Password result.
+- Pause the affected copy or consumer on ambiguous duplicates, unsupported item
+  types, unexpected count changes, or an unknown result. Reconcile metadata before
+  retrying; continue independent, authorized checks where their inputs are known.
