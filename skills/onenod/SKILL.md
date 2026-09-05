@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Install, update, or operate OneNod for approval-backed 1Password access and SSH signing, including explicit credential migration.
+description: Install or operate OneNod for Gateway deployment, requester/PWA enrollment, updates, troubleshooting, approved 1Password secret reads and item changes, SSH authentication or Git signing, quota-fallback integration, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod

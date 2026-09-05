@@ -21,9 +21,11 @@ After the human finishes:
 2. search the OneNod catalog for expected titles/categories without reading
    values;
 3. compare safe counts and identify missing or ambiguous duplicates;
-4. exercise representative low-risk consumers through approved `may` reads;
-5. verify several items from different categories and risk levels rather than
-   requiring a human ceremony for every item; and
+4. exercise representative consumers from the selected batch through approved
+   `may` reads, preferring lower-risk checks when available;
+5. for a single-item batch, verify that item; for larger batches, sample across
+   the categories and risk levels actually present, without expanding the
+   human-selected scope or requiring a copy ceremony for every item; and
 6. update Agent-controlled consumers to use the CLI's closed field-read or item
    interface, or the attended `may plugin enable` flow for an explicitly
    supported bare command, without exposing values. A bare `op://Agent`
