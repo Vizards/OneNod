@@ -25,3 +25,20 @@ depends on an independently scoped 1Password Service Account, protected runtime
 secrets, Passkey approval, a dedicated Cloudflare account, reviewed artifacts,
 and production deployment authority unavailable to Agents. Anyone able to
 deploy the Gateway or Executor is part of the trusted computing base.
+
+### Optional Beholder authority
+
+When a deployment explicitly enables `BEHOLDER_AUTHORITY_MODE=dogfood-v1`, a
+root-controlled Beholder Core may authorize a requester operation without a
+Passkey decision. The Core signs a short-lived authorization bound to the
+requester device, evidence identity, and SHA-256 of the exact canonical request
+body. The Gateway independently verifies the configured Ed25519 public key and
+consumes each evidence identity once. A missing, expired, replayed, malformed,
+or mismatched authorization creates an ordinary pending request for human
+review; it never grants access.
+
+The synchronous thinking-disabled decision is the only model result eligible
+for this authority. Any comparison decision is observability-only. Setting the
+mode to `human-only` disables model authority and preserves the Passkey approval
+path. The root Core key and the Gateway deployment configuration are therefore
+part of the trusted computing base whenever this optional mode is enabled.

@@ -248,6 +248,9 @@ class ApprovalSchema {
         field_type TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         body_hash TEXT NOT NULL,
+        authorization_source TEXT NOT NULL DEFAULT 'unknown',
+        beholder_evidence_id TEXT,
+        beholder_key_id TEXT,
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
@@ -281,6 +284,14 @@ class ApprovalSchema {
         result_item_id TEXT,
         result_version INTEGER
       )`,
+      `CREATE TABLE IF NOT EXISTS beholder_authorization_uses (
+        evidence_id TEXT PRIMARY KEY,
+        requester_device_id TEXT NOT NULL,
+        key_id TEXT NOT NULL,
+        operation_target_sha256 TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        accepted_at INTEGER NOT NULL
+      )`,
       `CREATE TABLE IF NOT EXISTS request_activity (
         request_id TEXT PRIMARY KEY,
         action TEXT NOT NULL,
@@ -296,6 +307,9 @@ class ApprovalSchema {
         requester_name TEXT NOT NULL,
         client_application TEXT NOT NULL,
         client_source TEXT NOT NULL,
+        authorization_source TEXT NOT NULL DEFAULT 'unknown',
+        beholder_evidence_id TEXT,
+        beholder_key_id TEXT,
         application_assurance TEXT NOT NULL DEFAULT 'unverified',
         application_principal_scheme TEXT,
         application_principal_id TEXT,
@@ -373,6 +387,8 @@ class ApprovalSchema {
        )`,
       `CREATE INDEX IF NOT EXISTS idx_request_secret_fields_grant
        ON request_secret_fields(secret_grant_id, request_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_beholder_authorization_requester
+       ON beholder_authorization_uses(requester_device_id, accepted_at DESC)`,
       `CREATE INDEX IF NOT EXISTS idx_trusted_catalog_metadata_observed
        ON trusted_catalog_metadata(observed_at, item_id, item_version)`,
     ]) {
@@ -400,6 +416,13 @@ class ApprovalSchema {
     this.ensureColumn("requests", "application_signer_name", "TEXT");
     this.ensureColumn("requests", "application_scope_id", "TEXT");
     this.ensureColumn("requests", "secret_grant_id", "TEXT");
+    this.ensureColumn(
+      "requests",
+      "authorization_source",
+      "TEXT NOT NULL DEFAULT 'unknown'",
+    );
+    this.ensureColumn("requests", "beholder_evidence_id", "TEXT");
+    this.ensureColumn("requests", "beholder_key_id", "TEXT");
     this.ensureColumn("requests", "ssh_scope_id", "TEXT");
     this.ensureColumn("requests", "ssh_scope_kind", "TEXT");
     this.ensureColumn("requests", "ssh_grant_id", "TEXT");
@@ -418,6 +441,13 @@ class ApprovalSchema {
     this.ensureColumn("request_activity", "application_signing_identifier", "TEXT");
     this.ensureColumn("request_activity", "application_team_identifier", "TEXT");
     this.ensureColumn("request_activity", "application_signer_name", "TEXT");
+    this.ensureColumn(
+      "request_activity",
+      "authorization_source",
+      "TEXT NOT NULL DEFAULT 'unknown'",
+    );
+    this.ensureColumn("request_activity", "beholder_evidence_id", "TEXT");
+    this.ensureColumn("request_activity", "beholder_key_id", "TEXT");
     this.ensureColumn(
       "ssh_authorization_grants",
       "item_title",
@@ -821,6 +851,9 @@ class ApprovalSchema {
         field_type TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         body_hash TEXT NOT NULL,
+        authorization_source TEXT NOT NULL DEFAULT 'unknown',
+        beholder_evidence_id TEXT,
+        beholder_key_id TEXT,
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,

@@ -50,7 +50,7 @@ func TestBeholderDirectObservationSendsOnlyMetadataAndCanonicalDigest(t *testing
 				Disposition:   "escalate",
 			}, nil
 		},
-	}, request)
+	}, request, "requester-device")
 
 	encoded, err := json.Marshal(captured)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestDirectObservationSkipsCoreWithoutThreadCandidate(t *testing.T) {
 			called = true
 			return beholderWireResponse{}, nil
 		},
-	}, itemArchiveRequest{Action: "item.archive", ItemID: "item-1", ExpectedVersion: 1})
+	}, itemArchiveRequest{Action: "item.archive", ItemID: "item-1", ExpectedVersion: 1}, "requester-device")
 	if called {
 		t.Fatal("direct request without a thread candidate reached Core")
 	}
@@ -322,7 +322,7 @@ func TestBeholderOutcomeTrackerCorrelatesInteractiveApprovalWithoutCredentialMat
 		ExpectedVersion: 3, FieldID: "credential", IdempotencyKey: "not-persisted",
 		ItemID: "fixture-a",
 	}
-	observation := observeBeholderDirectRequest(deps, request)
+	observation := observeBeholderDirectRequest(deps, request, "requester-device")
 	tracker := newBeholderOutcomeTracker(deps, observation, true)
 	tracker.setRequest("request-0001", "pending")
 	tracker.observeStatus("approved")

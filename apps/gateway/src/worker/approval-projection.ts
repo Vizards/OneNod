@@ -27,6 +27,7 @@ export function projectRequesterStatus(
   operation?: RequestOperationRow,
 ) {
   return {
+    authorization_source: row.authorization_source,
     ...(row.authorized_until
       ? { authorized_until: iso(row.authorized_until) }
       : {}),
@@ -56,6 +57,7 @@ export function readOnlyRequestState(row: RequestRow, now: number): RequestRow {
 export function projectHumanRequestSummary(row: RequestRow) {
   return {
     action: projectApprovalAction(row.action),
+    authorization_source: row.authorization_source,
     application_recognition: projectApplicationRecognition(row),
     ...(row.application_assurance === "verified-code-signature" &&
     (row.action === "secret.read" || row.action === "credential.use") &&
@@ -99,6 +101,7 @@ export function projectHumanRequestSummary(row: RequestRow) {
 export function projectHumanActivitySummary(row: RequestActivityRow) {
   return {
     action: projectApprovalAction(row.action),
+    authorization_source: row.authorization_source,
     application_recognition: projectApplicationRecognition(row),
     client: {
       application: row.client_application,
@@ -144,6 +147,7 @@ export function projectHumanActivityDetail(row: RequestActivityRow) {
     ...projectHumanActivitySummary(row),
     error: row.error_code ?? undefined,
     verified_facts: [
+      { label: "Authorization", value: row.authorization_source },
       { label: "Requester", value: row.requester_name },
       { label: "Completed", value: iso(row.terminal_at) },
     ],
@@ -168,8 +172,13 @@ export function projectHumanRequestDetail(row: RequestRow) {
             { label: "Field", value: row.field_label },
             { label: "Version", value: String(row.expected_version) },
             { label: "Requester", value: row.requester_name },
+            { label: "Authorization", value: row.authorization_source },
           ]
-        : [...mutationFacts, { label: "Requester", value: row.requester_name }],
+        : [
+            ...mutationFacts,
+            { label: "Requester", value: row.requester_name },
+            { label: "Authorization", value: row.authorization_source },
+          ],
   };
 }
 

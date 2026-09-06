@@ -24,7 +24,7 @@ const (
 	beholderBindingExtensionName  = "beholder-bind@github.com/Vizards/OneNod"
 	beholderBindingVersion        = 1
 	beholderMaximumWireSize       = 2 * 1024 * 1024
-	beholderRoundTripTimeout      = 2 * time.Second
+	beholderRoundTripTimeout      = 15 * time.Second
 	beholderLeasePurposeSSH       = "ssh"
 	beholderLeasePurposeGit       = "git-sign"
 	beholderSSHShimBinaryName     = "ssh"
@@ -52,25 +52,39 @@ type beholderOperationTarget struct {
 }
 
 type beholderWireRequest struct {
-	SchemaVersion int                      `json:"schema_version"`
-	Kind          string                   `json:"kind"`
-	ThreadID      string                   `json:"thread_id,omitempty"`
-	Purpose       string                   `json:"purpose,omitempty"`
-	Nonce         string                   `json:"nonce,omitempty"`
-	Binding       string                   `json:"binding,omitempty"`
-	Operation     *beholderOperationTarget `json:"operation_target,omitempty"`
-	EvidenceID    string                   `json:"evidence_id,omitempty"`
-	HumanOutcome  *beholderHumanOutcome    `json:"human_outcome,omitempty"`
+	SchemaVersion     int                      `json:"schema_version"`
+	Kind              string                   `json:"kind"`
+	ThreadID          string                   `json:"thread_id,omitempty"`
+	Purpose           string                   `json:"purpose,omitempty"`
+	Nonce             string                   `json:"nonce,omitempty"`
+	Binding           string                   `json:"binding,omitempty"`
+	Operation         *beholderOperationTarget `json:"operation_target,omitempty"`
+	EvidenceID        string                   `json:"evidence_id,omitempty"`
+	HumanOutcome      *beholderHumanOutcome    `json:"human_outcome,omitempty"`
+	RequesterDeviceID string                   `json:"requester_device_id,omitempty"`
+}
+
+type beholderAuthorization struct {
+	SchemaVersion         int    `json:"schema_version"`
+	Decision              string `json:"decision"`
+	EvidenceID            string `json:"evidence_id"`
+	ExpiresAt             int64  `json:"expires_at"`
+	IssuedAt              int64  `json:"issued_at"`
+	KeyID                 string `json:"key_id"`
+	OperationTargetSHA256 string `json:"operation_target_sha256"`
+	RequesterDeviceID     string `json:"requester_device_id"`
+	Signature             string `json:"signature"`
 }
 
 type beholderWireResponse struct {
-	SchemaVersion int     `json:"schema_version"`
-	Accepted      bool    `json:"accepted"`
-	Disposition   string  `json:"disposition,omitempty"`
-	AgentSocket   string  `json:"agent_socket,omitempty"`
-	Binding       string  `json:"binding,omitempty"`
-	ErrorCode     *string `json:"error_code"`
-	EvidenceID    string  `json:"evidence_id,omitempty"`
+	SchemaVersion int                    `json:"schema_version"`
+	Accepted      bool                   `json:"accepted"`
+	Disposition   string                 `json:"disposition,omitempty"`
+	AgentSocket   string                 `json:"agent_socket,omitempty"`
+	Binding       string                 `json:"binding,omitempty"`
+	ErrorCode     *string                `json:"error_code"`
+	EvidenceID    string                 `json:"evidence_id,omitempty"`
+	Authorization *beholderAuthorization `json:"authorization,omitempty"`
 }
 
 type beholderOutcomeStatus struct {
@@ -94,8 +108,9 @@ type beholderHumanOutcome struct {
 }
 
 type beholderObservation struct {
-	EvidenceID string
-	Target     beholderOperationTarget
+	EvidenceID    string
+	Target        beholderOperationTarget
+	Authorization *beholderAuthorization
 }
 
 type beholderOutcomeRecordStatus string
@@ -195,27 +210,38 @@ func observeBeholderAgentOperationWithEvidence(
 	deps dependencies,
 	binding string,
 	target beholderOperationTarget,
+	requesterDeviceIDs ...string,
 ) (string, beholderObservation, error) {
 	if deps.beholder == nil || !safeBeholderToken(binding, 32, 256) || !validBeholderOperationTarget(target) {
 		return "escalate", beholderObservation{}, errors.New("Beholder Agent operation binding is unavailable")
 	}
+	requesterDeviceID := ""
+	if len(requesterDeviceIDs) == 1 {
+		requesterDeviceID = requesterDeviceIDs[0]
+	}
 	response, err := deps.beholder(beholderWireRequest{
-		SchemaVersion: beholderProtocolSchemaVersion,
-		Kind:          "agent-operation",
-		Binding:       binding,
-		Operation:     &target,
+		SchemaVersion:     beholderProtocolSchemaVersion,
+		Kind:              "agent-operation",
+		Binding:           binding,
+		Operation:         &target,
+		RequesterDeviceID: requesterDeviceID,
 	})
 	if err != nil || !response.Accepted || response.ErrorCode != nil ||
 		(response.Disposition != "allow" && response.Disposition != "escalate") {
-		return "escalate", observationFromResponse(response, target), errors.New("Beholder Agent operation was not decided")
+		return "escalate", observationFromResponse(response, target, requesterDeviceID), errors.New("Beholder Agent operation was not decided")
 	}
-	return response.Disposition, observationFromResponse(response, target), nil
+	return response.Disposition, observationFromResponse(response, target, requesterDeviceID), nil
 }
 
 // observeBeholderDirectRequest sends only structured identifiers and a digest
 // of the exact canonical outbound body. Credential values remain in the may
 // process and never cross the local Beholder boundary.
-func observeBeholderDirectRequest(deps dependencies, body any, configurations ...cliConfig) beholderObservation {
+func observeBeholderDirectRequest(
+	deps dependencies,
+	body any,
+	requesterDeviceID string,
+	configurations ...cliConfig,
+) beholderObservation {
 	threadID := os.Getenv("CODEX_THREAD_ID")
 	if deps.beholder == nil || !safeBeholderToken(threadID, 8, 128) {
 		return beholderObservation{}
@@ -236,24 +262,81 @@ func observeBeholderDirectRequest(deps dependencies, body any, configurations ..
 	encodedNonce := hex.EncodeToString(nonce)
 	clear(nonce)
 	response, _ := deps.beholder(beholderWireRequest{
-		SchemaVersion: beholderProtocolSchemaVersion,
-		Kind:          "direct-operation",
-		ThreadID:      threadID,
-		Nonce:         encodedNonce,
-		Operation:     &target,
+		SchemaVersion:     beholderProtocolSchemaVersion,
+		Kind:              "direct-operation",
+		ThreadID:          threadID,
+		Nonce:             encodedNonce,
+		Operation:         &target,
+		RequesterDeviceID: requesterDeviceID,
 	})
 	threadID = ""
-	return observationFromResponse(response, target)
+	return observationFromResponse(response, target, requesterDeviceID)
 }
 
 func observationFromResponse(
 	response beholderWireResponse,
 	target beholderOperationTarget,
+	requesterDeviceIDs ...string,
 ) beholderObservation {
 	if !safeBeholderToken(response.EvidenceID, 8, 96) {
 		return beholderObservation{}
 	}
-	return beholderObservation{EvidenceID: response.EvidenceID, Target: target}
+	observation := beholderObservation{EvidenceID: response.EvidenceID, Target: target}
+	requesterDeviceID := ""
+	if len(requesterDeviceIDs) == 1 {
+		requesterDeviceID = requesterDeviceIDs[0]
+	}
+	if response.Authorization != nil && validBeholderAuthorization(
+		response.Authorization,
+		response.EvidenceID,
+		target.PayloadDigest,
+		requesterDeviceID,
+	) {
+		copy := *response.Authorization
+		observation.Authorization = &copy
+	}
+	return observation
+}
+
+func validBeholderAuthorization(
+	authorization *beholderAuthorization,
+	evidenceID string,
+	payloadDigest string,
+	requesterDeviceID string,
+) bool {
+	if authorization == nil {
+		return false
+	}
+	return authorization.SchemaVersion == 1 && authorization.Decision == "allow" &&
+		authorization.EvidenceID == evidenceID && safeBeholderToken(evidenceID, 8, 96) &&
+		requesterDeviceID != "" && authorization.RequesterDeviceID == requesterDeviceID &&
+		safeBeholderField(authorization.RequesterDeviceID, 128, false) &&
+		validBeholderSHA256(authorization.OperationTargetSHA256) &&
+		authorization.OperationTargetSHA256 == payloadDigest &&
+		safeBeholderToken(authorization.KeyID, 43, 43) &&
+		safeBeholderToken(authorization.Signature, 86, 86) &&
+		authorization.IssuedAt > 0 && authorization.ExpiresAt > authorization.IssuedAt &&
+		authorization.ExpiresAt-authorization.IssuedAt <= 30
+}
+
+func attachBeholderAuthorization(body any, observation beholderObservation) {
+	if observation.Authorization == nil {
+		return
+	}
+	switch request := body.(type) {
+	case *createRequest:
+		request.BeholderAuthorization = observation.Authorization
+	case *credentialUseRequest:
+		request.BeholderAuthorization = observation.Authorization
+	case *itemCreateRequest:
+		request.BeholderAuthorization = observation.Authorization
+	case *itemPatchRequest:
+		request.BeholderAuthorization = observation.Authorization
+	case *itemArchiveRequest:
+		request.BeholderAuthorization = observation.Authorization
+	case *sshSignRequest:
+		request.BeholderAuthorization = observation.Authorization
+	}
 }
 
 func recordBeholderHumanOutcome(
@@ -304,7 +387,7 @@ func validBeholderHumanOutcome(outcome beholderHumanOutcome) bool {
 	if outcome.SchemaVersion != 1 || outcome.RecordType != "beholder_human_outcome" ||
 		!safeBeholderToken(outcome.EvidenceID, 8, 96) || outcome.ObservedAt.IsZero() ||
 		!validBeholderSHA256(outcome.OperationTargetSHA256) ||
-		!beholderOneOf(outcome.AuthorizationSource, "pwa-interactive", "remembered-grant", "local-fallback", "not-requested", "unknown") ||
+		!beholderOneOf(outcome.AuthorizationSource, "beholder-authoritative", "pwa-interactive", "remembered-grant", "local-fallback", "not-requested", "unknown") ||
 		!beholderOneOf(outcome.Decision, "approved", "rejected", "timed_out", "expired", "error", "not_requested", "unknown") ||
 		(outcome.OneNodRequestID != nil && !safeBeholderField(*outcome.OneNodRequestID, 256, false)) ||
 		!safeBeholderField(outcome.FailureStage, 96, true) || len(outcome.StatusTimeline) > 256 {
@@ -466,10 +549,10 @@ func sshBeholderOperationTarget(
 	operation sshOperation,
 	identity servedSSHIdentity,
 	client clientObservation,
-	data []byte,
+	canonicalRequest []byte,
 	configurations ...cliConfig,
 ) beholderOperationTarget {
-	digest := sha256.Sum256(data)
+	digest := sha256.Sum256(canonicalRequest)
 	requestContext := struct {
 		Client    clientObservation `json:"client"`
 		Operation sshOperation      `json:"operation"`

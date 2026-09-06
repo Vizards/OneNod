@@ -71,6 +71,7 @@ export class ApprovalRequestStore {
   findRequestRow(id: string): RequestRow | undefined {
     return this.first<RequestRow>(
       `SELECT id, requester_device_id, requester_name, action,
+              authorization_source, beholder_evidence_id, beholder_key_id,
               client_application, client_source, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
@@ -97,6 +98,7 @@ export class ApprovalRequestStore {
   requestActivityRow(requestId: string): RequestActivityRow | undefined {
     return this.first<RequestActivityRow>(
       `SELECT request_id, action, status, created_at, terminal_at, expires_at,
+              authorization_source, beholder_evidence_id, beholder_key_id,
               decided_at, consumed_at, item_title, field_label,
               expected_version, requester_name, client_application,
               client_source, application_assurance,
@@ -121,12 +123,14 @@ export class ApprovalRequestStore {
           (request_id, action, status, created_at, terminal_at, expires_at,
            decided_at, consumed_at, item_title, field_label, expected_version,
            requester_name, client_application, client_source,
+           authorization_source, beholder_evidence_id, beholder_key_id,
            application_assurance, application_principal_scheme,
            application_principal_id, application_signing_identifier,
            application_team_identifier, application_signer_name, error_code)
          SELECT id, action, status, created_at, ?, expires_at, decided_at,
                 consumed_at, item_title, field_label, expected_version,
                 requester_name, client_application, client_source,
+                authorization_source, beholder_evidence_id, beholder_key_id,
                 application_assurance, application_principal_scheme,
                 application_principal_id, application_signing_identifier,
                 application_team_identifier, application_signer_name, error_code
@@ -137,6 +141,9 @@ export class ApprovalRequestStore {
            terminal_at = excluded.terminal_at,
            decided_at = excluded.decided_at,
            consumed_at = excluded.consumed_at,
+           authorization_source = excluded.authorization_source,
+           beholder_evidence_id = excluded.beholder_evidence_id,
+           beholder_key_id = excluded.beholder_key_id,
            application_assurance = excluded.application_assurance,
            application_principal_scheme = excluded.application_principal_scheme,
            application_principal_id = excluded.application_principal_id,

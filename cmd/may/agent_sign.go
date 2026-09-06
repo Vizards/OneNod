@@ -42,32 +42,23 @@ func (agent approvalAgent) signForConnection(
 		return nil, err
 	}
 	operation := sshOperationForPayload(data, keyBlob, state.binding)
-	var observation beholderObservation
 	hadBeholderBinding := state.beholderBinding != ""
+	beholderBinding := ""
 	if hadBeholderBinding {
-		// The binding is one-use even when Core is unavailable. During E1 the
-		// disposition is observation-only: every signature still follows the
-		// existing Gateway/human-approval path below.
-		binding := state.beholderBinding
+		// The binding is one-use even when Core is unavailable. The exact
+		// Gateway request cannot be bound until its authorization-session proof
+		// and requester identity have been assembled below.
+		beholderBinding = state.beholderBinding
 		state.beholderBinding = ""
-		_, observation, _ = observeBeholderAgentOperationWithEvidence(
-			agent.deps,
-			binding,
-			sshBeholderOperationTarget(operation, *identity, state.client.Observation, data, agent.config),
-		)
-		binding = ""
 	}
-	if hadBeholderBinding && observation.EvidenceID == "" && agent.deps.stderr != nil {
-		fmt.Fprintln(agent.deps.stderr, "Beholder SSH outcome correlation is unavailable for this operation.")
-	}
-	outcome := newBeholderOutcomeTracker(agent.deps, observation, false)
+	outcome := newBeholderOutcomeTracker(agent.deps, beholderObservation{}, false)
 	defer func() {
 		status := outcome.finish(returnErr, returnErr == nil)
-		if observation.EvidenceID != "" && agent.deps.stderr != nil {
+		if outcome.observation.EvidenceID != "" && agent.deps.stderr != nil {
 			fmt.Fprintf(
 				agent.deps.stderr,
 				"Beholder SSH human outcome %s: %s.\n",
-				observation.EvidenceID,
+				outcome.observation.EvidenceID,
 				status,
 			)
 		}
@@ -82,8 +73,13 @@ func (agent approvalAgent) signForConnection(
 		operation,
 		algorithm,
 		data,
+		beholderBinding,
 		outcome,
 	)
+	beholderBinding = ""
+	if hadBeholderBinding && outcome.observation.EvidenceID == "" && agent.deps.stderr != nil {
+		fmt.Fprintln(agent.deps.stderr, "Beholder SSH outcome correlation is unavailable for this operation.")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +116,7 @@ func requestSshSignature(
 	operation sshOperation,
 	algorithm string,
 	data []byte,
+	beholderBinding string,
 	outcome *beholderOutcomeTracker,
 ) (sshSignConsumeResponse, error) {
 	credential, err := deps.keychain.Load()
@@ -147,6 +144,28 @@ func requestSshSignature(
 	}
 	if err := attachSshAuthorizationSession(&request, localClient, sessionKey); err != nil {
 		return sshSignConsumeResponse{}, err
+	}
+	if beholderBinding != "" {
+		canonicalRequest, canonicalErr := canonicalJSON(request)
+		if canonicalErr == nil {
+			target := sshBeholderOperationTarget(
+				operation,
+				identity,
+				localClient.Observation,
+				canonicalRequest,
+				config,
+			)
+			_, observation, _ := observeBeholderAgentOperationWithEvidence(
+				deps,
+				beholderBinding,
+				target,
+				credential.DeviceID,
+			)
+			outcome.setObservation(observation)
+			attachBeholderAuthorization(&request, observation)
+		}
+		clear(canonicalRequest)
+		beholderBinding = ""
 	}
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(ctx, gatewayRequestTimeout)
@@ -189,6 +208,7 @@ func requestSshSignature(
 		return sshSignConsumeResponse{}, errors.New("gateway returned an invalid SSH approval response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setAuthorizationSource(created.AuthorizationSource)
 	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "SSH sign request %s submitted; waiting for human approval.\n", created.RequestID)

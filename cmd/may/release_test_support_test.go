@@ -162,7 +162,7 @@ func validManifestFixture(version string, artifacts []releaseArtifact) releaseMa
 	}
 	manifest.Components.SSHAgent.Version = version
 	manifest.Components.Gateway.Version = version
-	manifest.Components.Gateway.AcceptedClientProtocol = protocolRange{Minimum: 1, Maximum: 2}
+	manifest.Components.Gateway.AcceptedClientProtocol = protocolRange{Minimum: 1, Maximum: mayClientProtocol}
 	manifest.Components.Gateway.StateSchema = 2
 	manifest.Components.Executor.Version = version
 	manifest.Components.Executor.AcceptedGatewayProtocol = protocolRange{Minimum: 1, Maximum: 1}

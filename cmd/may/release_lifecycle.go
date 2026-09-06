@@ -28,7 +28,7 @@ const (
 	initializerReceiptSchema  = 1
 	manifestSchema            = 1
 	transportJournalSchema    = 1
-	mayClientProtocol         = 2
+	mayClientProtocol         = 3
 	maxManifestBytes          = 1 << 20
 	maxReleaseListBytes       = 4 << 20
 	maxReleaseDiscoveryPages  = 100

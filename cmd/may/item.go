@@ -56,29 +56,32 @@ type itemCreateFieldRequest struct {
 }
 
 type itemCreateRequest struct {
-	Action         string                   `json:"action"`
-	Category       string                   `json:"category"`
-	Fields         []itemCreateFieldRequest `json:"fields"`
-	IdempotencyKey string                   `json:"idempotency_key"`
-	Client         clientObservation        `json:"client"`
-	Title          string                   `json:"title"`
+	Action                string                   `json:"action"`
+	BeholderAuthorization *beholderAuthorization   `json:"beholder_authorization,omitempty"`
+	Category              string                   `json:"category"`
+	Fields                []itemCreateFieldRequest `json:"fields"`
+	IdempotencyKey        string                   `json:"idempotency_key"`
+	Client                clientObservation        `json:"client"`
+	Title                 string                   `json:"title"`
 }
 
 type itemPatchRequest struct {
-	Action          string               `json:"action"`
-	ExpectedVersion int64                `json:"expected_version"`
-	IdempotencyKey  string               `json:"idempotency_key"`
-	Client          clientObservation    `json:"client"`
-	ItemID          string               `json:"item_id"`
-	Operations      []itemPatchOperation `json:"operations"`
+	Action                string                 `json:"action"`
+	BeholderAuthorization *beholderAuthorization `json:"beholder_authorization,omitempty"`
+	ExpectedVersion       int64                  `json:"expected_version"`
+	IdempotencyKey        string                 `json:"idempotency_key"`
+	Client                clientObservation      `json:"client"`
+	ItemID                string                 `json:"item_id"`
+	Operations            []itemPatchOperation   `json:"operations"`
 }
 
 type itemArchiveRequest struct {
-	Action          string            `json:"action"`
-	ExpectedVersion int64             `json:"expected_version"`
-	IdempotencyKey  string            `json:"idempotency_key"`
-	Client          clientObservation `json:"client"`
-	ItemID          string            `json:"item_id"`
+	Action                string                 `json:"action"`
+	BeholderAuthorization *beholderAuthorization `json:"beholder_authorization,omitempty"`
+	ExpectedVersion       int64                  `json:"expected_version"`
+	IdempotencyKey        string                 `json:"idempotency_key"`
+	Client                clientObservation      `json:"client"`
+	ItemID                string                 `json:"item_id"`
 }
 
 type itemMutationResponse struct {
@@ -402,7 +405,8 @@ func submitAndConsumeItemMutation(
 	if err != nil {
 		return err
 	}
-	observation := observeBeholderDirectRequest(deps, request, config)
+	observation := observeBeholderDirectRequest(deps, request, credential.DeviceID, config)
+	attachBeholderAuthorization(&request, observation)
 	outcome := newBeholderOutcomeTracker(deps, observation, false)
 	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
@@ -425,6 +429,7 @@ func submitAndConsumeItemMutation(
 		return errors.New("gateway returned an invalid item request response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setAuthorizationSource(created.AuthorizationSource)
 	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
