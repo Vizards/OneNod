@@ -24,7 +24,7 @@
   },
   "components": {
     "may": {
-      "client_protocol": 2,
+      "client_protocol": 3,
       "code_identity": {
         "scheme": "apple-cdhash",
         "signing": "adhoc",
@@ -55,9 +55,9 @@
     "gateway": {
       "accepted_client_protocol": {
         "min": 1,
-        "max": 2
+        "max": 3
       },
-      "state_schema": 3
+      "state_schema": 4
     },
     "executor": {
       "accepted_gateway_protocol": {
