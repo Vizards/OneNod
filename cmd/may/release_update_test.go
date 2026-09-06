@@ -343,7 +343,7 @@ func TestRemoteRuntimeVersionCrossChecksDeclaredReleaseChannels(t *testing.T) {
 		"components": map[string]any{
 			"executor": map[string]any{"channel": "beta", "version": "0.0.2-beta.1"},
 			"gateway": map[string]any{
-				"accepted_client_protocol": map[string]int{"min": 1, "max": 2},
+				"accepted_client_protocol": map[string]int{"min": 1, "max": mayClientProtocol},
 				"channel":                  "beta",
 				"protocol":                 1,
 				"version":                  "0.0.2-beta.1",

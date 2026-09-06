@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// beholderOutcomeTracker is observation-only. It never changes the existing
-// Gateway, remembered-grant, PWA, or local 1Password authorization result.
+// beholderOutcomeTracker correlates the authoritative or human authorization
+// source selected by the Gateway with the local model evidence bundle.
 type beholderOutcomeTracker struct {
 	deps                dependencies
 	observation         beholderObservation
@@ -39,6 +39,27 @@ func (tracker *beholderOutcomeTracker) setRequest(requestID, initialStatus strin
 		tracker.requestID = requestID
 	}
 	tracker.observeStatus(initialStatus)
+}
+
+func (tracker *beholderOutcomeTracker) setObservation(observation beholderObservation) {
+	if tracker == nil || tracker.observation.EvidenceID != "" || observation.EvidenceID == "" {
+		return
+	}
+	tracker.observation = observation
+}
+
+func (tracker *beholderOutcomeTracker) setAuthorizationSource(source string) {
+	if tracker == nil || !beholderOneOf(
+		source,
+		"beholder-authoritative",
+		"pwa-interactive",
+		"remembered-grant",
+		"pending",
+		"unknown",
+	) {
+		return
+	}
+	tracker.authorizationSource = source
 }
 
 func (tracker *beholderOutcomeTracker) observeStatus(status string) {

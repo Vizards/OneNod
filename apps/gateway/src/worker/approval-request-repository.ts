@@ -2,9 +2,12 @@ import type { ApplicationIdentityColumns } from "./approval-types.js";
 
 export interface RequestInsertRecord extends ApplicationIdentityColumns {
   action: string;
+  authorization_source: string;
   application_scope_id: string | null;
   authorized_until: number | null;
   body_hash: string;
+  beholder_evidence_id: string | null;
+  beholder_key_id: string | null;
   client_application: string;
   client_source: string;
   consumed_at: number | null;
@@ -36,6 +39,40 @@ export interface RequestInsertSql {
   exec(query: string, ...bindings: unknown[]): unknown;
 }
 
+export interface BeholderAuthorizationClaim {
+  evidenceId: string;
+  keyId: string;
+  operationTargetSha256: string;
+}
+
+/** Atomically consume a Core evidence identity once across all request IDs. */
+export function claimBeholderAuthorization(
+  sql: RequestInsertSql,
+  requestId: string,
+  requesterDeviceId: string,
+  authorization: BeholderAuthorizationClaim,
+  acceptedAt: number,
+): boolean {
+  const result = sql.exec(
+    `INSERT INTO beholder_authorization_uses
+      (evidence_id, requester_device_id, key_id,
+       operation_target_sha256, request_id, accepted_at)
+     SELECT ?, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1 FROM beholder_authorization_uses WHERE evidence_id = ?
+     )
+     RETURNING evidence_id`,
+    authorization.evidenceId,
+    requesterDeviceId,
+    authorization.keyId,
+    authorization.operationTargetSha256,
+    requestId,
+    acceptedAt,
+    authorization.evidenceId,
+  ) as { toArray(): unknown[] };
+  return result.toArray().length === 1;
+}
+
 export function insertRequest(
   sql: RequestInsertSql,
   record: RequestInsertRecord,
@@ -50,11 +87,12 @@ export function insertRequest(
        application_scope_id, secret_grant_id, ssh_agent_instance_public_key,
        ssh_scope_id, ssh_scope_kind, ssh_grant_id, item_title, field_label,
        field_type, legacy_ssh_signed_consume, idempotency_key, body_hash,
+       authorization_source, beholder_evidence_id, beholder_key_id,
        status, created_at, expires_at,
        decided_at, authorized_until, execution_started_at, consumed_at,
        error_code)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     record.id,
     record.requester_device_id,
     record.requester_name,
@@ -82,6 +120,9 @@ export function insertRequest(
     record.legacy_ssh_signed_consume,
     record.idempotency_key,
     record.body_hash,
+    record.authorization_source,
+    record.beholder_evidence_id,
+    record.beholder_key_id,
     record.status,
     record.created_at,
     record.expires_at,

@@ -234,6 +234,7 @@ function insertRequest(
   const ssh = input.kind === "ssh";
   insertProductionRequest(sql, {
     action: ssh ? "ssh.sign" : "secret.read",
+    authorization_source: input.status === "approved" ? "remembered-grant" : "pending",
     application_assurance: "verified-code-signature",
     application_principal_id: APPLICATION_ID,
     application_principal_scheme: "macos-designated-requirement-v1",
@@ -243,6 +244,8 @@ function insertRequest(
     application_team_identifier: "2DC432GLL2",
     authorized_until: input.status === "approved" ? NOW + 30_000 : null,
     body_hash: "body-hash",
+    beholder_evidence_id: null,
+    beholder_key_id: null,
     client_application: "Codex",
     client_source: "helper",
     consumed_at: null,

@@ -55,6 +55,12 @@ export type ApplicationRecognition =
 
 export interface RequestSummary {
   action: ApprovalAction;
+  authorizationSource?:
+    | "beholder-authoritative"
+    | "pwa-interactive"
+    | "remembered-grant"
+    | "pending"
+    | "unknown";
   applicationRecognition: ApplicationRecognition;
   authorizationScope?: {
     kind: "application";

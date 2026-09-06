@@ -109,6 +109,7 @@ export interface RequestSecretFieldRow {
 
 export interface RequestActivityRow {
   action: string;
+  authorization_source: string;
   application_assurance: string;
   application_principal_id: string | null;
   application_principal_scheme: string | null;
@@ -118,6 +119,8 @@ export interface RequestActivityRow {
   application_approved_before?: number;
   client_application: string;
   client_source: string;
+  beholder_evidence_id: string | null;
+  beholder_key_id: string | null;
   consumed_at: number | null;
   created_at: number;
   decided_at: number | null;
@@ -209,6 +212,7 @@ export interface RequesterRow {
 
 export interface RequestRow {
   action: string;
+  authorization_source: string;
   application_assurance: string;
   application_principal_id: string | null;
   application_principal_scheme: string | null;
@@ -220,6 +224,8 @@ export interface RequestRow {
   authorized_until: number | null;
   client_application: string;
   client_source: string;
+  beholder_evidence_id: string | null;
+  beholder_key_id: string | null;
   consumed_at: number | null;
   created_at: number;
   decided_at: number | null;

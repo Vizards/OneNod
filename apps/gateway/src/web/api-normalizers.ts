@@ -143,6 +143,7 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
   }
   return {
     action: readRequiredString(record, "action") as ApprovalAction,
+    authorizationSource: readAuthorizationSource(record),
     applicationRecognition: readApplicationRecognition(record),
     ...(isRecord(record.authorization_scope)
       ? {
@@ -165,6 +166,22 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
     targetLabel: readRequiredString(record, "target_label"),
     verifiedVersion: readRequiredNumber(record, "verified_version"),
   };
+}
+
+function readAuthorizationSource(
+  record: Record<string, unknown>,
+): NonNullable<RequestSummary["authorizationSource"]> {
+  const source = readString(record, "authorization_source") ?? "unknown";
+  if (
+    source !== "beholder-authoritative" &&
+    source !== "pwa-interactive" &&
+    source !== "remembered-grant" &&
+    source !== "pending" &&
+    source !== "unknown"
+  ) {
+    throw new Error("The server returned an unknown authorization source.");
+  }
+  return source;
 }
 
 function readApplicationRecognition(

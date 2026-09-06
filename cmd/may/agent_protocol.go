@@ -14,16 +14,17 @@ import (
 const sessionBindExtensionName = "session-bind@openssh.com"
 
 type sshSignRequest struct {
-	Action               string                   `json:"action"`
-	Algorithm            string                   `json:"algorithm"`
-	AuthorizationSession *sshAuthorizationSession `json:"authorization_session,omitempty"`
-	Client               clientObservation        `json:"client"`
-	Data                 string                   `json:"data"`
-	ExpectedFingerprint  string                   `json:"expected_fingerprint"`
-	ExpectedVersion      int64                    `json:"expected_version"`
-	IdempotencyKey       string                   `json:"idempotency_key"`
-	ItemID               string                   `json:"item_id"`
-	Operation            sshOperation             `json:"operation"`
+	Action                string                   `json:"action"`
+	Algorithm             string                   `json:"algorithm"`
+	AuthorizationSession  *sshAuthorizationSession `json:"authorization_session,omitempty"`
+	BeholderAuthorization *beholderAuthorization   `json:"beholder_authorization,omitempty"`
+	Client                clientObservation        `json:"client"`
+	Data                  string                   `json:"data"`
+	ExpectedFingerprint   string                   `json:"expected_fingerprint"`
+	ExpectedVersion       int64                    `json:"expected_version"`
+	IdempotencyKey        string                   `json:"idempotency_key"`
+	ItemID                string                   `json:"item_id"`
+	Operation             sshOperation             `json:"operation"`
 }
 
 type sshAuthorizationSession struct {

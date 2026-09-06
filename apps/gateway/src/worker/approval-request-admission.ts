@@ -2,6 +2,7 @@ import {
   canonicalJsonSha256Base64Url,
   decodeBase64Url,
   type ApplicationAuthorizationScopeRequest,
+  type BeholderAuthorizationRequest,
   type CatalogItemRequest,
   type CatalogSearchRequest,
   type CredentialUseCreateRequest,
@@ -44,7 +45,10 @@ import {
   safeText,
   verifiedClientObservation,
 } from "./approval-http.js";
-import { insertRequest } from "./approval-request-repository.js";
+import {
+  claimBeholderAuthorization,
+  insertRequest,
+} from "./approval-request-repository.js";
 import { ApprovalRequestStore } from "./approval-request-store.js";
 import { ApprovalExecutor } from "./approval-executor.js";
 import { ApprovalNotifications } from "./approval-notifications.js";
@@ -79,6 +83,11 @@ import {
   storeTrustedCatalogItems,
   trustedCatalogFields,
 } from "./trusted-catalog-metadata.js";
+import {
+  evaluateBeholderAuthorization,
+  separateBeholderAuthorization,
+  type BeholderAuthorizationEvaluation,
+} from "./beholder-authorization.js";
 
 const APPROVAL_TTL_MS = 2 * 60_000;
 const AUTHORIZATION_TTL_MS = 30_000;
@@ -201,27 +210,44 @@ export class ApprovalRequestAdmission {
     request: Request,
     path: string,
   ): Promise<Response> {
-    const body = await readJsonObject<
-      CredentialUseCreateRequest | SecretReadCreateRequest | ItemMutationRequest | SshSignCreateRequest
+    const signedBody = await readJsonObject<
+      (CredentialUseCreateRequest | SecretReadCreateRequest | ItemMutationRequest | SshSignCreateRequest) &
+        { beholder_authorization?: BeholderAuthorizationRequest }
     >(request);
     let rateReservation: RequestCreationReservation | undefined;
     try {
       const requester = await this.requester.authenticateSignedRequest(
         request,
         path,
-        body,
+        signedBody,
         (identity) => {
           // Storage pressure is independent of requester identity, but running
           // this hook after signature verification avoids exposing diagnostics
           // to unauthenticated callers while still rejecting before nonce growth.
           this.callbacks.assertStorageGrowthAllowed();
-          rateReservation = this.callbacks.reserveRequestCreationRate(identity.deviceId, body);
+          rateReservation = this.callbacks.reserveRequestCreationRate(identity.deviceId, signedBody);
         },
       );
       if (this.human.gatewayRuntimeState().locked === 1) {
         this.callbacks.audit("locked_request_rejected", undefined, requester.deviceId);
         throw new GatewayHttpError("gateway_locked", 423);
       }
+      const separated = separateBeholderAuthorization(
+        signedBody as unknown as Record<string, unknown>,
+      );
+      const body = separated.semanticBody as unknown as
+        CredentialUseCreateRequest | SecretReadCreateRequest | ItemMutationRequest | SshSignCreateRequest;
+      const beholder = await evaluateBeholderAuthorization({
+        authorization: separated.authorization,
+        ...(this.env.BEHOLDER_AUTHORITY_KEYS
+          ? { authorityKeysJson: this.env.BEHOLDER_AUTHORITY_KEYS }
+          : {}),
+        ...(this.env.BEHOLDER_AUTHORITY_MODE
+          ? { authorityMode: this.env.BEHOLDER_AUTHORITY_MODE }
+          : {}),
+        requesterDeviceId: requester.deviceId,
+        semanticBody: body,
+      });
       const context = await verifiedClientObservation(
         body.client,
         request,
@@ -240,7 +266,7 @@ export class ApprovalRequestAdmission {
         body.action === "item.patch" ||
         body.action === "item.archive"
       ) {
-        return await this.createItemMutationRequest(body, requester, context);
+        return await this.createItemMutationRequest(body, requester, context, beholder);
       }
       if (body.action === "ssh.sign") {
         return await this.createSshSignRequest(
@@ -248,10 +274,11 @@ export class ApprovalRequestAdmission {
           requester,
           context,
           legacySshSignedConsume,
+          beholder,
         );
       }
       if (body.action === "credential.use") {
-        return await this.createCredentialUseRequest(body, requester, context);
+        return await this.createCredentialUseRequest(body, requester, context, beholder);
       }
       if (body.action !== "secret.read") {
         throw new GatewayHttpError("unsupported_action", 400);
@@ -287,12 +314,13 @@ export class ApprovalRequestAdmission {
       );
       const bodyHash = await canonicalJsonSha256Base64Url(body);
       const existing = this.first<{
+        authorization_source: string;
         body_hash: string;
         expires_at: number;
         id: string;
         status: string;
       }>(
-        `SELECT id, status, expires_at, body_hash FROM requests
+        `SELECT id, status, expires_at, body_hash, authorization_source FROM requests
          WHERE requester_device_id = ? AND idempotency_key = ?`,
         requester.deviceId,
         idempotencyKey,
@@ -302,6 +330,7 @@ export class ApprovalRequestAdmission {
           throw new GatewayHttpError("idempotency_conflict", 409);
         }
         return json({
+          authorization_source: existing.authorization_source,
           expires_at: iso(existing.expires_at),
           poll_token: await this.requester.requestPollingToken(
             existing.id,
@@ -313,7 +342,7 @@ export class ApprovalRequestAdmission {
       }
       const releaseApproval = this.callbacks.reserveNewApproval(requester.deviceId, false);
       try {
-        const grant = authorizationScope
+        const grant = !beholder.required && authorizationScope
           ? this.activeSecretAuthorization(
               requester.deviceId,
               authorizationScope,
@@ -340,18 +369,27 @@ export class ApprovalRequestAdmission {
         const now = Date.now();
         const expiresAt = now + APPROVAL_TTL_MS;
         const requestId = crypto.randomUUID();
-        const initialStatus = grant ? "approved" : "pending";
-        const authorizedUntil = grant ? now + AUTHORIZATION_TTL_MS : null;
+        let modelAuthorized = beholder.accepted !== undefined;
+        let initialStatus = modelAuthorized || grant ? "approved" : "pending";
+        let authorizedUntil = initialStatus === "approved" ? now + AUTHORIZATION_TTL_MS : null;
+        let authorizationSource = modelAuthorized
+          ? "beholder-authoritative"
+          : grant
+            ? "remembered-grant"
+            : "pending";
         const requestRecord = {
           action: "secret.read",
+          authorization_source: authorizationSource,
           application_scope_id: authorizationScope?.scope_id ?? null,
           authorized_until: authorizedUntil,
           body_hash: bodyHash,
+          beholder_evidence_id: modelAuthorized ? beholder.accepted!.evidenceId : null,
+          beholder_key_id: modelAuthorized ? beholder.accepted!.keyId : null,
           client_application: context.application,
           client_source: context.source,
           consumed_at: null,
           created_at: now,
-          decided_at: grant ? now : null,
+          decided_at: initialStatus === "approved" ? now : null,
           error_code: null,
           execution_started_at: null,
           expected_version: expectedVersion,
@@ -366,7 +404,7 @@ export class ApprovalRequestAdmission {
           legacy_ssh_signed_consume: 0,
           requester_device_id: requester.deviceId,
           requester_name: requester.displayName,
-          secret_grant_id: grant?.id ?? null,
+          secret_grant_id: modelAuthorized ? null : grant?.id ?? null,
           ssh_agent_instance_public_key: null,
           ssh_grant_id: null,
           ssh_scope_id: null,
@@ -375,9 +413,29 @@ export class ApprovalRequestAdmission {
           ...applicationIdentityColumns(context.identity),
         };
         try {
-          this.callbacks.assertStorageGrowthAllowed();
-          this.human.assertGatewayUnlocked();
-          insertRequest(this.sql, requestRecord);
+          this.ctx.storage.transactionSync(() => {
+            this.callbacks.assertStorageGrowthAllowed();
+            this.human.assertGatewayUnlocked();
+            if (modelAuthorized && !claimBeholderAuthorization(
+              this.sql,
+              requestId,
+              requester.deviceId,
+              beholder.accepted!,
+              Date.now(),
+            )) {
+              modelAuthorized = false;
+              initialStatus = "pending";
+              authorizedUntil = null;
+              authorizationSource = "pending";
+              requestRecord.authorization_source = authorizationSource;
+              requestRecord.authorized_until = authorizedUntil;
+              requestRecord.beholder_evidence_id = null;
+              requestRecord.beholder_key_id = null;
+              requestRecord.decided_at = null;
+              requestRecord.status = initialStatus;
+            }
+            insertRequest(this.sql, requestRecord);
+          });
         } catch (error) {
           console.error(
             JSON.stringify({
@@ -391,9 +449,13 @@ export class ApprovalRequestAdmission {
         }
         try {
           this.callbacks.audit(
-            grant ? "request_auto_approved" : "request_created",
+            modelAuthorized
+              ? "request_beholder_approved"
+              : grant
+                ? "request_auto_approved"
+                : "request_created",
             requestId,
-            grant?.id ?? requester.deviceId,
+            modelAuthorized ? beholder.accepted!.evidenceId : grant?.id ?? requester.deviceId,
           );
         } catch (error) {
           console.error(
@@ -406,7 +468,7 @@ export class ApprovalRequestAdmission {
           throw error;
         }
         this.notifications.broadcastHumanEvent("request.changed", requestId);
-        if (!grant) {
+        if (initialStatus === "pending") {
           this.notifications.queueApprovalPush({
             body: "Open the approval queue to approve or deny this request.",
             requestId,
@@ -418,6 +480,7 @@ export class ApprovalRequestAdmission {
         return json(
           {
             expires_at: iso(expiresAt),
+            authorization_source: authorizationSource,
             poll_token: await this.requester.requestPollingToken(requestId, requester.deviceId),
             request_id: requestId,
             status: initialStatus,
@@ -436,6 +499,7 @@ export class ApprovalRequestAdmission {
     body: CredentialUseCreateRequest,
     requester: RequesterIdentity,
     context: ValidatedClientObservation,
+    beholder: BeholderAuthorizationEvaluation,
   ): Promise<Response> {
     assertExactKeys(body, [
       "action",
@@ -484,12 +548,13 @@ export class ApprovalRequestAdmission {
     );
     const bodyHash = await canonicalJsonSha256Base64Url(body);
     const existing = this.first<{
+      authorization_source: string;
       body_hash: string;
       expires_at: number;
       id: string;
       status: string;
     }>(
-      `SELECT id, status, expires_at, body_hash FROM requests
+      `SELECT id, status, expires_at, body_hash, authorization_source FROM requests
        WHERE requester_device_id = ? AND idempotency_key = ?`,
       requester.deviceId,
       idempotencyKey,
@@ -499,6 +564,7 @@ export class ApprovalRequestAdmission {
         throw new GatewayHttpError("idempotency_conflict", 409);
       }
       return json({
+        authorization_source: existing.authorization_source,
         expires_at: iso(existing.expires_at),
         poll_token: await this.requester.requestPollingToken(
           existing.id,
@@ -515,7 +581,7 @@ export class ApprovalRequestAdmission {
     );
     try {
       const grants = fieldIds.map((fieldId) =>
-        authorizationScope
+        !beholder.required && authorizationScope
           ? this.activeSecretAuthorization(
               requester.deviceId,
               authorizationScope,
@@ -576,22 +642,31 @@ export class ApprovalRequestAdmission {
         throw new GatewayHttpError("executor_untrusted_response", 502);
       }
 
-      const allRemembered = Boolean(authorizationScope) &&
+      const allRemembered = !beholder.required && Boolean(authorizationScope) &&
         grants.every((grant) => grant !== undefined);
       const now = Date.now();
       const expiresAt = now + APPROVAL_TTL_MS;
       const requestId = crypto.randomUUID();
-      const initialStatus = allRemembered ? "approved" : "pending";
+      let modelAuthorized = beholder.accepted !== undefined;
+      let initialStatus = modelAuthorized || allRemembered ? "approved" : "pending";
+      let authorizationSource = modelAuthorized
+        ? "beholder-authoritative"
+        : allRemembered
+          ? "remembered-grant"
+          : "pending";
       const requestRecord = {
         action: "credential.use",
+        authorization_source: authorizationSource,
         application_scope_id: authorizationScope?.scope_id ?? null,
-        authorized_until: allRemembered ? now + AUTHORIZATION_TTL_MS : null,
+        authorized_until: initialStatus === "approved" ? now + AUTHORIZATION_TTL_MS : null,
+        beholder_evidence_id: modelAuthorized ? beholder.accepted!.evidenceId : null,
+        beholder_key_id: modelAuthorized ? beholder.accepted!.keyId : null,
         body_hash: bodyHash,
         client_application: context.application,
         client_source: context.source,
         consumed_at: null,
         created_at: now,
-        decided_at: allRemembered ? now : null,
+        decided_at: initialStatus === "approved" ? now : null,
         error_code: null,
         execution_started_at: null,
         expected_version: expectedVersion,
@@ -617,6 +692,23 @@ export class ApprovalRequestAdmission {
       this.ctx.storage.transactionSync(() => {
         this.callbacks.assertStorageGrowthAllowed();
         this.human.assertGatewayUnlocked();
+        if (modelAuthorized && !claimBeholderAuthorization(
+          this.sql,
+          requestId,
+          requester.deviceId,
+          beholder.accepted!,
+          Date.now(),
+        )) {
+          modelAuthorized = false;
+          initialStatus = "pending";
+          authorizationSource = "pending";
+          requestRecord.authorization_source = authorizationSource;
+          requestRecord.authorized_until = null;
+          requestRecord.beholder_evidence_id = null;
+          requestRecord.beholder_key_id = null;
+          requestRecord.decided_at = null;
+          requestRecord.status = initialStatus;
+        }
         insertRequest(this.sql, requestRecord);
         metadata.forEach((field, ordinal) => {
           this.sql.exec(
@@ -633,13 +725,21 @@ export class ApprovalRequestAdmission {
           );
         });
         this.callbacks.audit(
-          allRemembered ? "request_auto_approved" : "request_created",
+          modelAuthorized
+            ? "request_beholder_approved"
+            : allRemembered
+              ? "request_auto_approved"
+              : "request_created",
           requestId,
-          allRemembered ? grants[0]!.id : requester.deviceId,
+          modelAuthorized
+            ? beholder.accepted!.evidenceId
+            : allRemembered
+              ? grants[0]!.id
+              : requester.deviceId,
         );
       });
       this.notifications.broadcastHumanEvent("request.changed", requestId);
-      if (!allRemembered) {
+      if (initialStatus === "pending") {
         this.notifications.queueApprovalPush({
           body: "Open the approval queue to approve or deny this request.",
           requestId,
@@ -651,6 +751,7 @@ export class ApprovalRequestAdmission {
       return json(
         {
           expires_at: iso(expiresAt),
+          authorization_source: authorizationSource,
           poll_token: await this.requester.requestPollingToken(
             requestId,
             requester.deviceId,
@@ -669,6 +770,7 @@ export class ApprovalRequestAdmission {
     rawBody: ItemMutationRequest,
     requester: RequesterIdentity,
     context: ValidatedClientObservation,
+    beholder: BeholderAuthorizationEvaluation,
   ): Promise<Response> {
     let body: ItemMutationRequest;
     try {
@@ -678,12 +780,13 @@ export class ApprovalRequestAdmission {
     }
     const bodyHash = await canonicalJsonSha256Base64Url(rawBody);
     const existing = this.first<{
+      authorization_source: string;
       body_hash: string;
       expires_at: number;
       id: string;
       status: string;
     }>(
-      `SELECT id, status, expires_at, body_hash FROM requests
+      `SELECT id, status, expires_at, body_hash, authorization_source FROM requests
        WHERE requester_device_id = ? AND idempotency_key = ?`,
       requester.deviceId,
       body.idempotency_key,
@@ -693,6 +796,7 @@ export class ApprovalRequestAdmission {
         throw new GatewayHttpError("idempotency_conflict", 409);
       }
       return json({
+        authorization_source: existing.authorization_source,
         expires_at: iso(existing.expires_at),
         poll_token: await this.requester.requestPollingToken(
           existing.id,
@@ -748,16 +852,22 @@ export class ApprovalRequestAdmission {
         }
         throw new GatewayHttpError("item_operation_invalid", 400);
       }
+      let modelAuthorized = beholder.accepted !== undefined;
+      let initialStatus = modelAuthorized ? "approved" : "pending";
+      let authorizationSource = modelAuthorized ? "beholder-authoritative" : "pending";
       const requestRecord = {
         action: body.action,
+        authorization_source: authorizationSource,
         application_scope_id: null,
-        authorized_until: null,
+        authorized_until: modelAuthorized ? now + AUTHORIZATION_TTL_MS : null,
+        beholder_evidence_id: modelAuthorized ? beholder.accepted!.evidenceId : null,
+        beholder_key_id: modelAuthorized ? beholder.accepted!.keyId : null,
         body_hash: bodyHash,
         client_application: context.application,
         client_source: context.source,
         consumed_at: null,
         created_at: now,
-        decided_at: null,
+        decided_at: modelAuthorized ? now : null,
         error_code: null,
         execution_started_at: null,
         expected_version: description.expectedVersion,
@@ -777,12 +887,29 @@ export class ApprovalRequestAdmission {
         ssh_grant_id: null,
         ssh_scope_id: null,
         ssh_scope_kind: null,
-        status: "pending",
+        status: initialStatus,
         ...applicationIdentityColumns(context.identity),
       };
       this.ctx.storage.transactionSync(() => {
         this.callbacks.assertStorageGrowthAllowed();
         this.human.assertGatewayUnlocked();
+        if (modelAuthorized && !claimBeholderAuthorization(
+          this.sql,
+          requestId,
+          requester.deviceId,
+          beholder.accepted!,
+          Date.now(),
+        )) {
+          modelAuthorized = false;
+          initialStatus = "pending";
+          authorizationSource = "pending";
+          requestRecord.authorization_source = authorizationSource;
+          requestRecord.authorized_until = null;
+          requestRecord.beholder_evidence_id = null;
+          requestRecord.beholder_key_id = null;
+          requestRecord.decided_at = null;
+          requestRecord.status = initialStatus;
+        }
         insertRequest(this.sql, requestRecord);
         this.sql.exec(
           `INSERT INTO request_operations
@@ -797,22 +924,29 @@ export class ApprovalRequestAdmission {
           encrypted?.digest ?? null,
           encrypted?.iv ?? null,
         );
-        this.callbacks.audit("request_created", requestId, requester.deviceId);
+        this.callbacks.audit(
+          modelAuthorized ? "request_beholder_approved" : "request_created",
+          requestId,
+          modelAuthorized ? beholder.accepted!.evidenceId : requester.deviceId,
+        );
       });
       this.notifications.broadcastHumanEvent("request.changed", requestId);
-      this.notifications.queueApprovalPush({
-        body: "Open the approval queue to approve or deny this request.",
-        requestId,
-        tag: `request-${requestId}`,
-        title: "New 1Password approval request",
-        url: `/requests#request-${requestId}`,
-      });
+      if (initialStatus === "pending") {
+        this.notifications.queueApprovalPush({
+          body: "Open the approval queue to approve or deny this request.",
+          requestId,
+          tag: `request-${requestId}`,
+          title: "New 1Password approval request",
+          url: `/requests#request-${requestId}`,
+        });
+      }
       return json(
         {
           expires_at: iso(expiresAt),
+          authorization_source: authorizationSource,
           poll_token: await this.requester.requestPollingToken(requestId, requester.deviceId),
           request_id: requestId,
-          status: "pending",
+          status: initialStatus,
         },
         201,
       );
@@ -826,6 +960,7 @@ export class ApprovalRequestAdmission {
     requester: RequesterIdentity,
     context: ValidatedClientObservation,
     legacySshSignedConsume: boolean,
+    beholder: BeholderAuthorizationEvaluation,
   ): Promise<Response> {
     let body: SshSignCreateRequest;
     try {
@@ -846,12 +981,13 @@ export class ApprovalRequestAdmission {
     }
     const bodyHash = await canonicalJsonSha256Base64Url(rawBody);
     const existing = this.first<{
+      authorization_source: string;
       body_hash: string;
       expires_at: number;
       id: string;
       status: string;
     }>(
-      `SELECT id, status, expires_at, body_hash FROM requests
+      `SELECT id, status, expires_at, body_hash, authorization_source FROM requests
        WHERE requester_device_id = ? AND idempotency_key = ?`,
       requester.deviceId,
       body.idempotency_key,
@@ -861,6 +997,7 @@ export class ApprovalRequestAdmission {
         throw new GatewayHttpError("idempotency_conflict", 409);
       }
       return json({
+        authorization_source: existing.authorization_source,
         expires_at: iso(existing.expires_at),
         poll_token: await this.requester.requestPollingToken(
           existing.id,
@@ -872,7 +1009,7 @@ export class ApprovalRequestAdmission {
     }
     const releaseApproval = this.callbacks.reserveNewApproval(requester.deviceId, false);
     try {
-      const grant = authorizationSession
+      const grant = !beholder.required && authorizationSession
         ? this.activeSshAuthorization(
             requester.deviceId,
             authorizationSession,
@@ -935,18 +1072,27 @@ export class ApprovalRequestAdmission {
         }
         throw new GatewayHttpError("ssh_sign_request_invalid", 400);
       }
-      const initialStatus = grant ? "approved" : "pending";
-      const authorizedUntil = grant ? now + AUTHORIZATION_TTL_MS : null;
+      let modelAuthorized = beholder.accepted !== undefined;
+      let initialStatus = modelAuthorized || grant ? "approved" : "pending";
+      let authorizedUntil = initialStatus === "approved" ? now + AUTHORIZATION_TTL_MS : null;
+      let authorizationSource = modelAuthorized
+        ? "beholder-authoritative"
+        : grant
+          ? "remembered-grant"
+          : "pending";
       const requestRecord = {
         action: "ssh.sign",
+        authorization_source: authorizationSource,
         application_scope_id: null,
         authorized_until: authorizedUntil,
+        beholder_evidence_id: modelAuthorized ? beholder.accepted!.evidenceId : null,
+        beholder_key_id: modelAuthorized ? beholder.accepted!.keyId : null,
         body_hash: bodyHash,
         client_application: context.application,
         client_source: context.source,
         consumed_at: null,
         created_at: now,
-        decided_at: grant ? now : null,
+        decided_at: initialStatus === "approved" ? now : null,
         error_code: null,
         execution_started_at: null,
         expected_version: description.expectedVersion,
@@ -964,7 +1110,7 @@ export class ApprovalRequestAdmission {
         secret_grant_id: null,
         ssh_agent_instance_public_key:
           authorizationSession?.agent_instance_public_key ?? null,
-        ssh_grant_id: grant?.id ?? null,
+        ssh_grant_id: modelAuthorized ? null : grant?.id ?? null,
         ssh_scope_id: authorizationSession?.scope_id ?? null,
         ssh_scope_kind: authorizationSession?.scope_kind ?? null,
         status: initialStatus,
@@ -973,6 +1119,24 @@ export class ApprovalRequestAdmission {
       this.ctx.storage.transactionSync(() => {
         this.callbacks.assertStorageGrowthAllowed();
         this.human.assertGatewayUnlocked();
+        if (modelAuthorized && !claimBeholderAuthorization(
+          this.sql,
+          requestId,
+          requester.deviceId,
+          beholder.accepted!,
+          Date.now(),
+        )) {
+          modelAuthorized = false;
+          initialStatus = "pending";
+          authorizedUntil = null;
+          authorizationSource = "pending";
+          requestRecord.authorization_source = authorizationSource;
+          requestRecord.authorized_until = authorizedUntil;
+          requestRecord.beholder_evidence_id = null;
+          requestRecord.beholder_key_id = null;
+          requestRecord.decided_at = null;
+          requestRecord.status = initialStatus;
+        }
         insertRequest(this.sql, requestRecord);
         this.sql.exec(
           `INSERT INTO request_operations
@@ -988,13 +1152,17 @@ export class ApprovalRequestAdmission {
           encrypted.iv,
         );
         this.callbacks.audit(
-          grant ? "request_auto_approved" : "request_created",
+          modelAuthorized
+            ? "request_beholder_approved"
+            : grant
+              ? "request_auto_approved"
+              : "request_created",
           requestId,
-          grant?.id ?? requester.deviceId,
+          modelAuthorized ? beholder.accepted!.evidenceId : grant?.id ?? requester.deviceId,
         );
       });
       this.notifications.broadcastHumanEvent("request.changed", requestId);
-      if (!grant) {
+      if (initialStatus === "pending") {
         this.notifications.queueApprovalPush({
           body: "Open the approval queue to approve or deny this request.",
           requestId,
@@ -1006,6 +1174,7 @@ export class ApprovalRequestAdmission {
       return json(
         {
           expires_at: iso(expiresAt),
+          authorization_source: authorizationSource,
           poll_token: await this.requester.requestPollingToken(requestId, requester.deviceId),
           request_id: requestId,
           status: initialStatus,

@@ -197,7 +197,8 @@ func readApprovedSecret(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
-	observation := observeBeholderDirectRequest(deps, request, config)
+	observation := observeBeholderDirectRequest(deps, request, credential.DeviceID, config)
+	attachBeholderAuthorization(&request, observation)
 	outcome := newBeholderOutcomeTracker(deps, observation, true)
 	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
@@ -233,6 +234,7 @@ func readApprovedSecret(
 		return "", errors.New("gateway returned an invalid request creation response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setAuthorizationSource(created.AuthorizationSource)
 	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
@@ -357,7 +359,8 @@ func useApprovedCredential(
 			ScopeID: localClient.ScopeID, ScopeKind: localClient.ScopeKind,
 		}
 	}
-	observation := observeBeholderDirectRequest(deps, request, config)
+	observation := observeBeholderDirectRequest(deps, request, credential.DeviceID, config)
+	attachBeholderAuthorization(&request, observation)
 	outcome := newBeholderOutcomeTracker(deps, observation, true)
 	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
@@ -396,6 +399,7 @@ func useApprovedCredential(
 		return nil, errors.New("gateway returned an invalid request creation response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setAuthorizationSource(created.AuthorizationSource)
 	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
