@@ -237,6 +237,7 @@ func TestTransparentSSHShimFallsBackToOrdinarySSHWithoutTaskBinding(t *testing.T
 }
 
 func TestTransparentSSHShimFallsBackWhenExecutionRootIsUnverified(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
 	original := []string{"example.invalid", "true"}
 	beholderCalled := false
@@ -271,8 +272,8 @@ func TestDirectObservationSkipsCoreWithoutThreadCandidate(t *testing.T) {
 	}
 }
 
-func TestBeholderRequesterContextPreservesEnvironmentAndRedactsSecrets(t *testing.T) {
-	t.Setenv("E2_OBS_DIAGNOSTIC_CONTEXT", "diagnostic-value")
+func TestBeholderRequesterContextCollectsMetadataWithoutContentScanning(t *testing.T) {
+	t.Setenv("TERM", "sk-this-is-a-dummy-terminal-name")
 	t.Setenv("E2_OBS_API_KEY", "abcdefghijklmnopqrstuvwxyz123456")
 	target, ok := directBeholderOperationTarget(itemArchiveRequest{
 		Action: "item.archive", ItemID: "fixture-a", ExpectedVersion: 7,
@@ -285,9 +286,8 @@ func TestBeholderRequesterContextPreservesEnvironmentAndRedactsSecrets(t *testin
 		t.Fatalf("requester context was unavailable: %+v", target)
 	}
 	if strings.Contains(target.RequesterContext, "abcdefghijklmnopqrstuvwxyz123456") ||
-		!strings.Contains(target.RequesterContext, "diagnostic-value") ||
-		!strings.Contains(target.RequesterContext, "[REDACTED:CREDENTIAL]") ||
-		!strings.Contains(target.RequesterContext, `"redaction_rule":"sensitive-requester-environment"`) ||
+		!strings.Contains(target.RequesterContext, "sk-this-is-a-dummy-terminal-name") ||
+		!strings.Contains(target.RequesterContext, `"redaction_rule":"environment-value-not-collected"`) ||
 		!strings.Contains(target.RequesterContext, `"gateway_origin":"https://example.invalid/gateway"`) ||
 		strings.Contains(target.RequesterContext, "user:credential") || strings.Contains(target.RequesterContext, "token=credential") {
 		t.Fatalf("requester environment evidence was incomplete or unsafe: %s", target.RequesterContext)

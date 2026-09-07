@@ -116,11 +116,11 @@ func TestClientHostedProxyRejectsAConnectionFromTheWrongChildProcess(t *testing.
 	}
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(time.Second))
-	if err := writeBeholderAgentFrame(connection, []byte{11}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readBeholderAgentFrame(connection); err == nil {
-		t.Fatal("proxy forwarded a connection from an unexpected child process")
+	// Rejection may close the socket before either the write or the read.
+	if err := writeBeholderAgentFrame(connection, []byte{11}); err == nil {
+		if _, err := readBeholderAgentFrame(connection); err == nil {
+			t.Fatal("proxy forwarded a connection from an unexpected child process")
+		}
 	}
 	if unixListener, ok := upstream.(*net.UnixListener); ok {
 		_ = unixListener.SetDeadline(time.Now().Add(50 * time.Millisecond))
@@ -200,6 +200,88 @@ func TestClientHostedProxyFallsBackToTheHumanControlledAgentPath(t *testing.T) {
 		t.Fatalf("fallback response=%x err=%v", response, err)
 	}
 	if err := <-serverResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientProxyCarriesDiagnosticsWithoutAnAuthorizationNonce(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "bh-diag-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	t.Setenv("HOME", root)
+	if err = os.Mkdir(filepath.Join(root, userAgentDirectoryName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := net.Listen("unix", defaultAgentSocket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	called := false
+	diagnostic := newBeholderDiagnostic("lease", "prompt-binding-missing", &called)
+	done := make(chan error, 1)
+	go func() {
+		connection, err := upstream.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer connection.Close()
+		_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+		frame, err := readBeholderAgentFrame(connection)
+		if err != nil {
+			done <- err
+			return
+		}
+		reader := wireReader{value: frame[1:]}
+		name, err := reader.string()
+		if err != nil || frame[0] != 27 || string(name) != beholderDiagnosticExtensionName {
+			done <- errors.New("diagnostic missing")
+			return
+		}
+		state := approvalAgentConnection{}
+		response, err := state.Extension(string(name), reader.value[reader.offset:])
+		if err != nil {
+			done <- err
+			return
+		}
+		if state.state.beholderBinding != "" || state.state.beholderDiagnostic.TraceID != diagnostic.TraceID {
+			done <- errors.New("diagnostic changed binding")
+			return
+		}
+		if err = writeBeholderAgentFrame(connection, response); err != nil {
+			done <- err
+			return
+		}
+		frame, err = readBeholderAgentFrame(connection)
+		if err != nil || !bytes.Equal(frame, []byte{11}) {
+			done <- errors.New("ordinary frame lost")
+			return
+		}
+		done <- writeBeholderAgentFrame(connection, []byte{12})
+	}()
+	proxy, err := startBeholderClientProxyWithDiagnostic(nil, diagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+	proxy.expectPeer(os.Getpid())
+	connection, err := net.Dial("unix", proxy.socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+	if err = writeBeholderAgentFrame(connection, []byte{11}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readBeholderAgentFrame(connection)
+	connection.Close()
+	if err != nil || !bytes.Equal(response, []byte{12}) {
+		t.Fatalf("ordinary Agent unavailable: %v", err)
+	}
+	if err = <-done; err != nil {
 		t.Fatal(err)
 	}
 }

@@ -1,3 +1,4 @@
+import { safeBeholderDiagnostic } from "./approval-http.js";
 import { projectStoredApplicationIdentity } from "./application-identity.js";
 import { projectApplicationRecognition } from "./approved-application-identities.js";
 import type {
@@ -81,6 +82,7 @@ export function projectHumanRequestSummary(row: RequestRow) {
           }
         : {}),
     client: {
+      ...projectBeholderDiagnostic(row.beholder_diagnostic),
       application: row.client_application,
       identity: projectStoredApplicationIdentity(row),
       source:
@@ -104,6 +106,7 @@ export function projectHumanActivitySummary(row: RequestActivityRow) {
     authorization_source: row.authorization_source,
     application_recognition: projectApplicationRecognition(row),
     client: {
+      ...projectBeholderDiagnostic(row.beholder_diagnostic),
       application: row.client_application,
       identity: projectStoredApplicationIdentity(row),
       source:
@@ -290,4 +293,13 @@ function hasForbiddenControl(value: string, allowNewline: boolean): boolean {
     if (codePoint < 0x20 && !(allowNewline && codePoint === 0x0a)) return true;
   }
   return false;
+}
+
+function projectBeholderDiagnostic(value: string | null | undefined) {
+  if (!value) return {};
+  try {
+    return { beholder_diagnostic: safeBeholderDiagnostic(JSON.parse(value)) };
+  } catch {
+    return {};
+  }
 }

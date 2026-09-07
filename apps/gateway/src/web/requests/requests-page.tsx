@@ -1,3 +1,4 @@
+import { BeholderDiagnosticDisclosure } from "../components/beholder-diagnostic.js";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
@@ -356,6 +357,7 @@ function RequestCard({ now, request }: { now: number; request: RequestSummary })
         {approvalQuestion(request)}
       </h2>
       <ApplicationIdentityDisclosure request={request} />
+      <BeholderDiagnosticDisclosure diagnostic={request.client.beholderDiagnostic} />
       <p className="mt-2 truncate text-xs text-secondary">
         {request.requesterName} · {formatDateTime(request.createdAt)}
       </p>

@@ -42,3 +42,8 @@ for this authority. Any comparison decision is observability-only. Setting the
 mode to `human-only` disables model authority and preserves the Passkey approval
 path. The root Core key and the Gateway deployment configuration are therefore
 part of the trusted computing base whenever this optional mode is enabled.
+
+Requester-reported Beholder diagnostics describe fallback stages and correlate
+a local trace with a OneNod request. They are optional display metadata, never
+authorization evidence. A diagnostic cannot create a Core binding, substitute
+for its signature, or change the Gateway's human approval requirements.

@@ -163,7 +163,18 @@ export interface CatalogItemResponse {
   item: CatalogItemResult;
 }
 
+/** Requester-reported diagnostics only; never evidence of authorization. */
+export interface BeholderDiagnostic {
+  schema_version: 1;
+  trace_id: string;
+  stage: "lease" | "proxy" | "binding" | "core" | "model";
+  code: string;
+  model_called?: boolean;
+  evidence_id?: string;
+}
+
 export interface ClientObservationRequest {
+  beholder_diagnostic?: BeholderDiagnostic;
   application: string;
   identity?: ApplicationIdentityRequest;
   source: "process-ancestry" | "unavailable";

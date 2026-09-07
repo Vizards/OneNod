@@ -17,11 +17,21 @@ func runGitSignAdapter(args []string, deps dependencies) error {
 		return errors.New("resolve may SSH agent socket failed")
 	}
 	var proxy *beholderClientProxy
-	if lease, err := requestBeholderSSHLease(deps, beholderLeasePurposeGit); err == nil {
-		proxy, err = startBeholderClientProxy(lease.Nonce)
+	lease, leaseErr := requestBeholderSSHLease(deps, beholderLeasePurposeGit)
+	diagnostic := lease.Diagnostic
+	if leaseErr != nil {
+		diagnostic = diagnosticFromError(leaseErr)
+		logBeholderDiagnostic(deps.stderr, diagnostic, "")
+	}
+	if leaseErr == nil || diagnostic != nil {
+		var err error
+		proxy, err = startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic)
 		lease.clear()
 		if err == nil {
 			socketPath = proxy.socketPath
+		} else if diagnostic != nil {
+			diagnostic.Stage, diagnostic.Code = "proxy", "proxy-unavailable"
+			logBeholderDiagnostic(deps.stderr, diagnostic, "")
 		}
 	}
 	if proxy != nil {

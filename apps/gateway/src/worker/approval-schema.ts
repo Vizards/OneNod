@@ -229,6 +229,7 @@ class ApprovalSchema {
         expected_version INTEGER NOT NULL,
         client_application TEXT NOT NULL,
         client_source TEXT NOT NULL,
+        beholder_diagnostic TEXT,
         application_assurance TEXT NOT NULL,
         application_principal_scheme TEXT,
         application_principal_id TEXT,
@@ -394,6 +395,8 @@ class ApprovalSchema {
     ]) {
       this.sql.exec(statement);
     }
+    this.ensureColumn("requests", "beholder_diagnostic", "TEXT");
+    this.ensureColumn("request_activity", "beholder_diagnostic", "TEXT");
     this.ensureColumn("human_credentials", "last_used_at", "INTEGER");
     this.ensureColumn("human_sessions", "device_id", "TEXT");
     this.ensureColumn("human_sessions", "last_seen_at", "INTEGER");
@@ -832,6 +835,7 @@ class ApprovalSchema {
         expected_version INTEGER NOT NULL,
         client_application TEXT NOT NULL,
         client_source TEXT NOT NULL,
+        beholder_diagnostic TEXT,
         application_assurance TEXT NOT NULL DEFAULT 'unverified',
         application_principal_scheme TEXT,
         application_principal_id TEXT,
