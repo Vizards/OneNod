@@ -74,7 +74,7 @@ export class ApprovalReview {
       const pending = this.rows<RequestRow>(
         `SELECT id, requester_device_id, requester_name, action,
                 authorization_source, beholder_evidence_id, beholder_key_id,
-                client_application, client_source, application_assurance,
+                client_application, client_source, beholder_diagnostic, application_assurance,
                 application_principal_scheme, application_principal_id,
                 application_signing_identifier, application_team_identifier,
                 application_signer_name,
@@ -119,7 +119,7 @@ export class ApprovalReview {
     const active = this.rows<RequestRow>(
       `SELECT id, requester_device_id, requester_name, action,
               authorization_source, beholder_evidence_id, beholder_key_id,
-              client_application, client_source, application_assurance,
+              client_application, client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
@@ -155,7 +155,7 @@ export class ApprovalReview {
               authorization_source, beholder_evidence_id, beholder_key_id,
               decided_at, consumed_at, item_title, field_label,
               expected_version, requester_name, client_application,
-              client_source, application_assurance,
+              client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,

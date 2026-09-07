@@ -36,13 +36,16 @@ func (tracker *beholderOutcomeTracker) setRequest(requestID, initialStatus strin
 		return
 	}
 	if safeBeholderField(requestID, 256, false) {
+		if tracker.requestID != requestID {
+			logBeholderDiagnostic(tracker.deps.stderr, tracker.observation.Diagnostic, requestID)
+		}
 		tracker.requestID = requestID
 	}
 	tracker.observeStatus(initialStatus)
 }
 
 func (tracker *beholderOutcomeTracker) setObservation(observation beholderObservation) {
-	if tracker == nil || tracker.observation.EvidenceID != "" || observation.EvidenceID == "" {
+	if tracker == nil || tracker.observation.EvidenceID != "" {
 		return
 	}
 	tracker.observation = observation

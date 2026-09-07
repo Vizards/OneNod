@@ -75,7 +75,9 @@ func (agent approvalAgent) signForConnection(
 		data,
 		beholderBinding,
 		outcome,
+		state.beholderDiagnostic,
 	)
+	state.beholderDiagnostic = nil
 	beholderBinding = ""
 	if hadBeholderBinding && outcome.observation.EvidenceID == "" && agent.deps.stderr != nil {
 		fmt.Fprintln(agent.deps.stderr, "Beholder SSH outcome correlation is unavailable for this operation.")
@@ -118,6 +120,7 @@ func requestSshSignature(
 	data []byte,
 	beholderBinding string,
 	outcome *beholderOutcomeTracker,
+	diagnostics ...*beholderDiagnostic,
 ) (sshSignConsumeResponse, error) {
 	credential, err := deps.keychain.Load()
 	if err != nil {
@@ -145,6 +148,10 @@ func requestSshSignature(
 	if err := attachSshAuthorizationSession(&request, localClient, sessionKey); err != nil {
 		return sshSignConsumeResponse{}, err
 	}
+	diagnostic := (*beholderDiagnostic)(nil)
+	if len(diagnostics) == 1 && validBeholderDiagnostic(diagnostics[0]) {
+		diagnostic = diagnostics[0]
+	}
 	if beholderBinding != "" {
 		canonicalRequest, canonicalErr := canonicalJSON(request)
 		if canonicalErr == nil {
@@ -155,17 +162,33 @@ func requestSshSignature(
 				canonicalRequest,
 				config,
 			)
+			traceID := ""
+			if diagnostic != nil {
+				traceID = diagnostic.TraceID
+			}
 			_, observation, _ := observeBeholderAgentOperationWithEvidence(
 				deps,
 				beholderBinding,
 				target,
 				credential.DeviceID,
+				traceID,
 			)
 			outcome.setObservation(observation)
 			attachBeholderAuthorization(&request, observation)
 		}
 		clear(canonicalRequest)
 		beholderBinding = ""
+	} else if diagnostic != nil {
+		request.Client.BeholderDiagnostic = diagnostic
+		outcome.observation.Diagnostic = diagnostic
+	}
+	// A fallback diagnostic is added after the model decision and is never
+	// accompanied by a Core allow. Re-sign the Agent session proof over the
+	// final human-reviewed body so its canonical request remains exact.
+	if request.Client.BeholderDiagnostic != nil && request.BeholderAuthorization == nil {
+		if err := attachSshAuthorizationSession(&request, localClient, sessionKey); err != nil {
+			return sshSignConsumeResponse{}, err
+		}
 	}
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(ctx, gatewayRequestTimeout)

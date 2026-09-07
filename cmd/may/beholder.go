@@ -52,6 +52,7 @@ type beholderOperationTarget struct {
 }
 
 type beholderWireRequest struct {
+	TraceID           string                   `json:"trace_id,omitempty"`
 	SchemaVersion     int                      `json:"schema_version"`
 	Kind              string                   `json:"kind"`
 	ThreadID          string                   `json:"thread_id,omitempty"`
@@ -77,14 +78,16 @@ type beholderAuthorization struct {
 }
 
 type beholderWireResponse struct {
-	SchemaVersion int                    `json:"schema_version"`
-	Accepted      bool                   `json:"accepted"`
-	Disposition   string                 `json:"disposition,omitempty"`
-	AgentSocket   string                 `json:"agent_socket,omitempty"`
-	Binding       string                 `json:"binding,omitempty"`
-	ErrorCode     *string                `json:"error_code"`
-	EvidenceID    string                 `json:"evidence_id,omitempty"`
-	Authorization *beholderAuthorization `json:"authorization,omitempty"`
+	ModelCalled       *bool                  `json:"model_called,omitempty"`
+	DecisionErrorCode *string                `json:"decision_error_code,omitempty"`
+	SchemaVersion     int                    `json:"schema_version"`
+	Accepted          bool                   `json:"accepted"`
+	Disposition       string                 `json:"disposition,omitempty"`
+	AgentSocket       string                 `json:"agent_socket,omitempty"`
+	Binding           string                 `json:"binding,omitempty"`
+	ErrorCode         *string                `json:"error_code"`
+	EvidenceID        string                 `json:"evidence_id,omitempty"`
+	Authorization     *beholderAuthorization `json:"authorization,omitempty"`
 }
 
 type beholderOutcomeStatus struct {
@@ -108,6 +111,7 @@ type beholderHumanOutcome struct {
 }
 
 type beholderObservation struct {
+	Diagnostic    *beholderDiagnostic
 	EvidenceID    string
 	Target        beholderOperationTarget
 	Authorization *beholderAuthorization
@@ -123,7 +127,8 @@ const (
 )
 
 type beholderSSHLease struct {
-	Nonce []byte
+	Diagnostic *beholderDiagnostic
+	Nonce      []byte
 }
 
 func (lease *beholderSSHLease) clear() {
@@ -157,35 +162,51 @@ func requestBeholderSSHLease(deps dependencies, purpose string) (beholderSSHLeas
 		return beholderSSHLease{}, errors.New("invalid Beholder SSH lease purpose")
 	}
 	threadID := os.Getenv("CODEX_THREAD_ID")
-	if !safeBeholderToken(threadID, 8, 128) || deps.beholder == nil {
+	if !safeBeholderToken(threadID, 8, 128) {
 		return beholderSSHLease{}, errors.New("Beholder task binding is unavailable")
 	}
-	response, err := deps.beholder(beholderWireRequest{
-		SchemaVersion: beholderProtocolSchemaVersion,
-		Kind:          "ssh-client-lease",
-		ThreadID:      threadID,
-		Purpose:       purpose,
-	})
-	threadID = ""
-	if err != nil || !response.Accepted || response.ErrorCode != nil ||
-		!safeBeholderToken(response.Binding, 32, 256) {
-		return beholderSSHLease{}, errors.New("Beholder SSH lease is unavailable")
+	called := false
+	diagnostic := newBeholderDiagnostic("lease", "lease-unavailable", &called)
+	fail := func(code string) (beholderSSHLease, error) {
+		return beholderSSHLease{}, failBeholderStage(diagnostic, "lease", code)
+	}
+	if deps.beholder == nil || diagnostic == nil {
+		return fail("core-unavailable")
+	}
+	response, err := deps.beholder(beholderWireRequest{SchemaVersion: beholderProtocolSchemaVersion,
+		Kind: "ssh-client-lease", ThreadID: threadID, Purpose: purpose, TraceID: diagnostic.TraceID})
+	if err != nil {
+		return fail("core-transport-error")
+	}
+	if response.ErrorCode != nil {
+		if beholderDiagnosticCode(*response.ErrorCode) {
+			return fail(*response.ErrorCode)
+		}
+		return fail("lease-response-invalid")
+	}
+	if !response.Accepted || !safeBeholderToken(response.Binding, 32, 256) {
+		return fail("lease-response-invalid")
 	}
 	nonce, err := base64.RawURLEncoding.Strict().DecodeString(response.Binding)
 	response.Binding = ""
 	if err != nil || len(nonce) < 16 || len(nonce) > 128 {
 		clear(nonce)
-		return beholderSSHLease{}, errors.New("Beholder SSH lease is unavailable")
+		return fail("lease-response-invalid")
 	}
-	return beholderSSHLease{Nonce: nonce}, nil
+	diagnostic.Stage, diagnostic.Code = "binding", "binding-pending"
+	return beholderSSHLease{Nonce: nonce, Diagnostic: diagnostic}, nil
 }
 
-func consumeBeholderAgentBinding(deps dependencies, nonce []byte) (string, error) {
+func consumeBeholderAgentBinding(deps dependencies, nonce []byte, diagnostics ...*beholderDiagnostic) (string, error) {
 	if deps.beholder == nil || len(nonce) < 16 || len(nonce) > 128 {
 		return "", errors.New("Beholder Agent binding is unavailable")
 	}
 	encodedNonce := base64.RawURLEncoding.EncodeToString(nonce)
-	response, err := deps.beholder(beholderWireRequest{
+	traceID := ""
+	if len(diagnostics) == 1 && validBeholderDiagnostic(diagnostics[0]) {
+		traceID = diagnostics[0].TraceID
+	}
+	response, err := deps.beholder(beholderWireRequest{TraceID: traceID,
 		SchemaVersion: beholderProtocolSchemaVersion,
 		Kind:          "agent-binding-consume",
 		Nonce:         encodedNonce,
@@ -202,7 +223,7 @@ func observeBeholderAgentOperation(
 	binding string,
 	target beholderOperationTarget,
 ) (string, error) {
-	disposition, _, err := observeBeholderAgentOperationWithEvidence(deps, binding, target)
+	disposition, _, err := observeBeholderAgentOperationWithEvidence(deps, binding, target, "", "")
 	return disposition, err
 }
 
@@ -210,16 +231,13 @@ func observeBeholderAgentOperationWithEvidence(
 	deps dependencies,
 	binding string,
 	target beholderOperationTarget,
-	requesterDeviceIDs ...string,
+	requesterDeviceID, traceID string,
 ) (string, beholderObservation, error) {
 	if deps.beholder == nil || !safeBeholderToken(binding, 32, 256) || !validBeholderOperationTarget(target) {
 		return "escalate", beholderObservation{}, errors.New("Beholder Agent operation binding is unavailable")
 	}
-	requesterDeviceID := ""
-	if len(requesterDeviceIDs) == 1 {
-		requesterDeviceID = requesterDeviceIDs[0]
-	}
 	response, err := deps.beholder(beholderWireRequest{
+		TraceID:           traceID,
 		SchemaVersion:     beholderProtocolSchemaVersion,
 		Kind:              "agent-operation",
 		Binding:           binding,
@@ -228,9 +246,9 @@ func observeBeholderAgentOperationWithEvidence(
 	})
 	if err != nil || !response.Accepted || response.ErrorCode != nil ||
 		(response.Disposition != "allow" && response.Disposition != "escalate") {
-		return "escalate", observationFromResponse(response, target, requesterDeviceID), errors.New("Beholder Agent operation was not decided")
+		return "escalate", decisionObservation(response, target, requesterDeviceID, traceID), errors.New("Beholder Agent operation was not decided")
 	}
-	return response.Disposition, observationFromResponse(response, target, requesterDeviceID), nil
+	return response.Disposition, decisionObservation(response, target, requesterDeviceID, traceID), nil
 }
 
 // observeBeholderDirectRequest sends only structured identifiers and a digest
@@ -261,7 +279,12 @@ func observeBeholderDirectRequest(
 	}
 	encodedNonce := hex.EncodeToString(nonce)
 	clear(nonce)
+	diagnostic := newBeholderDiagnostic("core", "decision-unavailable", nil)
+	if diagnostic == nil {
+		return beholderObservation{}
+	}
 	response, _ := deps.beholder(beholderWireRequest{
+		TraceID:           diagnostic.TraceID,
 		SchemaVersion:     beholderProtocolSchemaVersion,
 		Kind:              "direct-operation",
 		ThreadID:          threadID,
@@ -270,22 +293,18 @@ func observeBeholderDirectRequest(
 		RequesterDeviceID: requesterDeviceID,
 	})
 	threadID = ""
-	return observationFromResponse(response, target, requesterDeviceID)
+	return decisionObservation(response, target, requesterDeviceID, diagnostic.TraceID)
 }
 
 func observationFromResponse(
 	response beholderWireResponse,
 	target beholderOperationTarget,
-	requesterDeviceIDs ...string,
+	requesterDeviceID string,
 ) beholderObservation {
 	if !safeBeholderToken(response.EvidenceID, 8, 96) {
 		return beholderObservation{}
 	}
 	observation := beholderObservation{EvidenceID: response.EvidenceID, Target: target}
-	requesterDeviceID := ""
-	if len(requesterDeviceIDs) == 1 {
-		requesterDeviceID = requesterDeviceIDs[0]
-	}
 	if response.Authorization != nil && validBeholderAuthorization(
 		response.Authorization,
 		response.EvidenceID,
@@ -321,6 +340,9 @@ func validBeholderAuthorization(
 
 func attachBeholderAuthorization(body any, observation beholderObservation) {
 	if observation.Authorization == nil {
+		if client := requestClient(body); client != nil && validBeholderDiagnostic(observation.Diagnostic) {
+			client.BeholderDiagnostic = observation.Diagnostic
+		}
 		return
 	}
 	switch request := body.(type) {
@@ -621,28 +643,17 @@ func beholderRequesterContext(configurations ...cliConfig) string {
 		context.PollIntervalMS = configurations[0].pollInterval.Milliseconds()
 		context.ApprovalTimeoutMS = configurations[0].timeout.Milliseconds()
 	}
-	redactNext := false
-	for index, argument := range os.Args {
-		value, redacted, rule, next := redactBeholderArgument(argument, redactNext)
-		entry := capturedValue{Index: index, Value: value, Redacted: redacted}
-		if redacted {
-			entry.OriginalBytes = len(argument)
-			entry.RedactionRule = rule
-		}
-		context.Arguments = append(context.Arguments, entry)
-		redactNext = next
-	}
 	for _, pair := range os.Environ() {
 		name, value, found := strings.Cut(pair, "=")
 		if !found || name == "" {
 			continue
 		}
 		entry := capturedValue{Name: name, Value: value}
-		if sensitiveBeholderEnvironmentName(name) || highConfidenceBeholderSecret(value) {
-			entry.Value = "[REDACTED:CREDENTIAL]"
+		if !beholderEnvironmentValueCollected(name) {
+			entry.Value = ""
 			entry.Redacted = true
 			entry.OriginalBytes = len(value)
-			entry.RedactionRule = "sensitive-requester-environment"
+			entry.RedactionRule = "environment-value-not-collected"
 		}
 		context.Environment = append(context.Environment, entry)
 	}
@@ -687,60 +698,10 @@ func beholderFileSHA256(path string) string {
 	return beholderExecutableHash
 }
 
-func redactBeholderArgument(argument string, force bool) (string, bool, string, bool) {
-	if force {
-		return "[REDACTED:CREDENTIAL]", true, "sensitive-requester-argument", false
-	}
-	name, value, hasValue := strings.Cut(argument, "=")
-	if sensitiveBeholderArgumentName(name) {
-		if hasValue {
-			return name + "=[REDACTED:CREDENTIAL]", true, "sensitive-requester-argument", false
-		}
-		return argument, false, "", true
-	}
-	if highConfidenceBeholderSecret(argument) || (hasValue && highConfidenceBeholderSecret(value)) {
-		return "[REDACTED:CREDENTIAL]", true, "credential-shaped-requester-argument", false
-	}
-	return argument, false, "", false
-}
-
-func sensitiveBeholderArgumentName(value string) bool {
-	if !strings.HasPrefix(value, "-") {
-		return false
-	}
-	normalized := strings.ToUpper(strings.TrimLeft(value, "-"))
-	return strings.Contains(normalized, "TOKEN") || strings.Contains(normalized, "PASSWORD") ||
-		strings.Contains(normalized, "SECRET") || strings.Contains(normalized, "CREDENTIAL") ||
-		strings.Contains(normalized, "API_KEY") || strings.Contains(normalized, "API-KEY") ||
-		strings.Contains(normalized, "AUTHORIZATION") || strings.Contains(normalized, "PRIVATE_KEY")
-}
-
-func sensitiveBeholderEnvironmentName(value string) bool {
-	normalized := strings.ToUpper(value)
-	if normalized == "CODEX_SESSION_ID" || normalized == "CODEX_THREAD_ID" || normalized == "SSH_AUTH_SOCK" {
-		return false
-	}
-	return strings.Contains(normalized, "TOKEN") || strings.Contains(normalized, "PASSWORD") ||
-		strings.Contains(normalized, "SECRET") || strings.Contains(normalized, "CREDENTIAL") ||
-		strings.Contains(normalized, "API_KEY") || strings.Contains(normalized, "API-KEY") ||
-		strings.Contains(normalized, "AUTHORIZATION") || strings.Contains(normalized, "PRIVATE_KEY") ||
-		strings.HasSuffix(normalized, "_COOKIE")
-}
-
-func highConfidenceBeholderSecret(value string) bool {
-	trimmed := strings.TrimSpace(value)
-	lower := strings.ToLower(trimmed)
-	if strings.Contains(lower, "authorization: bearer ") ||
-		strings.Contains(trimmed, "-----BEGIN PRIVATE KEY-----") ||
-		strings.Contains(trimmed, "-----BEGIN OPENSSH PRIVATE KEY-----") {
-		return true
-	}
-	for _, prefix := range []string{"sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"} {
-		if strings.HasPrefix(trimmed, prefix) && len(trimmed) >= len(prefix)+16 {
-			return true
-		}
-	}
-	return false
+// Capture process metadata by source. Arbitrary environment and argv values
+// are omitted; the exact operation comes from the managed tool observation.
+func beholderEnvironmentValueCollected(name string) bool {
+	return beholderOneOf(name, "HOME", "USER", "LOGNAME", "PATH", "PWD", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "SSH_AUTH_SOCK", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_CI", "CODEX_PERMISSION_PROFILE", "BEHOLDER_CORE_SOCKET")
 }
 
 func parseBeholderBindingExtension(contents []byte) ([]byte, error) {
@@ -817,4 +778,12 @@ func safeBeholderToken(value string, minimum, maximum int) bool {
 		return false
 	}
 	return true
+}
+
+func decisionObservation(response beholderWireResponse, target beholderOperationTarget, deviceID, traceID string) beholderObservation {
+	observation := observationFromResponse(response, target, deviceID)
+	if observation.Authorization == nil {
+		observation.Diagnostic = diagnosticForDecision(response, traceID)
+	}
+	return observation
 }

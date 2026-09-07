@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ const (
 )
 
 type beholderClientProxy struct {
+	diagnostic   *beholderDiagnostic
 	listener     *net.UnixListener
 	root         string
 	socketPath   string
@@ -29,8 +31,12 @@ type beholderClientProxy struct {
 }
 
 func startBeholderClientProxy(nonce []byte) (*beholderClientProxy, error) {
+	return startBeholderClientProxyWithDiagnostic(nonce, nil)
+}
+
+func startBeholderClientProxyWithDiagnostic(nonce []byte, diagnostic *beholderDiagnostic) (*beholderClientProxy, error) {
 	upstreamPath := defaultAgentSocket()
-	if len(nonce) < 16 || len(nonce) > 128 || !validBeholderAgentSocket(upstreamPath) {
+	if ((len(nonce) < 16 || len(nonce) > 128) && !(len(nonce) == 0 && validBeholderDiagnostic(diagnostic))) || !validBeholderAgentSocket(upstreamPath) {
 		return nil, errors.New("Beholder client proxy input is invalid")
 	}
 	parent := filepath.Dir(upstreamPath)
@@ -56,7 +62,8 @@ func startBeholderClientProxy(nonce []byte) (*beholderClientProxy, error) {
 		return nil, errors.New("create Beholder client proxy socket failed")
 	}
 	proxy := &beholderClientProxy{
-		listener: listener, root: root, socketPath: socketPath, upstreamPath: upstreamPath,
+		diagnostic: diagnostic,
+		listener:   listener, root: root, socketPath: socketPath, upstreamPath: upstreamPath,
 		nonce: append([]byte(nil), nonce...), expectedPeer: make(chan int, 1), done: make(chan struct{}),
 	}
 	go proxy.serve()
@@ -98,17 +105,23 @@ func (proxy *beholderClientProxy) serve() {
 	if err != nil || peerPID != expectedPID {
 		return
 	}
-	upstream, err := net.DialTimeout("unix", proxy.upstreamPath, time.Second)
+	upstream, err := proxy.connectWithDiagnostic(proxy.diagnostic)
 	if err != nil {
 		return
 	}
-	if err := sendBeholderBindingExtension(upstream, proxy.nonce); err != nil {
-		_ = upstream.Close()
-		// Reconnect without the private extension. This preserves OneNod's
-		// existing human-controlled path if Core/Agent versions ever diverge.
-		upstream, err = net.DialTimeout("unix", proxy.upstreamPath, time.Second)
-		if err != nil {
-			return
+	if len(proxy.nonce) > 0 {
+		if err := sendBeholderBindingExtension(upstream, proxy.nonce); err != nil {
+			_ = upstream.Close()
+			var diagnostic *beholderDiagnostic
+			if validBeholderDiagnostic(proxy.diagnostic) {
+				value := *proxy.diagnostic
+				value.Stage, value.Code = "binding", "binding-extension-rejected"
+				diagnostic = &value
+			}
+			upstream, err = proxy.connectWithDiagnostic(diagnostic)
+			if err != nil {
+				return
+			}
 		}
 	}
 	defer upstream.Close()
@@ -200,4 +213,40 @@ func (proxy *beholderClientProxy) close() {
 		case <-time.After(2 * time.Second):
 		}
 	})
+}
+
+func sendBeholderDiagnosticExtension(connection net.Conn, diagnostic *beholderDiagnostic) error {
+	if !validBeholderDiagnostic(diagnostic) {
+		return errors.New("invalid Beholder diagnostic")
+	}
+	encoded, err := json.Marshal(diagnostic)
+	if err != nil {
+		return err
+	}
+	request := appendBeholderAgentString([]byte{27}, []byte(beholderDiagnosticExtensionName))
+	request = append(request, encoded...)
+	_ = connection.SetDeadline(time.Now().Add(beholderClientProxyHandshake))
+	defer connection.SetDeadline(time.Time{})
+	if err := writeBeholderAgentFrame(connection, request); err != nil {
+		return err
+	}
+	response, err := readBeholderAgentFrame(connection)
+	if err != nil || len(response) != 1 || response[0] != sshAgentSuccessResponse {
+		return errors.New("diagnostic extension unavailable")
+	}
+	return nil
+}
+
+// A rejected or timed-out optional extension must not leave a partial frame on
+// the connection used for ordinary SSH Agent traffic.
+func (proxy *beholderClientProxy) connectWithDiagnostic(diagnostic *beholderDiagnostic) (net.Conn, error) {
+	connection, err := net.DialTimeout("unix", proxy.upstreamPath, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if !validBeholderDiagnostic(diagnostic) || sendBeholderDiagnosticExtension(connection, diagnostic) == nil {
+		return connection, nil
+	}
+	_ = connection.Close()
+	return net.DialTimeout("unix", proxy.upstreamPath, time.Second)
 }

@@ -72,9 +72,10 @@ type catalogItemResponse struct {
 }
 
 type clientObservation struct {
-	Application string              `json:"application"`
-	Identity    applicationIdentity `json:"identity"`
-	Source      string              `json:"source"`
+	BeholderDiagnostic *beholderDiagnostic `json:"beholder_diagnostic,omitempty"`
+	Application        string              `json:"application"`
+	Identity           applicationIdentity `json:"identity"`
+	Source             string              `json:"source"`
 }
 
 type applicationAuthorizationScope struct {

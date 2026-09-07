@@ -74,12 +74,21 @@ func runBeholderSSHShim(args []string, deps dependencies) error {
 		execProcess = defaultProcessExec
 	}
 	lease, leaseErr := requestBeholderSSHLease(deps, beholderLeasePurposeSSH)
+	diagnostic := lease.Diagnostic
 	if leaseErr != nil {
-		return execOrdinarySSH(args, execProcess)
+		diagnostic = diagnosticFromError(leaseErr)
+		if diagnostic == nil {
+			return execOrdinarySSH(args, execProcess)
+		}
+		logBeholderDiagnostic(deps.stderr, diagnostic, "")
 	}
 	defer lease.clear()
-	proxy, proxyErr := startBeholderClientProxy(lease.Nonce)
+	proxy, proxyErr := startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic)
 	if proxyErr != nil {
+		if diagnostic != nil {
+			diagnostic.Stage, diagnostic.Code = "proxy", "proxy-unavailable"
+			logBeholderDiagnostic(deps.stderr, diagnostic, "")
+		}
 		return execOrdinarySSH(args, execProcess)
 	}
 	defer proxy.close()

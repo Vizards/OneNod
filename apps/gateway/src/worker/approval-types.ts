@@ -108,6 +108,7 @@ export interface RequestSecretFieldRow {
 }
 
 export interface RequestActivityRow {
+  beholder_diagnostic?: string | null;
   action: string;
   authorization_source: string;
   application_assurance: string;
@@ -211,6 +212,7 @@ export interface RequesterRow {
 }
 
 export interface RequestRow {
+  beholder_diagnostic?: string | null;
   action: string;
   authorization_source: string;
   application_assurance: string;

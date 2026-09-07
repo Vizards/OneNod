@@ -8,6 +8,7 @@ import {
   type ApplicationIdentityRequest,
   type ApprovalDecision,
   type ClientObservationRequest,
+  type BeholderDiagnostic,
   type SshAuthorizationDuration,
 } from "@onenod/protocol";
 
@@ -189,6 +190,7 @@ export function safeClientObservation(value: unknown): ClientObservationRequest 
   assertExactKeys(input, [
     "application",
     ...(input.identity === undefined ? [] : ["identity"]),
+    ...(input.beholder_diagnostic === undefined ? [] : ["beholder_diagnostic"]),
     "source",
   ]);
   if (
@@ -198,6 +200,9 @@ export function safeClientObservation(value: unknown): ClientObservationRequest 
     throw new GatewayHttpError("client_observation_invalid", 400);
   }
   return {
+    ...(input.beholder_diagnostic === undefined
+      ? {}
+      : { beholder_diagnostic: safeBeholderDiagnostic(input.beholder_diagnostic) }),
     application: safeObservationText(input.application, 512),
     identity:
       input.identity === undefined
@@ -674,4 +679,26 @@ export function hasForbiddenControl(
     return true;
   }
   return false;
+}
+
+export function safeBeholderDiagnostic(value: unknown): BeholderDiagnostic {
+  const input = record(value);
+  assertExactKeys(input, [
+    "schema_version", "trace_id", "stage", "code",
+    ...(input.model_called === undefined ? [] : ["model_called"]),
+    ...(input.evidence_id === undefined ? [] : ["evidence_id"]),
+  ]);
+  if (
+    input.schema_version !== 1 ||
+    typeof input.trace_id !== "string" || !/^[a-f0-9]{32}$/.test(input.trace_id) ||
+    typeof input.stage !== "string" || !["lease", "proxy", "binding", "core", "model"].includes(input.stage) ||
+    typeof input.code !== "string" || !/^[a-z0-9._-]{1,96}$/.test(input.code) ||
+    (input.model_called !== undefined && typeof input.model_called !== "boolean") ||
+    (input.evidence_id !== undefined && (
+      typeof input.evidence_id !== "string" || !/^[a-zA-Z0-9._:-]{8,96}$/.test(input.evidence_id)
+    ))
+  ) {
+    throw new GatewayHttpError("beholder_diagnostic_invalid", 400);
+  }
+  return input as unknown as BeholderDiagnostic;
 }

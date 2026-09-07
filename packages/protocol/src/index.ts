@@ -28,6 +28,7 @@ export type ApprovalAction =
   | "ssh.sign";
 
 export interface ClientObservation {
+  beholderDiagnostic?: import("./v1.js").BeholderDiagnostic;
   application: string;
   identity: ApplicationIdentity;
   source: "process-ancestry" | "unavailable";

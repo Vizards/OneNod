@@ -1,6 +1,7 @@
 import type { ApplicationIdentityColumns } from "./approval-types.js";
 
 export interface RequestInsertRecord extends ApplicationIdentityColumns {
+  beholder_diagnostic?: string | null;
   action: string;
   authorization_source: string;
   application_scope_id: string | null;
@@ -90,9 +91,9 @@ export function insertRequest(
        authorization_source, beholder_evidence_id, beholder_key_id,
        status, created_at, expires_at,
        decided_at, authorized_until, execution_started_at, consumed_at,
-       error_code)
+       error_code, beholder_diagnostic)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     record.id,
     record.requester_device_id,
     record.requester_name,
@@ -131,5 +132,6 @@ export function insertRequest(
     record.execution_started_at,
     record.consumed_at,
     record.error_code,
+    record.beholder_diagnostic ?? null,
   );
 }

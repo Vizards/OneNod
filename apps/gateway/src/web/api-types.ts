@@ -1,6 +1,6 @@
 import type { ApplicationIdentity, RequestListResponse, SecretAuthorizationDuration, SshAuthorizationDuration, SystemHealthResponse } from "@onenod/protocol";
 
-import type { GatewayReleaseChannel } from "../release";
+import type { GatewayReleaseChannel } from "../release.js";
 
 export type ApprovalDecision = "approve" | "reject";
 
