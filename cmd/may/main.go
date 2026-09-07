@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Vizards/OneNod/cmd/may/internal/beholdercontext"
 )
 
 const gatewayRequestTimeout = 5 * time.Minute
@@ -41,6 +43,17 @@ type cliConfig struct {
 }
 
 func main() {
+	// Managed observations never initialize requester state, flush outcomes, or
+	// enter a credential flow. Both aliases are copies of the attested may binary.
+	binaryName := filepath.Base(os.Args[0])
+	switch binaryName {
+	case beholdercontext.GuardName:
+		beholdercontext.RunGuard(os.Args[1:], os.Stdin, os.Stdout)
+		return
+	case beholdercontext.WorkerName:
+		beholdercontext.RunWorker(os.Args[1:], os.Stdin, os.Stdout)
+		return
+	}
 	deps := dependencies{
 		applicationResolver: resolveApplicationWithHelper,
 		beholder:            defaultBeholderRoundTrip,
@@ -54,7 +67,6 @@ func main() {
 		stdout:              os.Stdout,
 	}
 	var err error
-	binaryName := filepath.Base(os.Args[0])
 	if binaryName == "may" && len(os.Args) > 1 && os.Args[1] == "__transport-finalize" {
 		err = runInternalTransportFinalize(os.Args[2:])
 		if err != nil {
