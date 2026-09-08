@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import coreModule from "./core.wasm";
 import { tokensMatch } from "./auth";
 import { runBestEffortCooldownUpdate } from "./cooldown-housekeeping";
+import { fetchExecutorDurableObject } from "./durable-object-transport";
 import {
   ExecutionJournal,
   ExecutionJournalError,
@@ -95,8 +96,9 @@ export default {
       }
       const authorizationFailure = await authorizeExecutor(request, env);
       if (authorizationFailure) return authorizationFailure;
-      return env.ONEPASSWORD_EXECUTOR.getByName(ONEPASSWORD_EXECUTOR_INSTANCE).fetch(
+      return fetchExecutorDurableObject(
         request,
+        () => env.ONEPASSWORD_EXECUTOR.getByName(ONEPASSWORD_EXECUTOR_INSTANCE),
       );
     }
 
