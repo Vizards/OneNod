@@ -267,6 +267,14 @@ type contextCoverage struct {
 	OtherBytes     int                       `json:"other_text_bytes"`
 	OmittedRecords int                       `json:"omitted_for_budget"`
 	Summary        []contextCandidateSummary `json:"event_selection_summary"`
+	ModelDelivery  *modelContextDelivery     `json:"model_delivery,omitempty"`
+}
+
+// Capture accounting remains intact for local evidence. ModelDelivery records
+// the separate projection actually sent to the provider.
+type modelContextDelivery struct {
+	Profile                     string `json:"profile"`
+	CompletedToolRecordsOmitted int    `json:"completed_tool_records_omitted"`
 }
 
 type workspaceContext struct {

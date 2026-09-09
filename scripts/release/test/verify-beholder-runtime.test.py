@@ -19,7 +19,7 @@ class RuntimeContractTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.version, self.commit = '0.0.2-alpha.52', 'a' * 40
         self.manifest = {'schema_version': 1, 'record_type': 'onenod_beholder_artifacts',
-                         'beholder_version': 'v30', 'release_version': self.version,
+                         'beholder_version': 'v31', 'release_version': self.version,
                          'source_commit': self.commit, 'architecture': 'arm64', 'files': {}}
         for name in set(verifier.COMPONENTS) | verifier.SUPPORT:
             raw = ('dummy ' + name).encode()

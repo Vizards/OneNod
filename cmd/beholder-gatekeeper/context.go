@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/Vizards/OneNod/cmd/beholder-gatekeeper/internal/modelcontract"
 	"io"
 	"net/url"
 	"os"
@@ -1271,7 +1272,12 @@ func clearExternalInput(input *externalDecisionInput) {
 }
 
 func joinModelContent(input externalDecisionInput) ([]byte, error) {
-	encoded, err := json.Marshal(input)
+	captured, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(captured)
+	encoded, err := modelcontract.DirectModelInput(captured)
 	if err != nil {
 		return nil, err
 	}
