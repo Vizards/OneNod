@@ -3,8 +3,9 @@ package main
 import "errors"
 
 // Resource accounting is independent of message count or content. Never discard
-// human consent/revocation silently. Other records compete for the remaining
-// bytes in chronological order, with every displacement visible in evidence.
+// human consent/revocation silently. Model-delivered text reserves its budget
+// before historical tools, which are retained only as local evidence. Within
+// each class, displacement is chronological and visible in evidence.
 func enforceRelatedContextBudget(output *relatedContext) error {
 	humanBytes := 0
 	for _, entry := range output.priorHumans {
@@ -20,6 +21,7 @@ func enforceRelatedContextBudget(output *relatedContext) error {
 	for {
 		otherBytes := 0
 		oldest := record{}
+		oldestTool := record{}
 		visit := func(ordinal, size int, kind string) {
 			otherBytes += size
 			if oldest.ordinal == 0 || ordinal < oldest.ordinal {
@@ -37,16 +39,23 @@ func enforceRelatedContextBudget(output *relatedContext) error {
 		}
 		for _, e := range output.completedTools {
 			visit(e.CallOrdinal, len(e.Input)+len(e.Output), "tool")
+			if oldestTool.ordinal == 0 || e.CallOrdinal < oldestTool.ordinal {
+				oldestTool = record{e.CallOrdinal, len(e.Input) + len(e.Output), "tool"}
+			}
 		}
 		if humanBytes+otherBytes <= maximumRelatedContextBytes || oldest.ordinal == 0 {
 			output.coverage.ByteBudget = maximumRelatedContextBytes
 			output.coverage.HumanBytes, output.coverage.OtherBytes = humanBytes, otherBytes
 			return nil
 		}
+		// An omitted tool must never evict text that the model will receive.
+		if oldestTool.ordinal != 0 {
+			oldest = oldestTool
+		}
 		// Preserve both ends of a large final tool record rather than silently
 		// dropping its risk-bearing suffix. Smaller records remain unchanged.
-		if oldest.kind == "tool" && len(output.completedTools) == 1 && otherBytes == oldest.bytes {
-			available := maximumRelatedContextBytes - humanBytes
+		if oldest.kind == "tool" && len(output.completedTools) == 1 {
+			available := maximumRelatedContextBytes - humanBytes - (otherBytes - oldest.bytes)
 			if available >= 1024 {
 				entry := &output.completedTools[0]
 				inputBudget := available / 3

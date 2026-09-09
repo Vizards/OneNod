@@ -594,7 +594,7 @@ func readRelatedContextFromCapture(
 	finalizeRelatedContextEvidence(&output, info, ordinal, transcriptWriter, transcriptDigest, rawMetadataByOrdinal, path)
 	output.coverage.Summary = append([]contextCandidateSummary(nil), output.candidateSummary...)
 	output.coverage.BoundaryFound = currentPromptBoundaryFound
-	output.coverage.Selection = "complete-human-history-first; other-context-by-byte-budget; excerpts-identify-omitted-middle-and-source-sha256; no-semantic-filter"
+	output.coverage.Selection = "complete-human-history-first; agent-and-ambient-before-historical-tools; context-by-byte-budget; excerpts-identify-omitted-middle-and-source-sha256; no-semantic-filter"
 	if output.priorHumans == nil {
 		output.priorHumans = []sourceText{}
 	}

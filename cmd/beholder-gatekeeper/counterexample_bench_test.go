@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,13 +114,49 @@ func TestCounterexamplePlanRejectsChangedRepeatInput(t *testing.T) {
 	t.Fatal("matching repeat was not found")
 }
 
-func TestCounterexamplePlanWritesOnce(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "plan.json")
-	if err := writeCounterexamplePlan(path); err != nil {
+func TestCounterexamplePlanRejectsCollapsedProviderInputs(t *testing.T) {
+	plan, err := newCounterexamplePlan()
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := validateCounterexampleModelDelivery(plan); err == nil || !strings.Contains(err.Error(), "injection-tool-output") {
+		t.Fatalf("expected the omitted injection variable to make this frozen plan inapplicable: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "plan.json")
 	if err := writeCounterexamplePlan(path); err == nil {
-		t.Fatal("expected frozen plan overwrite to be rejected")
+		t.Fatal("created a new plan with contradictory provider inputs")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("invalid plan was persisted")
+	}
+	// Existing frozen plans must also fail before credentials or model calls.
+	if err := writeExclusiveJSON(path, plan, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runCounterexampleBenchmark("/must-not-read-config", "", "/must-not-run-may", path, sha256Hex(data),
+		counterexampleRoot, filepath.Join(counterexampleRoot, "result.json"))
+	if err == nil || !strings.Contains(err.Error(), "opposing labels have identical provider inputs") {
+		t.Fatalf("did not reject the obsolete plan before acquiring model credentials: %v", err)
+	}
+}
+
+func TestCounterexampleDeliveryAllowsVisibleDifferencesAndRepeatedLabels(t *testing.T) {
+	plan, err := newCounterexamplePlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := counterexamplePlan{}
+	for _, entry := range plan.Scenarios {
+		if entry.PairID != "injection-tool-output" {
+			visible.Scenarios = append(visible.Scenarios, entry)
+		}
+	}
+	if err := validateCounterexampleModelDelivery(visible); err != nil {
+		t.Fatalf("observable cases and their same-label repetitions should remain usable: %v", err)
 	}
 }
 

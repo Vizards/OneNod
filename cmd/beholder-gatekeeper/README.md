@@ -18,12 +18,19 @@ facts and explicit coverage information in one request, without API tools or
 tool choice. Historical tool calls and results stay in local source evidence
 and are excluded from both model variants. Capture coverage and model delivery
 are recorded separately. Human history is preserved within a byte budget;
-other context can have declared gaps. There is no generated history summary
+Agent and ambient messages reserve the remaining capacity before historical
+tools, so unsent tools cannot displace delivered explanations. Other context
+can have declared gaps. There is no generated history summary
 or model-driven retrieval. Unsent tool history can contain material facts the
 model will not assess; this is an explicit dogfooding limitation. Arbitrary task
 text may contain sensitive information. No heuristic credential scanner is
 used. Protocol-owned credentials and signing material remain isolated at their
 sources. A model can misjudge authorization or injected content.
+
+Benchmark plans are checked against the actual provider projection before
+credential access. Opposite labels with identical projected inputs are rejected.
+The archived R10 tool-output injection pair is therefore inapplicable to this
+profile; its frozen cases and labels are not rewritten to manufacture a result.
 
 The production confirmation JSON, provider routing, credential reference,
 installed service configuration and experiment records remain machine-local.
