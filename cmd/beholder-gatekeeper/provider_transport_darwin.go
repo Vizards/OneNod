@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/Vizards/OneNod/cmd/beholder-gatekeeper/internal/providercontract"
 )
 
 const (
