@@ -413,7 +413,7 @@ func TestGatekeeperSuccessfulDecisionWritesSummaryAndCompleteEvidence(t *testing
 		bodiesMu.Lock()
 		messageBodies[body.Thinking.Type] = string(messages)
 		bodiesMu.Unlock()
-		for _, omitted := range []string{"temperature", "max_tokens", "reasoning_effort"} {
+		for _, omitted := range []string{"temperature", "max_tokens", "reasoning_effort", "tools", "tool_choice"} {
 			if _, present := fields[omitted]; present {
 				t.Fatalf("provider request unexpectedly included %q", omitted)
 			}
@@ -475,7 +475,7 @@ func TestGatekeeperSuccessfulDecisionWritesSummaryAndCompleteEvidence(t *testing
 		!bytes.Contains(record, []byte(`"raw_prompt_stored":true`)) ||
 		!bytes.Contains(record, []byte(`"raw_reasoning_content_stored":false`)) ||
 		!bytes.Contains(record, []byte(`"target_alias":"fixture-a"`)) ||
-		!bytes.Contains(record, []byte(`"gatekeeper_version":"e2-authoritative-dogfood-v30"`)) ||
+		!bytes.Contains(record, []byte(`"gatekeeper_version":"e2-authoritative-dogfood-v31"`)) ||
 		!bytes.Contains(record, []byte(`"model_called":true`)) ||
 		!bytes.Contains(record, []byte(`"response_shape":"decision-json-valid"`)) ||
 		!bytes.Contains(record, []byte(`"scope_resolution":"task-consistent"`)) ||
@@ -1738,8 +1738,8 @@ func validTestConfig() confirmedConfig {
 	var config confirmedConfig
 	config.SchemaVersion = 1
 	config.RecordType = "e2_ai0_revision_confirmation"
-	config.Revision.ID = "E2-AI0-R13"
-	config.Revision.SupersedesConfigSHA256 = "bdaf13eae2d4004fcb0664ae21bc6fa1b94a30c0d7c1ad0c897f12772223d479"
+	config.Revision.ID = "E2-AI0-R14"
+	config.Revision.SupersedesConfigSHA256 = "213c43ded68ba3e48fe437090b344c7772272b8419463785dc19acd05e18c0b8"
 	config.Revision.ContextTreatmentExpanded = true
 	config.Revision.AllUnlistedAI0FieldsUnchanged = true
 	config.Provider.Name = "OneNod Beholder"
@@ -1955,7 +1955,7 @@ func TestFrozenR13ConfigMatchesCompiledIdentity(t *testing.T) {
 		t.Skip("the deployment confirmation is machine-local; set BEHOLDER_CONFIRMED_CONFIG for release acceptance")
 	}
 	config, actual, err := loadConfirmedConfig(configPath, confirmedConfigSHA256)
-	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R13" {
+	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R14" {
 		t.Fatalf("frozen R13 config did not match compiled identity: actual=%q err=%v", actual, err)
 	}
 }

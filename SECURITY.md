@@ -48,7 +48,7 @@ a local trace with a OneNod request. They are optional display metadata, never
 authorization evidence. A diagnostic cannot create a Core binding, substitute
 for its signature, or change the Gateway's human approval requirements.
 
-The optional v30 runtime is distributed inside the authenticated native archive;
+The optional Beholder runtime is distributed inside the authenticated native archive;
 the ordinary requester update does not install or enable its root service.
 Enabling it requires a separate attended installation and a root-controlled
 deployment confirmation. Its dogfooding limitations are explicit:
@@ -60,6 +60,11 @@ deployment confirmation. Its dogfooding limitations are explicit:
 - Working directory, command keywords and history length do not independently
   decide user authorization. The model receives source-labelled context and
   declared coverage gaps, including different task and execution directories.
+- The v31 model input includes human messages, Agent explanations and current
+  request facts. Historical tool activity remains in local evidence but is not
+  sent to the model; no retrieval tools or generated history summary are used.
+  Material facts or contamination present only in that omitted history may
+  therefore go unassessed. Shorter inputs do not guarantee correct decisions.
 - Arbitrary task text may contain sensitive information. It is sent to the
   configured model without heuristic credential scanning; protocol-owned
   credentials and signing material remain excluded at their sources.

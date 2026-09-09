@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Vizards/OneNod/cmd/beholder-gatekeeper/internal/modelcontract"
 )
 
 func TestV30ViewerChecksChronologyWithoutHistoricalRecordLimit(t *testing.T) {
@@ -36,11 +38,42 @@ func TestViewerDoesNotTreatUnknownSchemasAsLegacy(t *testing.T) {
 	if modelContextProvenanceValid(json.RawMessage(`{"schema_version":999}`)) {
 		t.Fatal("unknown schema bypassed provenance validation")
 	}
-	for _, version := range []string{"e2-authoritative-dogfood-v27", "e2-authoritative-dogfood-v30"} {
+	for _, version := range []string{"e2-authoritative-dogfood-v27", "e2-authoritative-dogfood-v30", "e2-authoritative-dogfood-v31"} {
 		if !authoritativeDogfoodVersion(version) || primaryVariantForVersion(version) != "thinking-disabled" ||
 			!validProviderEvidenceRefs([]string{"user_messages", "core_verified_facts"}, version) {
 			t.Fatalf("missing authoritative evidence contract for %s", version)
 		}
+	}
+}
+
+func TestV31ViewerRequiresExactDirectInputProjection(t *testing.T) {
+	source := v5ViewerInput()
+	captured := source["core_verified_facts"].(map[string]any)["captured_context"].(map[string]any)
+	captured["completed_tool_activity"] = []any{map[string]any{"output": "archived fixture result"}}
+	captured["coverage"] = map[string]any{"selection": "fixture capture", "other_text_bytes": 23}
+	raw := mustViewerJSON(t, source)
+	projected, err := modelcontract.DirectModelInput(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": "fixture policy"},
+		map[string]any{"role": "user", "content": string(projected)},
+	}}
+	if !modelInputMatches(raw, mustViewerJSON(t, body), "e2-authoritative-dogfood-v31") ||
+		modelInputMatches(raw, mustViewerJSON(t, body), "e2-authoritative-dogfood-v30") {
+		t.Fatal("projection must be exact and version-bound")
+	}
+	for _, field := range []string{"tools", "tool_choice"} {
+		body[field] = nil
+		if modelInputMatches(raw, mustViewerJSON(t, body), "e2-authoritative-dogfood-v31") {
+			t.Fatalf("unexpected %s escaped the no-tools contract", field)
+		}
+		delete(body, field)
+	}
+	source["user_messages"].(map[string]any)["messages"].([]any)[0].(map[string]any)["text"] = "changed human instruction"
+	if modelInputMatches(mustViewerJSON(t, source), mustViewerJSON(t, body), "e2-authoritative-dogfood-v31") {
+		t.Fatal("changed human direction passed the source-to-model check")
 	}
 }
 

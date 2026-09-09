@@ -286,6 +286,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 					source.TranscriptSnapshot.ObservedCandidates < source.TranscriptSnapshot.RetainedCandidates ||
 					source.TranscriptSnapshot.RetainedCandidates < 0 ||
 					(manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v30" &&
+						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v31" &&
 						source.TranscriptSnapshot.RetainedCandidates > 256)) {
 					result.Errors = append(result.Errors, "transcript-snapshot-invalid")
 				}
@@ -348,7 +349,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				modelRequest.BodySHA256, modelRequest.Body, redactedStages["02-model-request.json"]); err != nil {
 				result.Errors = append(result.Errors, "model-request-"+err.Error())
 			}
-			if modelRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, modelRequest.Body) {
+			if modelRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, modelRequest.Body, manifestValue.GatekeeperVersion) {
 				result.Errors = append(result.Errors, "selected-model-input-mismatch")
 			}
 			if modelRequest.RequestSent && !policyHashMatches(manifestValue, modelRequest.Body) {
@@ -416,7 +417,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				comparisonRequest.BodySHA256, comparisonRequest.Body, redactedStages[comparisonRequestName]); err != nil {
 				result.Errors = append(result.Errors, "comparison-model-request-"+err.Error())
 			}
-			if comparisonRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, comparisonRequest.Body) {
+			if comparisonRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, comparisonRequest.Body, manifestValue.GatekeeperVersion) {
 				result.Errors = append(result.Errors, "comparison-selected-model-input-mismatch")
 			}
 			if comparisonRequest.RequestSent && !policyHashMatches(manifestValue, comparisonRequest.Body) {
@@ -611,7 +612,25 @@ func jsonSemanticallyEqual(left, right []byte) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
-func modelInputMatches(selected, requestBody json.RawMessage) bool {
+func modelInputMatches(selected, requestBody json.RawMessage, versions ...string) bool {
+	if len(versions) == 1 && versions[0] == "e2-authoritative-dogfood-v31" {
+		projected, err := modelcontract.DirectModelInput(selected)
+		if err != nil {
+			return false
+		}
+		defer clear(projected)
+		selected = projected
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(requestBody, &fields) != nil {
+			return false
+		}
+		if _, present := fields["tools"]; present {
+			return false
+		}
+		if _, present := fields["tool_choice"]; present {
+			return false
+		}
+	}
 	if len(selected) == 0 || len(requestBody) == 0 {
 		return false
 	}
@@ -977,7 +996,8 @@ func authoritativeDogfoodVersion(version string) bool {
 		version == "e2-authoritative-dogfood-v24" ||
 		version == "e2-authoritative-dogfood-v26" ||
 		version == "e2-authoritative-dogfood-v27" ||
-		version == "e2-authoritative-dogfood-v30"
+		version == "e2-authoritative-dogfood-v30" ||
+		version == "e2-authoritative-dogfood-v31"
 }
 
 func primaryVariantForVersion(version string) string {
