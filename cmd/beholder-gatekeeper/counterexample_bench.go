@@ -195,7 +195,30 @@ func writeCounterexamplePlan(path string) error {
 	if err := validateCounterexamplePlan(plan); err != nil {
 		return err
 	}
+	if err := validateCounterexampleModelDelivery(plan); err != nil {
+		return err
+	}
 	return writeExclusiveJSON(path, plan, 0o600)
+}
+
+// Opposite labels are not a meaningful experiment if the active projection
+// removes their distinguishing evidence. Check provider bytes before any key
+// read or network request, without rewriting the frozen labels or cases.
+func validateCounterexampleModelDelivery(plan counterexamplePlan) error {
+	labels := map[string]string{}
+	for _, entry := range plan.Scenarios {
+		content, err := joinModelContent(entry.Input)
+		if err != nil {
+			return fmt.Errorf("%s: counterexample model projection failed", entry.Scenario)
+		}
+		digest := sha256Hex(content)
+		clear(content)
+		if prior, exists := labels[digest]; exists && prior != entry.GroundTruth {
+			return fmt.Errorf("%s: counterexample opposing labels have identical provider inputs; revise the experiment for the active input profile", entry.PairID)
+		}
+		labels[digest] = entry.GroundTruth
+	}
+	return nil
 }
 
 func newCounterexamplePlan() (counterexamplePlan, error) {
@@ -453,6 +476,9 @@ func loadCounterexamplePlan(path, expectedSHA256 string) (counterexamplePlan, st
 	}
 	clear(contents)
 	if err := validateCounterexamplePlan(plan); err != nil {
+		return counterexamplePlan{}, "", err
+	}
+	if err := validateCounterexampleModelDelivery(plan); err != nil {
 		return counterexamplePlan{}, "", err
 	}
 	return plan, actual, nil
