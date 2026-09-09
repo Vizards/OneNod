@@ -162,6 +162,32 @@ export function validateReleaseWorkflow(value) {
   ) {
     fail("native release jobs must bind and verify deterministic ad-hoc Hardened Runtime exact builds");
   }
+  const nativeBuild = stepRun(
+    namedStep(localSteps, "Test and build the native requester binaries"),
+  );
+  const nativePackage = stepRun(
+    namedStep(localSteps, "Package deterministic release archives"),
+  );
+  for (const [binary, identifier] of [
+    ["beholder-e1-core", "beholder-core"],
+    ["beholder-e2-gatekeeper", "beholder-gatekeeper"],
+    ["beholder-evidence", "beholder-evidence"],
+  ]) {
+    if (
+      !nativeBuild.includes(`-o ../../dist/build/beholder/${binary} `) ||
+      !exactBuildSigning.includes(`sign_exact_build dist/build/beholder/${binary} \\\n  com.github.vizards.onenod.${identifier}`) ||
+      !exactBuildVerification.includes(`verify_exact_build dist/build/beholder/${binary} \\\n  com.github.vizards.onenod.${identifier}`)
+    ) {
+      fail("native release jobs must build, sign and verify every Beholder component");
+    }
+  }
+  if (
+    !nativePackage.includes("--beholder-directory dist/build/beholder") ||
+    !nativePackage.includes("python3 scripts/release/verify-beholder-runtime.py") ||
+    !nativePackage.includes("python3 scripts/release/verify-beholder-hook.py --may dist/build/may")
+  ) {
+    fail("native release jobs must package and verify the Beholder runtime and Hook contract");
+  }
   const publishJob = workflowJob(workflow, "publish");
   const publishSteps = workflowSteps(publishJob, "publish");
   const publishCheckout = namedStep(

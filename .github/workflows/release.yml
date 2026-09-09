@@ -331,11 +331,22 @@ jobs:
         run: |
           go test ./...
           go -C keychainhelper test ./...
-          mkdir -p ../../dist/build ../../dist/release
+          go -C ../beholder-core test ./...
+          go -C ../beholder-gatekeeper test ./...
+          mkdir -p ../../dist/build/beholder ../../dist/release
           go build -trimpath -buildvcs=true \
             -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
             -o ../../dist/build/may .
           test "$(lipo -archs ../../dist/build/may)" = "$EXPECTED_ARCH"
+          go -C ../beholder-core build -trimpath -buildvcs=true \
+            -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
+            -o ../../dist/build/beholder/beholder-e1-core .
+          go -C ../beholder-gatekeeper build -trimpath -buildvcs=true \
+            -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
+            -o ../../dist/build/beholder/beholder-e2-gatekeeper .
+          go -C ../beholder-gatekeeper build -trimpath -buildvcs=true \
+            -ldflags="-s -w -X main.productVersion=$RELEASE_VERSION -X main.sourceCommit=$SOURCE_SHA -X main.releaseTag=$RELEASE_TAG" \
+            -o ../../dist/build/beholder/beholder-evidence ./tools/evidence-viewer
           if [ "$HELPER_CHANGED" = "true" ]; then
             go -C keychainhelper build -trimpath -buildvcs=true \
               -ldflags="-s -w -X main.helperVersion=$HELPER_VERSION -X main.sourceCommit=$SOURCE_SHA" \
@@ -381,6 +392,12 @@ jobs:
           sign_exact_build \
             dist/build/may-ssh-sign \
             com.github.vizards.onenod.may-ssh-sign
+          sign_exact_build dist/build/beholder/beholder-e1-core \
+            com.github.vizards.onenod.beholder-core
+          sign_exact_build dist/build/beholder/beholder-e2-gatekeeper \
+            com.github.vizards.onenod.beholder-gatekeeper
+          sign_exact_build dist/build/beholder/beholder-evidence \
+            com.github.vizards.onenod.beholder-evidence
           if [ "$HELPER_CHANGED" = "true" ]; then
             sign_exact_build \
               dist/build/onenod-keychain-helper \
@@ -476,6 +493,12 @@ jobs:
             dist/build/onenod-keychain-helper \
             com.github.vizards.onenod.keychain-helper \
             strict
+          verify_exact_build dist/build/beholder/beholder-e1-core \
+            com.github.vizards.onenod.beholder-core strict
+          verify_exact_build dist/build/beholder/beholder-e2-gatekeeper \
+            com.github.vizards.onenod.beholder-gatekeeper strict
+          verify_exact_build dist/build/beholder/beholder-evidence \
+            com.github.vizards.onenod.beholder-evidence strict
       - name: Verify embedded binary versions
         env:
           HELPER_VERSION: ${{ needs.prepare.outputs.helper_version }}
@@ -528,12 +551,17 @@ jobs:
           node scripts/release/package-artifact.mjs local \
             --binary dist/build/may \
             --adapter-binary dist/build/may-ssh-sign \
+            --beholder-directory dist/build/beholder \
             --arch "$ARCH" \
             --version "$RELEASE_VERSION" \
             --commit "$SOURCE_SHA" \
             --notices dist/notices/may.txt \
             --components dist/notices/may-components.json \
             --output "dist/release/onenod-darwin-$ARCH.tar.gz"
+          python3 scripts/release/verify-beholder-runtime.py \
+            --archive "dist/release/onenod-darwin-$ARCH.tar.gz" \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_SHA" --arch "$ARCH"
+          python3 scripts/release/verify-beholder-hook.py --may dist/build/may
           helper_name="onenod-keychain-helper-$HELPER_VERSION-darwin-$ARCH.tar.gz"
           if [ "$HELPER_CHANGED" = "true" ]; then
             node scripts/release/package-artifact.mjs helper \

@@ -67,6 +67,9 @@ async function stageLocalArtifact(temporaryRoot, values) {
   await copyExecutable(values.adapterBinary, adapterPath);
   await copyRequiredFile(resolve(repositoryRoot, "LICENSE"), join(root, "LICENSE"));
   await stageThirdPartyInventory(root, values);
+  if (values.beholderDirectory !== "") {
+    await stageBeholderRuntime(root, values);
+  }
   await writeReleaseMetadata(root, {
     architecture: values.arch,
     artifact_kind: "local",
@@ -87,6 +90,40 @@ async function stageLocalArtifact(temporaryRoot, values) {
     source_commit: values.commit,
   });
   return root;
+}
+
+async function stageBeholderRuntime(root, values) {
+  const destination = join(root, "beholder");
+  const identities = {
+    "beholder-e1-core": "com.github.vizards.onenod.beholder-core",
+    "beholder-e2-gatekeeper": "com.github.vizards.onenod.beholder-gatekeeper",
+    "beholder-evidence": "com.github.vizards.onenod.beholder-evidence",
+  };
+  const files = {};
+  for (const [name, identifier] of Object.entries(identities)) {
+    const target = join(destination, name);
+    await copyExecutable(join(values.beholderDirectory, name), target);
+    const identity = await exactCodeIdentity(target, values.arch);
+    const details = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", target], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (details.status !== 0 || !details.stderr.split("\n").includes(`Identifier=${identifier}`)) {
+      fail(`Beholder component identity differs from its role: ${name}`);
+    }
+    files[name] = { sha256: await sha256File(target), identifier, exact_code_identity: identity };
+  }
+  for (const [source, name] of [
+    ["cmd/may/internal/beholdercontext/managed.example.toml", "managed.example.toml"],
+    ["scripts/release/verify-beholder-runtime.py", "verify-runtime.py"],
+  ]) {
+    await copyRequiredFile(resolve(repositoryRoot, source), join(destination, name));
+    files[name] = { sha256: await sha256File(join(destination, name)) };
+  }
+  await writeFile(join(destination, "manifest.json"), `${JSON.stringify({
+    schema_version: 1, record_type: "onenod_beholder_artifacts", beholder_version: "v30",
+    release_version: values.version, source_commit: values.commit, architecture: values.arch,
+    files,
+  }, null, 2)}\n`, { mode: 0o644, flag: "wx" });
 }
 
 async function stageHelperArtifact(temporaryRoot, values) {
@@ -417,6 +454,7 @@ function parseOptions(args) {
   const values = {
     arch: "",
     adapterBinary: "",
+    beholderDirectory: "",
     binary: "",
     commit: "",
     components: "",
@@ -442,6 +480,9 @@ function parseOptions(args) {
         break;
       case "--binary":
         values.binary = resolve(value);
+        break;
+      case "--beholder-directory":
+        values.beholderDirectory = resolve(value);
         break;
       case "--commit":
         values.commit = value;
@@ -486,6 +527,9 @@ function parseOptions(args) {
   }
   if (values.kind === "local" && values.adapterBinary === "") {
     fail("local artifacts require the exact may SSH signing adapter binary");
+  }
+  if (values.kind !== "local" && values.beholderDirectory !== "") {
+    fail("Beholder runtime belongs only to the native local archive");
   }
   if (values.kind === "helper") {
     requireStableVersion(values.helperVersion, "helper version");

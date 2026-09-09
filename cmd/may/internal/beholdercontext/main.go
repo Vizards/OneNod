@@ -31,6 +31,7 @@ type hookInput struct {
 	ToolUseID      string          `json:"tool_use_id"`
 	Prompt         string          `json:"prompt"`
 	ToolInput      json.RawMessage `json:"tool_input"`
+	ToolResponse   json.RawMessage `json:"tool_response"`
 }
 
 type sessionEnvelope struct {
@@ -96,9 +97,9 @@ func run(args []string, stdin io.Reader, stdout io.Writer) {
 	decoder := json.NewDecoder(io.LimitReader(stdin, maximumHookInputSize+1))
 	var input hookInput
 	if decoder.Decode(&input) != nil || !validHookEventInput(input) ||
-		!safeJoinKey(input.SessionID) || !safeJoinKey(input.TurnID) ||
-		!filepath.IsAbs(input.TranscriptPath) || !filepath.IsAbs(input.CWD) || !safeLabel(input.Model) ||
-		!safePermissionMode(input.PermissionMode) {
+		!safeJoinKey(input.SessionID) || (input.HookEventName != "SessionEnd" && !safeJoinKey(input.TurnID)) ||
+		!filepath.IsAbs(input.TranscriptPath) || !filepath.IsAbs(input.CWD) ||
+		(input.Model != "" && !safeLabel(input.Model)) || (input.PermissionMode != "" && !safePermissionMode(input.PermissionMode)) {
 		writeHookResult(resultPath, fail(record, "invalid-hook-input"))
 		fmt.Fprintln(stdout, "{}")
 		return
@@ -144,8 +145,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) {
 	record.MetadataThreadRef = hashRef("thread", metadataID)
 	record.SessionMetadataMatched = input.SessionID == metadataID
 	record.CWDRelation = cwdRelation(metadataCWD, input.CWD)
-	if !record.SessionMetadataMatched ||
-		(record.CWDRelation != "exact" && record.CWDRelation != "descendant") {
+	if !record.SessionMetadataMatched {
 		writeHookResult(resultPath, fail(record, "hook-evidence-conflict"))
 		fmt.Fprintln(stdout, "{}")
 		return
@@ -199,12 +199,13 @@ func hookToolCommand(toolName string, raw json.RawMessage) (string, string, bool
 }
 
 type hookRelayRequest struct {
-	SchemaVersion int                    `json:"schema_version"`
-	Kind          string                 `json:"kind"`
-	ThreadID      string                 `json:"thread_id,omitempty"`
-	ToolRef       string                 `json:"tool_ref,omitempty"`
-	Prompt        *hookPromptObservation `json:"prompt,omitempty"`
-	Host          *hookHostObservation   `json:"host,omitempty"`
+	SchemaVersion int                       `json:"schema_version"`
+	Kind          string                    `json:"kind"`
+	ThreadID      string                    `json:"thread_id,omitempty"`
+	ToolRef       string                    `json:"tool_ref,omitempty"`
+	Prompt        *hookPromptObservation    `json:"prompt,omitempty"`
+	Host          *hookHostObservation      `json:"host,omitempty"`
+	Lifecycle     *hookLifecycleObservation `json:"lifecycle,omitempty"`
 }
 
 type hookPromptObservation struct {
@@ -260,6 +261,9 @@ func relayHookContext(
 			HookEventName: input.HookEventName, Model: input.Model,
 			PermissionMode: input.PermissionMode, ObservedAt: observedAt, Prompt: prompt,
 		}
+	case "PostToolUse", "Stop", "Interrupt", "SessionEnd":
+		request.Kind = "execution-lifecycle"
+		request.Lifecycle = &hookLifecycleObservation{SessionID: input.SessionID, TurnID: input.TurnID, ToolUseID: input.ToolUseID, TranscriptPath: input.TranscriptPath, Event: input.HookEventName, Terminal: terminalToolResponse(input.ToolResponse)}
 	case "PreToolUse":
 		request.Kind = "host-observation"
 		request.Host = &hookHostObservation{
@@ -310,8 +314,12 @@ func validToolRef(value string) bool {
 func validHookEventInput(input hookInput) bool {
 	switch input.HookEventName {
 	case "UserPromptSubmit":
-		return input.ToolName == "" && input.ToolUseID == "" && len(input.ToolInput) == 0 &&
+		return input.ToolName == "" && input.ToolUseID == "" && (len(input.ToolInput) == 0 || string(input.ToolInput) == "null") &&
 			input.Prompt != "" && len(input.Prompt) <= maximumHookInputSize
+	case "Stop", "Interrupt", "SessionEnd":
+		return input.Prompt == "" && input.ToolUseID == "" && (len(input.ToolInput) == 0 || string(input.ToolInput) == "null")
+	case "PostToolUse":
+		return safeJoinKey(input.ToolUseID) && len(input.ToolResponse) > 0 && json.Valid(input.ToolResponse)
 	case "PreToolUse":
 		return (input.ToolName == "Bash" || input.ToolName == "exec" || input.ToolName == "functions.exec") &&
 			safeJoinKey(input.ToolUseID) && len(input.ToolInput) != 0 &&

@@ -47,3 +47,26 @@ Requester-reported Beholder diagnostics describe fallback stages and correlate
 a local trace with a OneNod request. They are optional display metadata, never
 authorization evidence. A diagnostic cannot create a Core binding, substitute
 for its signature, or change the Gateway's human approval requirements.
+
+The optional v30 runtime is distributed inside the authenticated native archive;
+the ordinary requester update does not install or enable its root service.
+Enabling it requires a separate attended installation and a root-controlled
+deployment confirmation. Its dogfooding limitations are explicit:
+
+- Tool attribution combines kernel process lifetime with eligible Hook
+  observations. The host does not provide a trusted call-to-spawn event, and
+  same-user session data is not an independent authority. Overlapping or shared
+  execution roots can therefore require human review.
+- Working directory, command keywords and history length do not independently
+  decide user authorization. The model receives source-labelled context and
+  declared coverage gaps, including different task and execution directories.
+- Arbitrary task text may contain sensitive information. It is sent to the
+  configured model without heuristic credential scanning; protocol-owned
+  credentials and signing material remain excluded at their sources.
+- A model can misinterpret permission, incomplete context or injected content.
+  Only a valid primary result can request an exact, short-lived Core signature;
+  ambiguity, capacity limits and verification failures retain human approval.
+
+These concessions are specific to the explicitly enabled dogfooding authority.
+Ordinary message delivery remains available when Hook capture fails; capture
+failure does not grant access to a requested credential or signature.

@@ -360,7 +360,7 @@ func TestManagedConfigurationObservesEventsWithoutResultFiles(t *testing.T) {
 			t.Fatalf("managed config is missing %q", required)
 		}
 	}
-	if strings.Count(configuration, "--core-socket") != 2 ||
+	if strings.Count(configuration, "--core-socket") != 6 ||
 		strings.Contains(configuration, "--ssh-shim-dir") ||
 		strings.Contains(configuration, "--enter-tool-ref") ||
 		strings.Contains(configuration, "--result-path") {

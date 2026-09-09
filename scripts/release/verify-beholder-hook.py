@@ -32,7 +32,7 @@ def managed_command(guard=MANAGED_GUARD, core_socket=MANAGED_SOCKET):
 def commands_from_config(data):
     commands = [json.loads(line.split('=', 1)[1].strip())
                 for line in data.decode().splitlines() if line.startswith('command = ')]
-    if commands != [managed_command(), managed_command()]:
+    if len(commands) not in (2, 6) or any(command != managed_command() for command in commands):
         raise RuntimeError('Managed Hook command differs from the reviewed availability contract')
     return commands
 
@@ -64,16 +64,21 @@ def verify_hook_contract(guard, config=None, run_as_user=None):
         if run_as_user is not None:
             os.chown(root, run_as_user, 20)
             os.chown(transcript, run_as_user, 20)
-        for index, event_name in enumerate(['UserPromptSubmit', 'PreToolUse']):
+        events = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd'][:len(commands)]
+        for index, event_name in enumerate(events):
             address = root / 'core.sock'
             event = {'session_id': 'hook-contract-session', 'turn_id': 'hook-contract-turn',
-                'transcript_path': str(transcript), 'cwd': str(root), 'model': 'gpt-5.6-luna',
+                'transcript_path': str(transcript), 'cwd': str(root / 'sibling-project'), 'model': 'gpt-5.6-luna',
                 'permission_mode': 'dontAsk', 'hook_event_name': event_name}
             if event_name == 'UserPromptSubmit':
                 event['prompt'] = 'Beholder packaging acceptance dummy prompt'
-            else:
+            elif event_name == 'PreToolUse':
                 event.update(tool_name='functions.exec', tool_use_id='hook-contract-tool',
                              tool_input='await tools.exec_command({cmd: "true"});')
+            elif event_name == 'PostToolUse':
+                event.update(tool_name='Bash', tool_use_id='hook-contract-tool', tool_response={'exit_code': 0})
+            elif event_name == 'SessionEnd':
+                event.pop('turn_id')
             received, errors = [], []
             with socket.socket(socket.AF_UNIX) as listener:
                 listener.bind(str(address))
@@ -119,14 +124,22 @@ def verify_hook_contract(guard, config=None, run_as_user=None):
             if result.returncode != 0 or result.stdout != b'{}\n' or result.stderr:
                 raise RuntimeError('Packaged Hook changed the Codex continuation response')
             request = received[0]
-            kind = 'prompt-observation' if event_name == 'UserPromptSubmit' else 'host-observation'
+            lifecycle = event_name in ('PostToolUse', 'Stop', 'Interrupt', 'SessionEnd')
+            kind = 'execution-lifecycle' if lifecycle else ('prompt-observation' if event_name == 'UserPromptSubmit' else 'host-observation')
             if request.get('kind') != kind or request.get('schema_version') != 1:
                 raise RuntimeError('Wrong Hook relay component or schema')
-            observation = request['prompt' if event_name == 'UserPromptSubmit' else 'host']
-            for key in ['session_id', 'turn_id', 'transcript_path', 'cwd', 'hook_event_name']:
+            field = 'lifecycle' if lifecycle else ('prompt' if event_name == 'UserPromptSubmit' else 'host')
+            observation = request[field]
+            keys = ['session_id', 'transcript_path'] if lifecycle else ['session_id', 'turn_id', 'transcript_path', 'cwd', 'hook_event_name']
+            for key in keys:
                 if observation.get(key) != event[key]:
                     raise RuntimeError('Hook relay changed event binding: ' + key)
-            if event_name == 'UserPromptSubmit':
+            if lifecycle:
+                if observation.get('event') != event_name or observation.get('turn_id', '') != event.get('turn_id', ''):
+                    raise RuntimeError('Hook relay changed lifecycle binding')
+                if event_name == 'PostToolUse' and not observation.get('terminal'):
+                    raise RuntimeError('Hook relay lost structured terminal exit')
+            elif event_name == 'UserPromptSubmit':
                 if base64.b64decode(observation['prompt']).decode() != event['prompt']:
                     raise RuntimeError('Hook relay changed the prompt')
             elif observation.get('tool_input') != event['tool_input']:
@@ -174,10 +187,10 @@ class GuardTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b'{}\n', b''))
         self.assertLess(time.monotonic() - start, 4)
 
-    def test_real_worker_relays_both_events_through_actual_guard(self):
+    def test_real_worker_relays_all_lifecycle_events_through_actual_guard(self):
         shutil.copy2(self.worker, self.worker_path)
         config = Path(__file__).resolve().parents[2] / 'cmd/may/internal/beholdercontext/managed.example.toml'
-        self.assertEqual(len(verify_hook_contract(self.guard, config.read_bytes())), 2)
+        self.assertEqual(len(verify_hook_contract(self.guard, config.read_bytes())), 6)
 
     def test_missing_and_unexecutable_worker(self):
         self.assert_continues()

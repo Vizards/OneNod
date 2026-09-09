@@ -145,6 +145,34 @@ test("may cannot silently lose its constrained 1Password SDK loader policy", () 
   );
 });
 
+test("every Beholder component must retain native build and identity verification", () => {
+  for (const binary of ["beholder-e1-core", "beholder-e2-gatekeeper", "beholder-evidence"]) {
+    for (const before of [
+      `-o ../../dist/build/beholder/${binary} `,
+      `sign_exact_build dist/build/beholder/${binary} `,
+      `verify_exact_build dist/build/beholder/${binary} `,
+    ]) {
+      assert.throws(
+        () => validateReleaseWorkflow(replaceOnce(workflow, before, "echo omitted ")),
+        /must build, sign and verify every Beholder component/u,
+      );
+    }
+  }
+});
+
+test("Beholder package and Hook checks cannot be omitted", () => {
+  for (const before of [
+    "--beholder-directory dist/build/beholder",
+    "python3 scripts/release/verify-beholder-runtime.py",
+    "python3 scripts/release/verify-beholder-hook.py --may dist/build/may",
+  ]) {
+    assert.throws(
+      () => validateReleaseWorkflow(replaceOnce(workflow, before, "echo omitted")),
+      /must package and verify the Beholder runtime and Hook contract/u,
+    );
+  }
+});
+
 function replaceOnce(value, before, after) {
   const changed = value.replace(before, after);
   assert.notEqual(changed, value, `fixture text is missing: ${before}`);
