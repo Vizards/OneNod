@@ -72,9 +72,10 @@ type catalogItemResponse struct {
 }
 
 type clientObservation struct {
-	Application string              `json:"application"`
-	Identity    applicationIdentity `json:"identity"`
-	Source      string              `json:"source"`
+	BeholderDiagnostic *beholderDiagnostic `json:"beholder_diagnostic,omitempty"`
+	Application        string              `json:"application"`
+	Identity           applicationIdentity `json:"identity"`
+	Source             string              `json:"source"`
 }
 
 type applicationAuthorizationScope struct {
@@ -83,31 +84,34 @@ type applicationAuthorizationScope struct {
 }
 
 type createRequest struct {
-	Action             string                         `json:"action"`
-	AuthorizationScope *applicationAuthorizationScope `json:"authorization_scope,omitempty"`
-	Client             clientObservation              `json:"client"`
-	ExpectedVersion    int64                          `json:"expected_version"`
-	FieldID            string                         `json:"field_id"`
-	IdempotencyKey     string                         `json:"idempotency_key"`
-	ItemID             string                         `json:"item_id"`
+	Action                string                         `json:"action"`
+	AuthorizationScope    *applicationAuthorizationScope `json:"authorization_scope,omitempty"`
+	BeholderAuthorization *beholderAuthorization         `json:"beholder_authorization,omitempty"`
+	Client                clientObservation              `json:"client"`
+	ExpectedVersion       int64                          `json:"expected_version"`
+	FieldID               string                         `json:"field_id"`
+	IdempotencyKey        string                         `json:"idempotency_key"`
+	ItemID                string                         `json:"item_id"`
 }
 
 type credentialUseRequest struct {
-	Action             string                         `json:"action"`
-	AuthorizationScope *applicationAuthorizationScope `json:"authorization_scope,omitempty"`
-	Client             clientObservation              `json:"client"`
-	ExpectedVersion    int64                          `json:"expected_version"`
-	FieldIDs           []string                       `json:"field_ids"`
-	IdempotencyKey     string                         `json:"idempotency_key"`
-	ItemID             string                         `json:"item_id"`
+	Action                string                         `json:"action"`
+	AuthorizationScope    *applicationAuthorizationScope `json:"authorization_scope,omitempty"`
+	BeholderAuthorization *beholderAuthorization         `json:"beholder_authorization,omitempty"`
+	Client                clientObservation              `json:"client"`
+	ExpectedVersion       int64                          `json:"expected_version"`
+	FieldIDs              []string                       `json:"field_ids"`
+	IdempotencyKey        string                         `json:"idempotency_key"`
+	ItemID                string                         `json:"item_id"`
 }
 
 type requestStatusResponse struct {
-	Error     string `json:"error,omitempty"`
-	ExpiresAt string `json:"expires_at"`
-	PollToken string `json:"poll_token,omitempty"`
-	RequestID string `json:"request_id"`
-	Status    string `json:"status"`
+	AuthorizationSource string `json:"authorization_source,omitempty"`
+	Error               string `json:"error,omitempty"`
+	ExpiresAt           string `json:"expires_at"`
+	PollToken           string `json:"poll_token,omitempty"`
+	RequestID           string `json:"request_id"`
+	Status              string `json:"status"`
 }
 
 type consumeRequest struct{}

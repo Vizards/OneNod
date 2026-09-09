@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func deployFirstReleaseBundle(
@@ -315,12 +316,51 @@ func inspectWorkerVersionSecretBindings(
 	wrangler, profile, cwd, config, worker, versionID string,
 	requiredSecrets, forbiddenSecrets []string,
 ) error {
+	return inspectWorkerVersionSecretBindingsWithRetry(
+		wrangler, profile, cwd, config, worker, versionID,
+		requiredSecrets, forbiddenSecrets,
+		workerVersionInspectAttempts, workerVersionInspectDelay,
+	)
+}
+
+func inspectWorkerVersionSecretBindingsWithRetry(
+	wrangler, profile, cwd, config, worker, versionID string,
+	requiredSecrets, forbiddenSecrets []string,
+	attempts int, delay time.Duration,
+) error {
+	if attempts < 1 || delay < 0 {
+		return errors.New("invalid Worker version inspection retry policy")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		retryable, err := inspectWorkerVersionSecretBindingsOnce(
+			wrangler, profile, cwd, config, worker, versionID,
+			requiredSecrets, forbiddenSecrets,
+		)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryable || attempt == attempts {
+			return lastErr
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+	return lastErr
+}
+
+func inspectWorkerVersionSecretBindingsOnce(
+	wrangler, profile, cwd, config, worker, versionID string,
+	requiredSecrets, forbiddenSecrets []string,
+) (bool, error) {
 	output, err := runWranglerCapture(wrangler, profile, cwd, []string{
 		"versions", "view", versionID, "--config", config, "--name", worker, "--json",
-	}, nil, operatorCommandTimeout)
+	}, nil, workerVersionInspectTimeout)
 	defer zeroBytes(output)
 	if err != nil {
-		return fmt.Errorf("inspect uploaded Worker version %s failed", worker)
+		return true, fmt.Errorf("inspect uploaded Worker version %s failed", worker)
 	}
 	var view struct {
 		ID        string `json:"id"`
@@ -332,26 +372,26 @@ func inspectWorkerVersionSecretBindings(
 		} `json:"resources"`
 	}
 	if json.Unmarshal(output, &view) != nil || view.ID != versionID {
-		return fmt.Errorf("Wrangler returned invalid version metadata for %s", worker)
+		return true, fmt.Errorf("Wrangler returned invalid version metadata for %s", worker)
 	}
 	present := map[string]string{}
 	for _, binding := range view.Resources.Bindings {
 		if _, duplicate := present[binding.Name]; duplicate {
-			return fmt.Errorf("uploaded Worker %s contains duplicate binding %s", worker, binding.Name)
+			return false, fmt.Errorf("uploaded Worker %s contains duplicate binding %s", worker, binding.Name)
 		}
 		present[binding.Name] = binding.Type
 	}
 	for _, name := range requiredSecrets {
 		if present[name] != "secret_text" {
-			return fmt.Errorf("uploaded Worker %s is missing secret binding %s", worker, name)
+			return false, fmt.Errorf("uploaded Worker %s is missing secret binding %s", worker, name)
 		}
 	}
 	for _, name := range forbiddenSecrets {
 		if present[name] != "" {
-			return fmt.Errorf("uploaded Worker %s still contains forbidden secret binding %s", worker, name)
+			return false, fmt.Errorf("uploaded Worker %s still contains forbidden secret binding %s", worker, name)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func readExactDeploymentVersion(wrangler, profile, config, worker string) (string, error) {

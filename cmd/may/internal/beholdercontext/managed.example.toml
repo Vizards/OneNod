@@ -1,0 +1,54 @@
+[features]
+hooks = true
+
+# Deliberately do not set default_permissions or experimental_network here.
+# The managed hook must not change the user's existing Codex permission mode.
+# A restricted-profile Unix-socket allowlist is validated separately in E1.
+
+[hooks]
+managed_dir = "/Library/Application Support/Beholder/codex-hooks"
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5
+
+[[hooks.PreToolUse]]
+matcher = "^(Bash|exec|functions\\.exec)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5
+statusMessage = "Capturing Beholder request context"
+
+[[hooks.PostToolUse]]
+matcher = "^(Bash|exec|functions\\.exec)$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5
+
+[[hooks.Interrupt]]
+
+[[hooks.Interrupt.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5
+
+[[hooks.SessionEnd]]
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
+timeout = 5

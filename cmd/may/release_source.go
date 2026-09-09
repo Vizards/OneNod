@@ -27,12 +27,11 @@ import (
 
 func defaultReleaseSource(client *http.Client) releaseSource {
 	if client == nil {
-		client = &http.Client{Timeout: releaseRequestTimeout}
+		// Release requests inherit the lifecycle-wide command deadline. A second
+		// client-wide timeout would cut valid large assets off mid-download.
+		client = &http.Client{}
 	}
 	safe := *client
-	if safe.Timeout == 0 || safe.Timeout > releaseRequestTimeout {
-		safe.Timeout = releaseRequestTimeout
-	}
 	safe.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
 		parsed := request.URL
 		host := strings.ToLower(parsed.Hostname())
@@ -723,7 +722,10 @@ func (source *githubReleaseSource) Download(
 	snapshot.Grow(int(artifact.Size))
 	hash := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(&snapshot, hash), io.LimitReader(response.Body, artifact.Size+1))
-	if copyErr != nil || written != artifact.Size {
+	if copyErr != nil {
+		return nil, errors.New("release artifact download failed")
+	}
+	if written != artifact.Size {
 		return nil, errors.New("release artifact size verification failed")
 	}
 	digest := "sha256:" + hex.EncodeToString(hash.Sum(nil))

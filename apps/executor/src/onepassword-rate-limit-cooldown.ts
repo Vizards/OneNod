@@ -1,3 +1,5 @@
+import type { DurableObjectSqlStorageLike } from "./execution-journal";
+
 const RATE_LIMIT_DELAYS_MS = [
   60_000,
   5 * 60_000,
@@ -11,13 +13,15 @@ interface CooldownRow {
   probe_until: number | null;
 }
 
+export type RateLimitCooldownAdmission = "normal" | "probe" | "rejected";
+
 /**
  * Durable, non-secret circuit breaker for the singleton 1Password Executor.
  * It suppresses repeated Service Account probes after an exact upstream 429;
  * it is not a quota estimator and never changes non-429 failures into 429s.
  */
 export class OnePasswordRateLimitCooldown {
-  constructor(private readonly storage: DurableObjectStorage) {}
+  constructor(private readonly storage: DurableObjectSqlStorageLike) {}
 
   initialize(): void {
     this.storage.sql.exec(
@@ -37,12 +41,14 @@ export class OnePasswordRateLimitCooldown {
     );
   }
 
-  /** Returns false when a known cooldown can reject without touching 1Password. */
-  beforeOperation(now: number, probeLeaseMs: number): boolean {
+  /** Distinguishes ordinary traffic from the one request holding a probe lease. */
+  beforeOperation(now: number, probeLeaseMs: number): RateLimitCooldownAdmission {
     return this.storage.transactionSync(() => {
       const row = this.row();
-      if (row.consecutive_rate_limits === 0) return true;
-      if (row.next_probe_at > now || (row.probe_until ?? 0) > now) return false;
+      if (row.consecutive_rate_limits === 0) return "normal";
+      if (row.next_probe_at > now || (row.probe_until ?? 0) > now) {
+        return "rejected";
+      }
       const reserved = this.storage.sql.exec(
         `UPDATE onepassword_rate_limit_cooldown
          SET probe_until = ?, updated_at = ?
@@ -55,17 +61,22 @@ export class OnePasswordRateLimitCooldown {
         now,
         now,
       ).toArray();
-      return reserved.length === 1;
+      return reserved.length === 1 ? "probe" : "rejected";
     });
   }
 
-  recordSuccess(now: number, operationStartedAt: number): void {
+  recordSuccess(
+    admission: RateLimitCooldownAdmission,
+    now: number,
+    operationStartedAt: number,
+  ): void {
+    if (admission !== "probe") return;
     this.storage.sql.exec(
       `UPDATE onepassword_rate_limit_cooldown
        SET consecutive_rate_limits = 0, next_probe_at = 0,
            probe_until = NULL, updated_at = ?
        WHERE singleton = 1
-         AND (consecutive_rate_limits = 0 OR next_probe_at <= ?)`,
+         AND consecutive_rate_limits > 0 AND next_probe_at <= ?`,
       now,
       operationStartedAt,
     );
@@ -98,7 +109,12 @@ export class OnePasswordRateLimitCooldown {
     });
   }
 
-  releaseProbe(now: number, operationStartedAt: number): void {
+  releaseProbe(
+    admission: RateLimitCooldownAdmission,
+    now: number,
+    operationStartedAt: number,
+  ): void {
+    if (admission !== "probe") return;
     this.storage.sql.exec(
       `UPDATE onepassword_rate_limit_cooldown
        SET probe_until = NULL, updated_at = ?

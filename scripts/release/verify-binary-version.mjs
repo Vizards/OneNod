@@ -45,6 +45,17 @@ if (
   fail("Keychain helper reports metadata that differs from the tagged build");
 }
 
+// These managed aliases must be the exact attested requester bytes. Exercise
+// their actual argv dispatch, event relays and failure isolation before release.
+const hooks = spawnSync(
+  "python3",
+  [resolve(import.meta.dirname, "verify-beholder-hook.py"), "--may", options.may],
+  { stdio: "inherit", timeout: 60_000 },
+);
+if (hooks.status !== 0) {
+  fail("the tagged may binary failed managed Beholder Hook acceptance");
+}
+
 process.stdout.write(
   `${JSON.stringify({
     event: "release_binary_versions_verified",

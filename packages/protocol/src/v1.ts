@@ -81,6 +81,12 @@ export interface RequesterSelfResponse {
 }
 
 export type Decision = "approve" | "reject";
+export type AuthorizationSource =
+  | "beholder-authoritative"
+  | "pwa-interactive"
+  | "remembered-grant"
+  | "pending"
+  | "unknown";
 
 export type SshAuthorizationDuration =
   | "until-lock"
@@ -157,7 +163,18 @@ export interface CatalogItemResponse {
   item: CatalogItemResult;
 }
 
+/** Requester-reported diagnostics only; never evidence of authorization. */
+export interface BeholderDiagnostic {
+  schema_version: 1;
+  trace_id: string;
+  stage: "lease" | "proxy" | "binding" | "core" | "model";
+  code: string;
+  model_called?: boolean;
+  evidence_id?: string;
+}
+
 export interface ClientObservationRequest {
+  beholder_diagnostic?: BeholderDiagnostic;
   application: string;
   identity?: ApplicationIdentityRequest;
   source: "process-ancestry" | "unavailable";
@@ -222,9 +239,28 @@ export type SshOperationRequest =
   | SshAuthenticationOperationRequest
   | SshOpaqueSignatureOperationRequest;
 
+/**
+ * A short-lived, single-use authorization issued by the root-controlled
+ * Beholder Core. The signed target is the SHA-256 of the canonical request
+ * body with this envelope omitted, so the Gateway can independently rebuild
+ * and verify the exact operation that the model evaluated.
+ */
+export interface BeholderAuthorizationRequest {
+  schema_version: 1;
+  decision: "allow";
+  evidence_id: string;
+  expires_at: number;
+  issued_at: number;
+  key_id: string;
+  operation_target_sha256: string;
+  requester_device_id: string;
+  signature: string;
+}
+
 export interface SecretReadCreateRequest {
   action: "secret.read";
   authorization_scope?: ApplicationAuthorizationScopeRequest;
+  beholder_authorization?: BeholderAuthorizationRequest;
   client: ClientObservationRequest;
   expected_version: number;
   field_id: string;
@@ -240,6 +276,7 @@ export interface SecretReadCreateRequest {
 export interface CredentialUseCreateRequest {
   action: "credential.use";
   authorization_scope?: ApplicationAuthorizationScopeRequest;
+  beholder_authorization?: BeholderAuthorizationRequest;
   client: ClientObservationRequest;
   expected_version: number;
   field_ids: string[];
@@ -271,6 +308,7 @@ export interface ItemCreateFieldRequest {
 
 export interface ItemCreateRequest {
   action: "item.create";
+  beholder_authorization?: BeholderAuthorizationRequest;
   category: WritableItemCategory;
   client: ClientObservationRequest;
   fields: ItemCreateFieldRequest[];
@@ -298,6 +336,7 @@ export type ItemPatchOperationRequest =
 
 export interface ItemPatchRequest {
   action: "item.patch";
+  beholder_authorization?: BeholderAuthorizationRequest;
   client: ClientObservationRequest;
   expected_version: number;
   idempotency_key: string;
@@ -307,6 +346,7 @@ export interface ItemPatchRequest {
 
 export interface ItemArchiveRequest {
   action: "item.archive";
+  beholder_authorization?: BeholderAuthorizationRequest;
   client: ClientObservationRequest;
   expected_version: number;
   idempotency_key: string;
@@ -322,6 +362,7 @@ export interface SshSignCreateRequest {
   action: "ssh.sign";
   algorithm: SshSignatureAlgorithm;
   authorization_session?: SshAuthorizationSessionRequest;
+  beholder_authorization?: BeholderAuthorizationRequest;
   client: ClientObservationRequest;
   data: string;
   expected_fingerprint: string;
@@ -368,12 +409,14 @@ export type SecretReadStatus =
   | "unknown";
 
 export interface SecretReadCreateResponse {
+  authorization_source?: AuthorizationSource;
   expires_at: string;
   request_id: string;
   status: SecretReadStatus;
 }
 
 export interface SecretReadStatusResponse {
+  authorization_source?: AuthorizationSource;
   authorized_until?: string;
   error?: string;
   expires_at: string;

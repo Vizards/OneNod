@@ -29,7 +29,11 @@ const (
 )
 
 var workersDevHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.workers\.dev$`)
+var cloudflareRayIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{16}(?:-[A-Z]{3})?$`)
 var safeGatewayErrorCodes = map[string]int{
+	"executor_internal_error":  http.StatusServiceUnavailable,
+	"executor_unavailable":     http.StatusBadGateway,
+	"executor_timeout":         http.StatusGatewayTimeout,
 	"field_not_found":          http.StatusNotFound,
 	"item_stale":               http.StatusConflict,
 	"onepassword_rate_limited": http.StatusTooManyRequests,
@@ -39,10 +43,18 @@ var safeGatewayErrorCodes = map[string]int{
 type gatewayHTTPError struct {
 	Code   string
 	Status int
+	RayID  string
 }
 
 func (value *gatewayHTTPError) Error() string {
-	return fmt.Sprintf("gateway returned %s (HTTP %d)", value.Code, value.Status)
+	message := fmt.Sprintf("gateway returned HTTP %d", value.Status)
+	if value.Code != "" {
+		message = fmt.Sprintf("gateway returned %s (HTTP %d)", value.Code, value.Status)
+	}
+	if value.RayID != "" {
+		message += fmt.Sprintf(" (CF Ray ID: %s)", value.RayID)
+	}
+	return message
 }
 
 func isGatewayErrorCode(err error, code string) bool {
@@ -279,10 +291,12 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 		// Gateway error bodies may contain request metadata or secret-shaped
 		// upstream diagnostics. Do not attach them to CLI errors.
 		code := response.Header.Get(headerGatewayErrorCode)
-		if isSafeGatewayErrorCode(code, response.StatusCode) {
-			return &gatewayHTTPError{Code: code, Status: response.StatusCode}
+		if !isSafeGatewayErrorCode(code, response.StatusCode) {
+			code = ""
 		}
-		return fmt.Errorf("gateway returned HTTP %d", response.StatusCode)
+		return &gatewayHTTPError{
+			Code: code, Status: response.StatusCode, RayID: safeCloudflareRayID(response.Header),
+		}
 	}
 	if mediaType := strings.ToLower(response.Header.Get("content-type")); mediaType != "" &&
 		!strings.HasPrefix(mediaType, "application/json") {
@@ -295,6 +309,14 @@ func (client *apiClient) executeJSON(request *http.Request, result any) error {
 		return errors.New("gateway returned invalid JSON")
 	}
 	return nil
+}
+
+func safeCloudflareRayID(headers http.Header) string {
+	values := headers.Values("cf-ray")
+	if len(values) == 1 && cloudflareRayIDPattern.MatchString(values[0]) {
+		return values[0]
+	}
+	return ""
 }
 
 func isSafeGatewayErrorCode(code string, status int) bool {

@@ -157,6 +157,7 @@ export class GatewayOperationError extends Error {
   constructor(
     readonly code:
       | "catalog_query_invalid"
+      | "executor_internal_error"
       | "executor_storage_pressure"
       | "field_not_found"
       | "item_operation_invalid"

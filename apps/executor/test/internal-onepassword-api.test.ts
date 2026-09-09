@@ -9,6 +9,7 @@ import {
   type ExecutionJournalTransaction,
   type ExecutionIdentity,
 } from "../src/execution-journal.ts";
+import { ExecutorRequestError } from "../src/executor-request-error.ts";
 import {
   EXECUTOR_BODY_DIGEST_HEADER,
   EXECUTOR_REQUEST_ID_HEADER,
@@ -103,7 +104,9 @@ test("request parsing rejects non-JSON, oversized, and open mutation bodies", as
       }),
       16,
     ),
-    /request_content_type_invalid/u,
+    (error) =>
+      error instanceof ExecutorRequestError &&
+      error.message === "request_content_type_invalid",
   );
   await assert.rejects(
     readJsonObject(

@@ -71,7 +71,8 @@ export class ApprovalRequestStore {
   findRequestRow(id: string): RequestRow | undefined {
     return this.first<RequestRow>(
       `SELECT id, requester_device_id, requester_name, action,
-              client_application, client_source, application_assurance,
+              authorization_source, beholder_evidence_id, beholder_key_id,
+              client_application, client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
@@ -97,9 +98,10 @@ export class ApprovalRequestStore {
   requestActivityRow(requestId: string): RequestActivityRow | undefined {
     return this.first<RequestActivityRow>(
       `SELECT request_id, action, status, created_at, terminal_at, expires_at,
+              authorization_source, beholder_evidence_id, beholder_key_id,
               decided_at, consumed_at, item_title, field_label,
               expected_version, requester_name, client_application,
-              client_source, application_assurance,
+              client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
@@ -120,13 +122,15 @@ export class ApprovalRequestStore {
         `INSERT INTO request_activity
           (request_id, action, status, created_at, terminal_at, expires_at,
            decided_at, consumed_at, item_title, field_label, expected_version,
-           requester_name, client_application, client_source,
+           requester_name, client_application, client_source, beholder_diagnostic,
+           authorization_source, beholder_evidence_id, beholder_key_id,
            application_assurance, application_principal_scheme,
            application_principal_id, application_signing_identifier,
            application_team_identifier, application_signer_name, error_code)
          SELECT id, action, status, created_at, ?, expires_at, decided_at,
                 consumed_at, item_title, field_label, expected_version,
-                requester_name, client_application, client_source,
+                requester_name, client_application, client_source, beholder_diagnostic,
+                authorization_source, beholder_evidence_id, beholder_key_id,
                 application_assurance, application_principal_scheme,
                 application_principal_id, application_signing_identifier,
                 application_team_identifier, application_signer_name, error_code
@@ -137,6 +141,10 @@ export class ApprovalRequestStore {
            terminal_at = excluded.terminal_at,
            decided_at = excluded.decided_at,
            consumed_at = excluded.consumed_at,
+           authorization_source = excluded.authorization_source,
+           beholder_diagnostic = excluded.beholder_diagnostic,
+           beholder_evidence_id = excluded.beholder_evidence_id,
+           beholder_key_id = excluded.beholder_key_id,
            application_assurance = excluded.application_assurance,
            application_principal_scheme = excluded.application_principal_scheme,
            application_principal_id = excluded.application_principal_id,

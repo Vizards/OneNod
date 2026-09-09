@@ -56,29 +56,32 @@ type itemCreateFieldRequest struct {
 }
 
 type itemCreateRequest struct {
-	Action         string                   `json:"action"`
-	Category       string                   `json:"category"`
-	Fields         []itemCreateFieldRequest `json:"fields"`
-	IdempotencyKey string                   `json:"idempotency_key"`
-	Client         clientObservation        `json:"client"`
-	Title          string                   `json:"title"`
+	Action                string                   `json:"action"`
+	BeholderAuthorization *beholderAuthorization   `json:"beholder_authorization,omitempty"`
+	Category              string                   `json:"category"`
+	Fields                []itemCreateFieldRequest `json:"fields"`
+	IdempotencyKey        string                   `json:"idempotency_key"`
+	Client                clientObservation        `json:"client"`
+	Title                 string                   `json:"title"`
 }
 
 type itemPatchRequest struct {
-	Action          string               `json:"action"`
-	ExpectedVersion int64                `json:"expected_version"`
-	IdempotencyKey  string               `json:"idempotency_key"`
-	Client          clientObservation    `json:"client"`
-	ItemID          string               `json:"item_id"`
-	Operations      []itemPatchOperation `json:"operations"`
+	Action                string                 `json:"action"`
+	BeholderAuthorization *beholderAuthorization `json:"beholder_authorization,omitempty"`
+	ExpectedVersion       int64                  `json:"expected_version"`
+	IdempotencyKey        string                 `json:"idempotency_key"`
+	Client                clientObservation      `json:"client"`
+	ItemID                string                 `json:"item_id"`
+	Operations            []itemPatchOperation   `json:"operations"`
 }
 
 type itemArchiveRequest struct {
-	Action          string            `json:"action"`
-	ExpectedVersion int64             `json:"expected_version"`
-	IdempotencyKey  string            `json:"idempotency_key"`
-	Client          clientObservation `json:"client"`
-	ItemID          string            `json:"item_id"`
+	Action                string                 `json:"action"`
+	BeholderAuthorization *beholderAuthorization `json:"beholder_authorization,omitempty"`
+	ExpectedVersion       int64                  `json:"expected_version"`
+	IdempotencyKey        string                 `json:"idempotency_key"`
+	Client                clientObservation      `json:"client"`
+	ItemID                string                 `json:"item_id"`
 }
 
 type itemMutationResponse struct {
@@ -388,12 +391,13 @@ func mutationExpectedVersion(
 	return version, nil
 }
 
-func submitAndConsumeItemMutation(
-	request any,
+// Preserve the concrete type so &request can receive authorization or diagnostics.
+func submitAndConsumeItemMutation[T itemCreateRequest | itemPatchRequest | itemArchiveRequest](
+	request T,
 	localClient localClientContext,
 	config cliConfig,
 	deps dependencies,
-) error {
+) (returnErr error) {
 	credential, err := deps.keychain.Load()
 	if err != nil {
 		return err
@@ -402,6 +406,10 @@ func submitAndConsumeItemMutation(
 	if err != nil {
 		return err
 	}
+	observation := observeBeholderDirectRequest(deps, request, credential.DeviceID, config)
+	attachBeholderAuthorization(&request, observation)
+	outcome := newBeholderOutcomeTracker(deps, observation, false)
+	defer func() { outcome.finish(returnErr, returnErr == nil) }()
 	var created requestStatusResponse
 	createContext, cancelCreate := context.WithTimeout(context.Background(), gatewayRequestTimeout)
 	err = client.doApplicationJSON(
@@ -414,16 +422,21 @@ func submitAndConsumeItemMutation(
 	)
 	cancelCreate()
 	if err != nil {
+		outcome.failAt("gateway-create")
 		return err
 	}
 	if created.RequestID == "" || created.ExpiresAt == "" || created.PollToken == "" {
+		outcome.failAt("gateway-create-response")
 		return errors.New("gateway returned an invalid item request response")
 	}
 	status := normalizeStatus(created.Status)
+	outcome.setAuthorizationSource(created.AuthorizationSource)
+	outcome.setRequest(created.RequestID, status)
 	if status == "pending" {
 		fmt.Fprintf(deps.stderr, "Request %s submitted; waiting for human approval.\n", created.RequestID)
 		pollContext, cancelPoll, contextError := approvalWaitContext(created.ExpiresAt, config.timeout)
 		if contextError != nil {
+			outcome.failAt("approval-wait-setup")
 			return contextError
 		}
 		status, err = pollStatus(pollContext, config.pollInterval, func() (string, error) {
@@ -435,14 +448,18 @@ func submitAndConsumeItemMutation(
 			if current.RequestID != created.RequestID {
 				return "", errors.New("gateway status response changed the request ID")
 			}
+			outcome.observeStatus(current.Status)
 			return current.Status, nil
 		})
 		cancelPoll()
 		if err != nil {
+			outcome.failAt("approval-wait")
 			return err
 		}
 	}
 	if !isAuthorizedStatus(status) {
+		outcome.observeStatus(status)
+		outcome.failAt("authorization-status")
 		return fmt.Errorf("request reached unexpected status %q", status)
 	}
 
@@ -459,12 +476,15 @@ func submitAndConsumeItemMutation(
 	)
 	cancelConsume()
 	if err != nil {
+		outcome.failAt("gateway-consume")
 		return fmt.Errorf("consume item request %s: %w", created.RequestID, err)
 	}
 	if !consumed.OK || consumed.RequestID != created.RequestID {
+		outcome.failAt("gateway-consume-response")
 		return errors.New("gateway returned an invalid item consume response")
 	}
 	if normalizeStatus(consumed.Status) == "unknown" {
+		outcome.observeStatus(consumed.Status)
 		fmt.Fprintf(
 			deps.stderr,
 			"Request %s has an unknown write outcome; waiting for read-only reconciliation.\n",
@@ -477,12 +497,16 @@ func submitAndConsumeItemMutation(
 			config,
 		)
 		if err != nil {
+			outcome.failAt("item-reconciliation")
 			return err
 		}
 	}
 	if normalizeStatus(consumed.Status) != "consumed" || consumed.ItemID == "" {
+		outcome.failAt("item-completion")
 		return errors.New("gateway returned an invalid completed item response")
 	}
+	outcome.observeStatus(consumed.Status)
+	outcome.finish(nil, true)
 	return writeSafeJSON(deps.stdout, consumed)
 }
 

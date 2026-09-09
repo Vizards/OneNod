@@ -4,6 +4,7 @@ import { ExecutorTransportError } from "./executor-transport.js";
 
 const ERROR_STATUSES = new Map<string, ReadonlySet<number>>([
   ["catalog_query_invalid", new Set([400])],
+  ["executor_internal_error", new Set([503])],
   ["executor_storage_pressure", new Set([507])],
   ["item_operation_invalid", new Set([400])],
   ["field_not_found", new Set([404])],

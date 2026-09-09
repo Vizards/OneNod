@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Vizards/OneNod/cmd/may/internal/beholdercontext"
 )
 
 const gatewayRequestTimeout = 5 * time.Minute
@@ -18,12 +20,16 @@ const approvalObservationGrace = 5 * time.Second
 type dependencies struct {
 	applicationResolver    applicationResolver
 	approvalAgentActivator func(*userCLIInstallPlan) error
+	beholder               beholderRoundTripFunc
+	beholderOutcomeRoot    beholderOutcomeRootFunc
 	cloudflareTransport    http.RoundTripper
 	httpClient             *http.Client
 	keychain               keychainStore
 	localOnePassword       localOnePasswordFactory
 	localSSHAgent          localSSHAgentFactory
 	platformProbe          func() (hostPlatform, error)
+	processExec            processExecFunc
+	processRun             processRunFunc
 	releases               releaseSource
 	stderr                 io.Writer
 	stdin                  io.Reader
@@ -37,16 +43,30 @@ type cliConfig struct {
 }
 
 func main() {
+	// Managed observations never initialize requester state, flush outcomes, or
+	// enter a credential flow. Both aliases are copies of the attested may binary.
+	binaryName := filepath.Base(os.Args[0])
+	switch binaryName {
+	case beholdercontext.GuardName:
+		beholdercontext.RunGuard(os.Args[1:], os.Stdin, os.Stdout)
+		return
+	case beholdercontext.WorkerName:
+		beholdercontext.RunWorker(os.Args[1:], os.Stdin, os.Stdout)
+		return
+	}
 	deps := dependencies{
 		applicationResolver: resolveApplicationWithHelper,
+		beholder:            defaultBeholderRoundTrip,
+		beholderOutcomeRoot: defaultBeholderOutcomeRoot,
 		httpClient:          &http.Client{Timeout: gatewayRequestTimeout},
 		keychain:            keychainStore{},
+		processExec:         defaultProcessExec,
+		processRun:          defaultProcessRun,
 		stderr:              os.Stderr,
 		stdin:               os.Stdin,
 		stdout:              os.Stdout,
 	}
 	var err error
-	binaryName := filepath.Base(os.Args[0])
 	if binaryName == "may" && len(os.Args) > 1 && os.Args[1] == "__transport-finalize" {
 		err = runInternalTransportFinalize(os.Args[2:])
 		if err != nil {
@@ -55,9 +75,12 @@ func main() {
 		}
 		return
 	}
+	flushPendingBeholderOutcomes(deps)
 	switch binaryName {
 	case "may":
 		err = runCLI(os.Args[1:], deps)
+	case beholderSSHShimBinaryName:
+		err = runBeholderSSHShim(os.Args[1:], deps)
 	case gitSignAdapterBinaryName:
 		err = runGitSignAdapter(os.Args[1:], deps)
 	default:
@@ -229,10 +252,10 @@ Usage:
   may configure local-fallback status
   may configure local-fallback apply [--account <1Password-account-name-or-UUID>]
   may configure local-fallback restore
-  may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>] [--target <path>]
+  may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--search <query>] [--field Name=<id-or-label>] [--target <path>]
   may plugin status [plugin-or-command]
   may plugin doctor <plugin-or-command>
-  may plugin credential <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--field Name=<id-or-label>]
+  may plugin credential <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--search <query>] [--field Name=<id-or-label>]
   may plugin disable <plugin-or-command> --scope <global|directory>
   may [--origin URL] preflight
   may [--origin URL] enroll [--name "MacBook"] [--new-identity]

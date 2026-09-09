@@ -173,6 +173,30 @@ func TestHostBoundNativeArtifactExtractionRejectsOtherArchitecture(t *testing.T)
 	}
 }
 
+func TestLocalUpdaterIgnoresAuthenticatedBeholderBundle(t *testing.T) {
+	manifest := validManifestFixture("0.0.2-alpha.52", nil)
+	entries := testLocalReleaseArchiveEntries(t, manifest, runtime.GOARCH, runtime.GOARCH)
+	for _, name := range []string{"manifest.json", "beholder-e1-core", "beholder-e2-gatekeeper", "beholder-evidence"} {
+		entries = append(entries, testArchiveFile{
+			name: "onenod/beholder/" + name, content: []byte("separately installed Beholder fixture"),
+		})
+	}
+	snapshot := testReleaseArchiveSnapshot(t, entries)
+	if err := verifyReleaseArtifactInstallability(manifest, testNativeReleaseArtifact("local", runtime.GOARCH), snapshot); err != nil {
+		t.Fatalf("native artifact verifier rejected the extra Beholder bundle: %v", err)
+	}
+	destination := t.TempDir()
+	if _, err := extractVerifiedLocalArchive(snapshot, destination, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "onenod", "beholder")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the ordinary updater extracted the optional administrator-installed runtime")
+	}
+	if _, err := os.Stat(filepath.Join(destination, "onenod", "bin", "may")); err != nil {
+		t.Fatalf("ordinary requester extraction failed: %v", err)
+	}
+}
+
 func TestNativeArtifactInstallabilityRejectsInvalidManifestPlatform(t *testing.T) {
 	manifest := validManifestFixture("0.0.2-alpha.23", nil)
 	snapshot := testLocalReleaseArchive(t, manifest, runtime.GOARCH, runtime.GOARCH)
@@ -287,6 +311,15 @@ func testLocalReleaseArchive(
 	metadataArchitecture, identityArchitecture string,
 ) []byte {
 	t.Helper()
+	return testReleaseArchiveSnapshot(t, testLocalReleaseArchiveEntries(t, manifest, metadataArchitecture, identityArchitecture))
+}
+
+func testLocalReleaseArchiveEntries(
+	t *testing.T,
+	manifest releaseManifest,
+	metadataArchitecture, identityArchitecture string,
+) []testArchiveFile {
+	t.Helper()
 	mayBytes := []byte("verified may for " + metadataArchitecture)
 	adapterBytes := []byte("verified may SSH adapter for " + metadataArchitecture)
 	metadata := localReleaseMetadata{
@@ -306,11 +339,11 @@ func testLocalReleaseArchive(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testReleaseArchiveSnapshot(t, []testArchiveFile{
+	return []testArchiveFile{
 		{name: "onenod/RELEASE.json", content: metadataBytes},
 		{name: "onenod/bin/may", content: mayBytes},
 		{name: "onenod/bin/" + gitSignAdapterBinaryName, content: adapterBytes},
-	})
+	}
 }
 
 func testHelperReleaseArchive(

@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Route the OneNod lifecycle for deploying, installing, updating, operating, troubleshooting, and migrating 1Password credentials for remote coding Agents. Use for the human-controlled Cloudflare ceremony, requester or PWA enrollment, optional SSH and local quota-fallback integration, full-stack updates, approved secret or SSH operations, and reversible batch copies into the Agent Vault.
+description: Install or operate OneNod for Gateway deployment, requester/PWA enrollment, updates, troubleshooting, approved 1Password secret reads and item changes, SSH authentication or Git signing, quota-fallback integration, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod
@@ -10,6 +10,10 @@ Use the installed `may` binary's help for flags, argument shapes, detected
 state, and version-specific recovery instructions. Stable command-family names
 are included here so an Agent can choose the correct entry point.
 
+This distributed Skill serves installed-product operations. Editing OneNod source
+or documentation does not itself authorize installing a development build,
+changing the installed Skill, or running a production update.
+
 Treat this Skill as the complete OneNod lifecycle entry point. Do not require a
 project checkout, private maintainer documentation, or another 1Password Skill.
 Before `may` exists, use the bootstrap guidance in the Setup reference; after
@@ -17,7 +21,9 @@ installation, let `may` own executable plans and version-specific mechanics.
 
 ## Route the task
 
-Load one primary reference:
+Choose the reference for the requested operation; load another only when the task
+crosses that boundary. Routine reads or SSH signing do not require repeating
+setup, migration readiness, or a deployment ceremony:
 
 | Route | Load when |
 | --- | --- |
@@ -39,12 +45,23 @@ For migration, load the router plus only the applicable leaf:
 - Use the installed `may` requester for Agent work. `op` is reserved for a
   human-explicit 1Password administration or migration task described by this
   Skill; never route normal Agent access through `op` or another Skill.
-- Hand the terminal to the human from Wrangler account selection, browser
-  OAuth when needed, or 1Password unlock through the CLI's current-Mac
-  Cloudflare revocation check.
-- Treat Passkeys, macOS security prompts, account selection, production
-  deployment confirmation, revocation, and optional integration changes as
-  human decisions.
+- Outside an explicitly declared OneNod dogfooding stage, hand the terminal to
+  the human from Wrangler account selection, browser OAuth when needed, or
+  1Password unlock through the CLI's current-Mac Cloudflare revocation check.
+- When the human explicitly declares OneNod dogfooding and authorizes an exact
+  update in the current task, the Agent may drive that release-owned update
+  through deployment confirmation and verification under the guardrails in
+  [Update](references/update.md). This exception does not cover account
+  selection, new OAuth, Passkeys, 1Password unlock, a changed Keychain helper,
+  secret injection, manual rollback outside `may`'s built-in recovery, or an
+  Origin/RP-ID change.
+- Update or deployment authority never implies Wrangler revocation authority.
+  In dogfooding, retain every existing Wrangler profile and answer the CLI's
+  revocation prompt negatively unless the human separately and explicitly asks
+  to revoke the exact current-Mac authority in the current task.
+- Outside that narrow dogfooding exception, treat Passkeys, macOS security
+  prompts, account selection, production deployment confirmation, revocation,
+  and optional integration changes as human decisions.
 - Do not expose a Service Account token, recovered field, private key,
   bootstrap capability, or secret-bearing payload through Agent-visible
   output or storage.

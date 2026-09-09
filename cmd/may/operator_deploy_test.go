@@ -115,6 +115,33 @@ exit 1
 	}
 }
 
+func TestInspectWorkerVersionBindingsRetriesTransientRead(t *testing.T) {
+	directory := t.TempDir()
+	attempts := filepath.Join(directory, "attempts")
+	wrangler := writeWranglerFixture(t, `
+if [ "$1 $2" != "versions view" ]; then exit 2; fi
+count=0
+if [ -f "`+attempts+`" ]; then count=$(cat "`+attempts+`"); fi
+count=$((count + 1))
+printf '%s' "$count" > "`+attempts+`"
+if [ "$count" -eq 1 ]; then exit 1; fi
+printf '%s\n' '{"id":"`+testTargetWorkerVersion+`","resources":{"bindings":[{"name":"EXECUTOR_AUTH_TOKEN","type":"secret_text"}]}}'
+`)
+	if err := inspectWorkerVersionSecretBindingsWithRetry(
+		wrangler, "temporary", directory, "worker.jsonc", "gateway",
+		testTargetWorkerVersion, []string{"EXECUTOR_AUTH_TOKEN"}, nil, 2, 0,
+	); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(attempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "2" {
+		t.Fatalf("unexpected inspection attempts: %s", encoded)
+	}
+}
+
 func TestDeployPrivateWorkerScaffoldReportsConfirmedAbsence(t *testing.T) {
 	directory := t.TempDir()
 	config := filepath.Join(directory, "worker.jsonc")

@@ -1,3 +1,4 @@
+import { BeholderDiagnosticDisclosure } from "../components/beholder-diagnostic.js";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { RequestDetail, RequestSummary } from "@onenod/protocol";
@@ -150,19 +151,22 @@ function ActivityTechnicalDetails({ request }: { request: RequestSummary }) {
 
 function ActivityFacts({ request }: { request: RequestDetail }) {
   return (
-    <dl className="divide-y divide-subtle border-t border-subtle">
-      <Fact label="Request ID" value={request.requestId} mono />
-      <Fact label="Created" value={formatDateTime(request.createdAt)} />
-      <Fact label="Expires" value={formatDateTime(request.expiresAt)} />
-      <Fact label="Item version" value={String(request.verifiedVersion)} mono />
-      <Fact label="Client observation" value={request.client.source} />
-      {request.verifiedFacts.map((fact) => (
-        <Fact
-          key={`${fact.label}:${fact.value}`}
-          label={fact.label}
-          value={fact.value}
-        />
-      ))}
-    </dl>
+    <>
+      <div className="px-5"><BeholderDiagnosticDisclosure diagnostic={request.client.beholderDiagnostic} /></div>
+      <dl className="divide-y divide-subtle border-t border-subtle">
+        <Fact label="Request ID" value={request.requestId} mono />
+        <Fact label="Created" value={formatDateTime(request.createdAt)} />
+        <Fact label="Expires" value={formatDateTime(request.expiresAt)} />
+        <Fact label="Item version" value={String(request.verifiedVersion)} mono />
+        <Fact label="Client observation" value={request.client.source} />
+        {request.verifiedFacts.map((fact) => (
+          <Fact
+            key={`${fact.label}:${fact.value}`}
+            label={fact.label}
+            value={fact.value}
+          />
+        ))}
+      </dl>
+    </>
   );
 }

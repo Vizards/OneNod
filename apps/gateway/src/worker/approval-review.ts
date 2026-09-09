@@ -73,7 +73,8 @@ export class ApprovalReview {
     if (searchParams.get("pending") === "true") {
       const pending = this.rows<RequestRow>(
         `SELECT id, requester_device_id, requester_name, action,
-                client_application, client_source, application_assurance,
+                authorization_source, beholder_evidence_id, beholder_key_id,
+                client_application, client_source, beholder_diagnostic, application_assurance,
                 application_principal_scheme, application_principal_id,
                 application_signing_identifier, application_team_identifier,
                 application_signer_name,
@@ -117,7 +118,8 @@ export class ApprovalReview {
       : [];
     const active = this.rows<RequestRow>(
       `SELECT id, requester_device_id, requester_name, action,
-              client_application, client_source, application_assurance,
+              authorization_source, beholder_evidence_id, beholder_key_id,
+              client_application, client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
@@ -150,9 +152,10 @@ export class ApprovalReview {
       : "";
     const activity = this.rows<RequestActivityRow>(
       `SELECT request_id, action, status, created_at, terminal_at, expires_at,
+              authorization_source, beholder_evidence_id, beholder_key_id,
               decided_at, consumed_at, item_title, field_label,
               expected_version, requester_name, client_application,
-              client_source, application_assurance,
+              client_source, beholder_diagnostic, application_assurance,
               application_principal_scheme, application_principal_id,
               application_signing_identifier, application_team_identifier,
               application_signer_name,
@@ -291,6 +294,7 @@ export class ApprovalReview {
       const updated = this.rows<{ id: string }>(
         `UPDATE requests
          SET status = ?, decided_at = ?, authorized_until = ?,
+             authorization_source = 'pwa-interactive',
              secret_grant_id = COALESCE(?, secret_grant_id),
              ssh_grant_id = COALESCE(?, ssh_grant_id)
          WHERE id = ? AND status = 'pending' AND expires_at > ?

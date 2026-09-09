@@ -6,6 +6,8 @@ declare global {
     APPROVALS: DurableObjectNamespace<ApprovalCoordinator>;
     ASSETS: Fetcher;
     BOOTSTRAP_TOKEN?: string;
+    BEHOLDER_AUTHORITY_KEYS?: string;
+    BEHOLDER_AUTHORITY_MODE?: string;
     EXECUTOR_AUTH_TOKEN?: string;
     EXECUTOR_SERVICE?: Fetcher;
     GATEWAY_MASTER_KEY?: string;

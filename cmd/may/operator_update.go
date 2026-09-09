@@ -215,7 +215,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if resuming {
 		fmt.Fprintf(console.stdout, "  Resume transaction: %s (%s)\n", transaction.ID, transaction.Phase)
 		fmt.Fprintf(console.stdout, "  Reuse verified Executor version: %s\n", transaction.ExecutorAfter)
-		if transaction.GatewayAfter == "" {
+		if transaction.Phase == "executor_upload_unknown" {
+			fmt.Fprintln(console.stdout, "  Gateway upload: not yet attempted; upload once after confirmation")
+		} else if transaction.GatewayAfter == "" {
 			fmt.Fprintln(console.stdout, "  Gateway retry: prior upload produced no version; upload once after confirmation")
 		} else {
 			fmt.Fprintf(console.stdout, "  Reuse verified Gateway version: %s\n", transaction.GatewayAfter)
@@ -427,7 +429,8 @@ func recoverOrCreateOperatorUpdateTransaction(
 			!uuidPattern.MatchString(transaction.ID) || entry.Name() != transaction.ID+".json" {
 			return nil, "", false, errors.New("recoverable operator update transaction identity is invalid")
 		}
-		if transaction.Phase != "gateway_upload_unknown" {
+		if transaction.Phase != "executor_upload_unknown" &&
+			transaction.Phase != "gateway_upload_unknown" {
 			return nil, "", false, fmt.Errorf(
 				"operator update transaction %s requires manual reconciliation at phase %s",
 				transaction.ID, transaction.Phase,
@@ -440,6 +443,7 @@ func recoverOrCreateOperatorUpdateTransaction(
 			)
 		}
 		if !uuidPattern.MatchString(transaction.ExecutorAfter) ||
+			(transaction.Phase == "executor_upload_unknown" && transaction.GatewayAfter != "") ||
 			(transaction.GatewayAfter != "" && !uuidPattern.MatchString(transaction.GatewayAfter)) {
 			return nil, "", false, errors.New("recoverable operator update transaction has invalid uploaded versions")
 		}
@@ -487,6 +491,9 @@ func deployVerifiedUpdate(
 		[]string{"EXECUTOR_AUTH_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN"},
 	)
 	if err != nil {
+		if uuidPattern.MatchString(executorAfter) {
+			transaction.ExecutorAfter = executorAfter
+		}
 		if knownExecutor != "" {
 			return "", "", err
 		}
@@ -508,6 +515,9 @@ func deployVerifiedUpdate(
 		[]string{"EXECUTOR_AUTH_TOKEN", "GATEWAY_MASTER_KEY", "VAPID_PRIVATE_KEY"},
 	)
 	if err != nil {
+		if uuidPattern.MatchString(gatewayAfter) {
+			transaction.GatewayAfter = gatewayAfter
+		}
 		if knownGateway != "" {
 			return "", "", err
 		}
@@ -583,6 +593,10 @@ func uploadOrReuseWorkerVersion(
 			wrangler, profile, cwd, config, worker, message, console,
 		)
 		if err != nil {
+			var unknown *remoteOutcomeUnknownError
+			if errors.As(err, &unknown) && uuidPattern.MatchString(unknown.ObservedVersion) {
+				return unknown.ObservedVersion, err
+			}
 			return "", err
 		}
 	} else {
@@ -594,7 +608,7 @@ func uploadOrReuseWorkerVersion(
 	if err := inspectWorkerVersionBindings(
 		wrangler, profile, cwd, config, worker, version, requiredSecrets,
 	); err != nil {
-		return "", err
+		return version, err
 	}
 	return version, nil
 }

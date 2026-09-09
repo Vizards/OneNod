@@ -25,3 +25,48 @@ depends on an independently scoped 1Password Service Account, protected runtime
 secrets, Passkey approval, a dedicated Cloudflare account, reviewed artifacts,
 and production deployment authority unavailable to Agents. Anyone able to
 deploy the Gateway or Executor is part of the trusted computing base.
+
+### Optional Beholder authority
+
+When a deployment explicitly enables `BEHOLDER_AUTHORITY_MODE=dogfood-v1`, a
+root-controlled Beholder Core may authorize a requester operation without a
+Passkey decision. The Core signs a short-lived authorization bound to the
+requester device, evidence identity, and SHA-256 of the exact canonical request
+body. The Gateway independently verifies the configured Ed25519 public key and
+consumes each evidence identity once. A missing, expired, replayed, malformed,
+or mismatched authorization creates an ordinary pending request for human
+review; it never grants access.
+
+The synchronous thinking-disabled decision is the only model result eligible
+for this authority. Any comparison decision is observability-only. Setting the
+mode to `human-only` disables model authority and preserves the Passkey approval
+path. The root Core key and the Gateway deployment configuration are therefore
+part of the trusted computing base whenever this optional mode is enabled.
+
+Requester-reported Beholder diagnostics describe fallback stages and correlate
+a local trace with a OneNod request. They are optional display metadata, never
+authorization evidence. A diagnostic cannot create a Core binding, substitute
+for its signature, or change the Gateway's human approval requirements.
+
+The optional v30 runtime is distributed inside the authenticated native archive;
+the ordinary requester update does not install or enable its root service.
+Enabling it requires a separate attended installation and a root-controlled
+deployment confirmation. Its dogfooding limitations are explicit:
+
+- Tool attribution combines kernel process lifetime with eligible Hook
+  observations. The host does not provide a trusted call-to-spawn event, and
+  same-user session data is not an independent authority. Overlapping or shared
+  execution roots can therefore require human review.
+- Working directory, command keywords and history length do not independently
+  decide user authorization. The model receives source-labelled context and
+  declared coverage gaps, including different task and execution directories.
+- Arbitrary task text may contain sensitive information. It is sent to the
+  configured model without heuristic credential scanning; protocol-owned
+  credentials and signing material remain excluded at their sources.
+- A model can misinterpret permission, incomplete context or injected content.
+  Only a valid primary result can request an exact, short-lived Core signature;
+  ambiguity, capacity limits and verification failures retain human approval.
+
+These concessions are specific to the explicitly enabled dogfooding authority.
+Ordinary message delivery remains available when Hook capture fails; capture
+failure does not grant access to a requested credential or signature.

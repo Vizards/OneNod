@@ -318,6 +318,13 @@ export class ApprovalRetention {
       for (const row of purgeRequests) {
         this.sql.exec(`DELETE FROM request_operations WHERE request_id = ?`, row.id);
         this.sql.exec(`DELETE FROM request_secret_fields WHERE request_id = ?`, row.id);
+        // The authorization has expired long before an operational request is
+        // retention-eligible. Remove its replay tombstone with the request so
+        // long-running dogfood deployments do not grow this table forever.
+        this.sql.exec(
+          `DELETE FROM beholder_authorization_uses WHERE request_id = ?`,
+          row.id,
+        );
         this.sql.exec(
           `DELETE FROM requests
            WHERE id = ? AND status IN ('rejected', 'expired', 'consumed', 'error')`,

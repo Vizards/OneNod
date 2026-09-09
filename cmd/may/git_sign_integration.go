@@ -16,12 +16,39 @@ func runGitSignAdapter(args []string, deps dependencies) error {
 	if socketPath == "" {
 		return errors.New("resolve may SSH agent socket failed")
 	}
+	var proxy *beholderClientProxy
+	lease, leaseErr := requestBeholderSSHLease(deps, beholderLeasePurposeGit)
+	diagnostic := lease.Diagnostic
+	if leaseErr != nil {
+		diagnostic = diagnosticFromError(leaseErr)
+		logBeholderDiagnostic(deps.stderr, diagnostic, "")
+	}
+	if leaseErr == nil || diagnostic != nil {
+		var err error
+		proxy, err = startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic)
+		lease.clear()
+		if err == nil {
+			socketPath = proxy.socketPath
+		} else if diagnostic != nil {
+			diagnostic.Stage, diagnostic.Code = "proxy", "proxy-unavailable"
+			logBeholderDiagnostic(deps.stderr, diagnostic, "")
+		}
+	}
+	if proxy != nil {
+		defer proxy.close()
+	}
 	command := exec.Command("/usr/bin/ssh-keygen", args...)
 	command.Env = withEnvironmentValue(os.Environ(), "SSH_AUTH_SOCK", socketPath)
 	command.Stdin = deps.stdin
 	command.Stdout = deps.stdout
 	command.Stderr = deps.stderr
-	if err := command.Run(); err != nil {
+	if err := command.Start(); err != nil {
+		return errors.New("start system ssh-keygen command failed")
+	}
+	if proxy != nil {
+		proxy.expectPeer(command.Process.Pid)
+	}
+	if err := command.Wait(); err != nil {
 		return errors.New("system ssh-keygen command failed; inspect ~/.onenod/logs/ssh-agent.error.log for the OneNod request stage, request ID, and safe cause")
 	}
 	return nil

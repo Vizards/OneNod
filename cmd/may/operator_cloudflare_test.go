@@ -143,7 +143,7 @@ func TestRemoteRuntimeVersionWaitsThroughDeploymentPropagation(t *testing.T) {
 			"release_version":%q,
 			"components":{
 				"executor":{"channel":"alpha","version":%q},
-				"gateway":{"accepted_client_protocol":{"min":1,"max":2},"channel":"alpha","protocol":1,"version":%q},
+				"gateway":{"accepted_client_protocol":{"min":1,"max":3},"channel":"alpha","protocol":1,"version":%q},
 				"pwa":{"channel":"alpha","version":%q}
 			}
 		}`, version, version, version, version)

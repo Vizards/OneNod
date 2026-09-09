@@ -144,6 +144,24 @@ test("executor storage pressure is accepted only as a 507 safety response", () =
   );
 });
 
+test("executor internal failures are accepted only as a 503 response", () => {
+  assert.deepEqual(
+    sanitizeGatewayError(
+      { error: "executor_internal_error", ok: false },
+      503,
+    ),
+    { code: "executor_internal_error", status: 503 },
+  );
+  assert.throws(
+    () =>
+      sanitizeGatewayError(
+        { error: "executor_internal_error", ok: false },
+        400,
+      ),
+    /untrusted_response/u,
+  );
+});
+
 test("item mutation envelopes pin existing item IDs and strip unknown fields", () => {
   assert.deepEqual(
     sanitizeItemMutationEnvelope(

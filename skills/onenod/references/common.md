@@ -148,6 +148,19 @@ has no earlier time deadline. None of these choices is scoped to a task or
 conversation. SSH authentication approves a signature, not the command later
 executed on the remote host.
 
+Treat the user-visible authorization boundary as SSH connection authentication,
+with an actual private-key signature as the protocol-level trigger. Reusing an
+existing OpenSSH `ControlMaster` normally performs no new signature, so commands
+multiplexed over that connection produce no new OneNod request or approval and
+are not reviewed individually. Starting a new master or otherwise performing a
+fresh authentication can produce a new request. OpenSSH may also probe more than
+one offered identity while establishing one connection, so signature requests
+are not necessarily one-to-one with user-visible SSH sessions.
+
+This boundary does not make OneNod a remote-shell policy engine and does not add
+support for Agent forwarding or otherwise claim visibility into commands run on
+the remote host.
+
 ## Passkeys and Lock mode
 
 Any registered Passkey may register another PWA installation. PWA viewing
@@ -182,3 +195,9 @@ through the user-level `~/.local/bin` path after a new login shell. Use `may
 version`, `may preflight`, and `may agent status` for installed-state questions;
 obtain their current syntax from command-specific `--help`, which must not need
 an Origin, requester credential, or network.
+
+Optional Shell Plugin bindings are machine-local configuration, not another
+installed runtime. Each managed bare command is a user-level symlink to the
+same stable `may`; its binding stores only the pinned real executable path,
+scope, upstream definition revision, item metadata, and field IDs. Credential
+values are never written into that configuration.

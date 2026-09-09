@@ -10,7 +10,7 @@ import type {
   HumanManagement,
   HumanState,
   VerifiedApplicationIdentity,
-} from "./api-types";
+} from "./api-types.js";
 
 export function normalizeHumanState(value: unknown): HumanState {
   const record = asRecord(value);
@@ -143,6 +143,7 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
   }
   return {
     action: readRequiredString(record, "action") as ApprovalAction,
+    authorizationSource: readAuthorizationSource(record),
     applicationRecognition: readApplicationRecognition(record),
     ...(isRecord(record.authorization_scope)
       ? {
@@ -153,6 +154,7 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
         }
       : {}),
     client: {
+      ...normalizeBeholderDiagnostic(client.beholder_diagnostic),
       application: readRequiredString(client, "application"),
       identity: readApplicationIdentity(client.identity),
       source,
@@ -165,6 +167,22 @@ export function normalizeRequestSummary(value: unknown): RequestSummary {
     targetLabel: readRequiredString(record, "target_label"),
     verifiedVersion: readRequiredNumber(record, "verified_version"),
   };
+}
+
+function readAuthorizationSource(
+  record: Record<string, unknown>,
+): NonNullable<RequestSummary["authorizationSource"]> {
+  const source = readString(record, "authorization_source") ?? "unknown";
+  if (
+    source !== "beholder-authoritative" &&
+    source !== "pwa-interactive" &&
+    source !== "remembered-grant" &&
+    source !== "pending" &&
+    source !== "unknown"
+  ) {
+    throw new Error("The server returned an unknown authorization source.");
+  }
+  return source;
 }
 
 function readApplicationRecognition(
@@ -295,4 +313,28 @@ function readBoolean(
   if (!record) return undefined;
   const value = record[key];
   return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeBeholderDiagnostic(
+  value: unknown,
+): Pick<RequestSummary["client"], "beholderDiagnostic"> {
+  if (!isRecord(value)) return {};
+  const { schema_version, trace_id, stage, code, model_called, evidence_id } = value;
+  if (
+    schema_version !== 1 ||
+    typeof trace_id !== "string" || !/^[a-f0-9]{32}$/.test(trace_id) ||
+    (stage !== "lease" && stage !== "proxy" && stage !== "binding" && stage !== "core" && stage !== "model") ||
+    typeof code !== "string" || !/^[a-z0-9._-]{1,96}$/.test(code) ||
+    (model_called !== undefined && typeof model_called !== "boolean") ||
+    (evidence_id !== undefined && (
+      typeof evidence_id !== "string" || !/^[a-zA-Z0-9._:-]{8,96}$/.test(evidence_id)
+    ))
+  ) return {};
+  return {
+    beholderDiagnostic: {
+      schema_version, trace_id, stage, code,
+      ...(typeof model_called === "boolean" ? { model_called } : {}),
+      ...(typeof evidence_id === "string" ? { evidence_id } : {}),
+    },
+  };
 }

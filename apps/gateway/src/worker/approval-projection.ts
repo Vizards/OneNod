@@ -1,3 +1,4 @@
+import { safeBeholderDiagnostic } from "./approval-http.js";
 import { projectStoredApplicationIdentity } from "./application-identity.js";
 import { projectApplicationRecognition } from "./approved-application-identities.js";
 import type {
@@ -27,6 +28,7 @@ export function projectRequesterStatus(
   operation?: RequestOperationRow,
 ) {
   return {
+    authorization_source: row.authorization_source,
     ...(row.authorized_until
       ? { authorized_until: iso(row.authorized_until) }
       : {}),
@@ -56,6 +58,7 @@ export function readOnlyRequestState(row: RequestRow, now: number): RequestRow {
 export function projectHumanRequestSummary(row: RequestRow) {
   return {
     action: projectApprovalAction(row.action),
+    authorization_source: row.authorization_source,
     application_recognition: projectApplicationRecognition(row),
     ...(row.application_assurance === "verified-code-signature" &&
     (row.action === "secret.read" || row.action === "credential.use") &&
@@ -79,6 +82,7 @@ export function projectHumanRequestSummary(row: RequestRow) {
           }
         : {}),
     client: {
+      ...projectBeholderDiagnostic(row.beholder_diagnostic),
       application: row.client_application,
       identity: projectStoredApplicationIdentity(row),
       source:
@@ -99,8 +103,10 @@ export function projectHumanRequestSummary(row: RequestRow) {
 export function projectHumanActivitySummary(row: RequestActivityRow) {
   return {
     action: projectApprovalAction(row.action),
+    authorization_source: row.authorization_source,
     application_recognition: projectApplicationRecognition(row),
     client: {
+      ...projectBeholderDiagnostic(row.beholder_diagnostic),
       application: row.client_application,
       identity: projectStoredApplicationIdentity(row),
       source:
@@ -144,6 +150,7 @@ export function projectHumanActivityDetail(row: RequestActivityRow) {
     ...projectHumanActivitySummary(row),
     error: row.error_code ?? undefined,
     verified_facts: [
+      { label: "Authorization", value: row.authorization_source },
       { label: "Requester", value: row.requester_name },
       { label: "Completed", value: iso(row.terminal_at) },
     ],
@@ -168,8 +175,13 @@ export function projectHumanRequestDetail(row: RequestRow) {
             { label: "Field", value: row.field_label },
             { label: "Version", value: String(row.expected_version) },
             { label: "Requester", value: row.requester_name },
+            { label: "Authorization", value: row.authorization_source },
           ]
-        : [...mutationFacts, { label: "Requester", value: row.requester_name }],
+        : [
+            ...mutationFacts,
+            { label: "Requester", value: row.requester_name },
+            { label: "Authorization", value: row.authorization_source },
+          ],
   };
 }
 
@@ -281,4 +293,13 @@ function hasForbiddenControl(value: string, allowNewline: boolean): boolean {
     if (codePoint < 0x20 && !(allowNewline && codePoint === 0x0a)) return true;
   }
   return false;
+}
+
+function projectBeholderDiagnostic(value: string | null | undefined) {
+  if (!value) return {};
+  try {
+    return { beholder_diagnostic: safeBeholderDiagnostic(JSON.parse(value)) };
+  } catch {
+    return {};
+  }
 }

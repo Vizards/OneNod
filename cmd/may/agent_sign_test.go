@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +25,14 @@ import (
 )
 
 func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const evidenceID = "shadow-ssh-outcome-0123456789abcdef01234567"
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sessionKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,9 +69,16 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	}
 	responseSignature := append([]byte(nil), signature.Blob...)
 	consumeFailure := false
+	beholderUnavailable := false
+	outcomeUnavailable := true
+	createRequests := 0
+	createdSemanticDigest := ""
+	var observedOperation *beholderOperationTarget
+	var observedOutcome *beholderHumanOutcome
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/v1/requests":
+			createRequests++
 			var body sshSignRequest
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Fatal(err)
@@ -72,9 +89,32 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 				body.ExpectedFingerprint != identity.catalog.Metadata.Fingerprint {
 				t.Fatalf("unexpected SSH request: %+v", body)
 			}
+			if createRequests == 1 && body.BeholderAuthorization == nil {
+				t.Fatal("authoritative SSH request omitted its Beholder authorization")
+			}
+			body.BeholderAuthorization = nil
+			canonical, err := canonicalJSON(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(canonical)
+			clear(canonical)
+			createdSemanticDigest = hex.EncodeToString(digest[:])
+			if body.AuthorizationSession == nil || body.AuthorizationSession.ScopeID != "fixture-application" {
+				t.Fatal("SSH request omitted its application authorization session")
+			}
+			proof, err := base64.RawURLEncoding.Strict().DecodeString(body.AuthorizationSession.Proof)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body.AuthorizationSession.Proof = ""
+			proofMaterial, err := canonicalJSON(body)
+			if err != nil || !ed25519.Verify(sessionKey.Public().(ed25519.PublicKey), proofMaterial, proof) {
+				t.Fatal("SSH application proof does not verify over the final semantic request")
+			}
 			return jsonHTTPResponse(
 				http.StatusOK,
-				`{"expires_at":"2099-01-01T00:00:00Z","poll_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","request_id":"request-ssh-1","status":"approved"}`,
+				`{"authorization_source":"beholder-authoritative","expires_at":"2099-01-01T00:00:00Z","poll_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","request_id":"request-ssh-1","status":"approved"}`,
 			), nil
 		case "/v1/requests/request-ssh-1/consume":
 			if request.Header.Get("authorization") !=
@@ -113,7 +153,52 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 		},
 		context: context.Background(),
 		deps: dependencies{
-			httpClient: &http.Client{Transport: transport},
+			beholder: func(request beholderWireRequest) (beholderWireResponse, error) {
+				if beholderUnavailable {
+					return beholderWireResponse{}, errors.New("Core unavailable")
+				}
+				switch request.Kind {
+				case "agent-operation":
+					if request.Operation == nil {
+						t.Fatalf("Beholder operation target is missing: %+v", request)
+					}
+					copy := *request.Operation
+					observedOperation = &copy
+					now := time.Now().Unix()
+					return beholderWireResponse{
+						SchemaVersion: beholderProtocolSchemaVersion,
+						Accepted:      true,
+						Disposition:   "allow",
+						EvidenceID:    evidenceID,
+						Authorization: &beholderAuthorization{
+							SchemaVersion: 1, Decision: "allow", EvidenceID: evidenceID,
+							IssuedAt: now, ExpiresAt: now + 30,
+							KeyID: strings.Repeat("k", 43), Signature: strings.Repeat("s", 86),
+							OperationTargetSHA256: request.Operation.PayloadDigest,
+							RequesterDeviceID:     request.RequesterDeviceID,
+						},
+					}, nil
+				case "human-outcome":
+					if outcomeUnavailable {
+						return beholderWireResponse{}, errors.New("Core outcome endpoint unavailable")
+					}
+					if request.EvidenceID != evidenceID || request.HumanOutcome == nil || request.Operation == nil {
+						t.Fatalf("unexpected Beholder human outcome: %+v", request)
+					}
+					copy := *request.HumanOutcome
+					observedOutcome = &copy
+					return beholderWireResponse{
+						SchemaVersion: beholderProtocolSchemaVersion,
+						Accepted:      true,
+						EvidenceID:    evidenceID,
+					}, nil
+				default:
+					t.Fatalf("unexpected Beholder request kind: %+v", request)
+					return beholderWireResponse{}, nil
+				}
+			},
+			beholderOutcomeRoot: defaultBeholderOutcomeRoot,
+			httpClient:          &http.Client{Transport: transport},
 			keychain: keychainStore{backend: &recordingKeychainBackend{
 				found:  true,
 				output: encodedRequester,
@@ -121,16 +206,57 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 			stderr: io.Discard,
 		},
 		identities: []servedSSHIdentity{identity},
+		sessionKey: sessionKey,
 	}
+	localClient := unknownLocalClientContext()
+	localClient.ScopeID = "fixture-application"
+	localClient.ScopeKind = "application"
 	connection := approvalAgentConnection{
 		agent: agent,
-		state: sshAgentConnectionState{client: unknownLocalClientContext()},
+		state: sshAgentConnectionState{
+			beholderBinding: strings.Repeat("b", 32),
+			client:          localClient,
+		},
 	}
 	result, err := connection.Sign(signer.PublicKey(), data)
 	if err != nil || result == nil || result.Format != signature.Format ||
 		!bytes.Equal(result.Blob, signature.Blob) {
 		t.Fatalf("valid signature response failed: %+v, %v", result, err)
 	}
+	if observedOperation == nil || observedOperation.Surface != "ssh-agent" ||
+		observedOperation.Operation != "ssh.opaque-signature" ||
+		observedOperation.TargetID != identity.catalog.ItemID ||
+		observedOperation.KeyFingerprint != identity.catalog.Metadata.Fingerprint ||
+		observedOperation.PayloadDigest != createdSemanticDigest ||
+		connection.state.beholderBinding != "" {
+		t.Fatalf("actual Agent operation was not observed once: %+v", observedOperation)
+	}
+	spoolRoot, err := defaultBeholderOutcomeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(spoolRoot)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("SSH outcome was not durably queued before retry: entries=%d err=%v", len(entries), err)
+	}
+	outcomeUnavailable = false
+	flushPendingBeholderOutcomes(agent.deps)
+	entries, err = os.ReadDir(spoolRoot)
+	if err != nil || len(entries) != 0 || observedOutcome == nil ||
+		observedOutcome.EvidenceID != evidenceID || observedOutcome.Decision != "approved" ||
+		!observedOutcome.OperationCompleted || observedOutcome.CredentialDelivered ||
+		observedOutcome.OneNodRequestID == nil || *observedOutcome.OneNodRequestID != "request-ssh-1" {
+		t.Fatalf("SSH outcome was not correlated and acknowledged: entries=%d outcome=%+v err=%v", len(entries), observedOutcome, err)
+	}
+
+	connection.state.beholderBinding = strings.Repeat("c", 32)
+	beholderUnavailable = true
+	result, err = connection.Sign(signer.PublicKey(), data)
+	if err != nil || result == nil || !bytes.Equal(result.Blob, signature.Blob) ||
+		connection.state.beholderBinding != "" || createRequests != 2 {
+		t.Fatalf("Core outage did not preserve the human approval path: result=%+v creates=%d err=%v", result, createRequests, err)
+	}
+	beholderUnavailable = false
 
 	responseSignature[0] ^= 1
 	if _, err := connection.Sign(signer.PublicKey(), data); err == nil ||

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -31,9 +32,11 @@ const (
 var errReadOnlySSHAgent = errors.New("may SSH agent is read-only")
 
 type sshAgentConnectionState struct {
-	binding    *sshSessionBinding
-	client     localClientContext
-	identities []servedSSHIdentity
+	beholderDiagnostic *beholderDiagnostic
+	beholderBinding    string
+	binding            *sshSessionBinding
+	client             localClientContext
+	identities         []servedSSHIdentity
 }
 
 type approvalAgentConnection struct {
@@ -316,6 +319,37 @@ func (connection *approvalAgentConnection) Extension(
 			return nil, err
 		}
 		connection.state.binding = &binding
+		return []byte{sshAgentSuccessResponse}, nil
+	case beholderDiagnosticExtensionName:
+		if len(contents) == 0 || len(contents) > 2048 {
+			return nil, errors.New("invalid Beholder diagnostic")
+		}
+		var diagnostic beholderDiagnostic
+		decoder := json.NewDecoder(bytes.NewReader(contents))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&diagnostic) != nil || !validBeholderDiagnostic(&diagnostic) {
+			return nil, errors.New("invalid Beholder diagnostic")
+		}
+		var trailing any
+		if !errors.Is(decoder.Decode(&trailing), io.EOF) {
+			return nil, errors.New("invalid Beholder diagnostic")
+		}
+		connection.state.beholderDiagnostic = &diagnostic
+		return []byte{sshAgentSuccessResponse}, nil
+	case beholderBindingExtensionName:
+		if connection.state.beholderBinding != "" {
+			return nil, errors.New("Beholder binding is already set for this Agent connection")
+		}
+		nonce, err := parseBeholderBindingExtension(contents)
+		if err != nil {
+			return nil, err
+		}
+		binding, err := consumeBeholderAgentBinding(connection.agent.deps, nonce, connection.state.beholderDiagnostic)
+		clear(nonce)
+		if err != nil {
+			return nil, err
+		}
+		connection.state.beholderBinding = binding
 		return []byte{sshAgentSuccessResponse}, nil
 	default:
 		return nil, sshagent.ErrExtensionUnsupported
