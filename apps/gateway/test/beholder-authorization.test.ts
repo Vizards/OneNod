@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canonicalizeJson,
+  decodeBase64Url,
   encodeBase64Url,
   type BeholderAuthorizationRequest,
 } from "@onenod/protocol";
@@ -13,19 +14,20 @@ import {
   separateBeholderAuthorization,
 } from "../src/worker/beholder-authorization.js";
 import { claimBeholderAuthorization } from "../src/worker/approval-request-repository.js";
+import { parseSshSignRequest, sshAuthorizationProofMaterial } from "../src/worker/ssh-sign.js";
 import { approvalStorage } from "./support/sqlite-do-storage.js";
 
 const REQUESTER = "0199ad30-f672-7449-933e-968aa84f0342";
 const NOW = 1_800_000_000;
 
-async function fixture() {
+async function fixture(body?: Record<string, unknown>) {
   const keys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
   const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
   const publicKeyText = encodeBase64Url(publicKey);
   const keyId = encodeBase64Url(
     new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey)),
   );
-  const semanticBody = {
+  const semanticBody = body ?? {
     action: "secret.read",
     client: { application: "Codex", source: "unavailable" },
     expected_version: 7,
@@ -178,6 +180,64 @@ test("authorization envelope is excluded from the semantic body", async () => {
   });
   assert.deepEqual(split.semanticBody, value.semanticBody);
   assert.deepEqual(split.authorization, value.authorization);
+});
+
+test("Core authorization preserves the SSH application proof through admission parsing", async () => {
+  const sessionKey = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", sessionKey.publicKey));
+  const body = {
+    action: "ssh.sign",
+    algorithm: "ssh-ed25519",
+    authorization_session: {
+      agent_instance_public_key: encodeBase64Url(publicKey),
+      proof: encodeBase64Url(new Uint8Array(64)),
+      scope_id: encodeBase64Url(new Uint8Array(32).fill(7)),
+      scope_kind: "application",
+    },
+    client: { application: "Codex", source: "process-ancestry" },
+    data: encodeBase64Url(new TextEncoder().encode("dummy-signing-payload")),
+    expected_fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    expected_version: 3,
+    idempotency_key: "request-beholder-session-1",
+    item_id: "item-1",
+    operation: { kind: "ssh.opaque-signature" },
+  };
+  body.authorization_session.proof = encodeBase64Url(new Uint8Array(
+    await crypto.subtle.sign(
+      "Ed25519", sessionKey.privateKey,
+      new Uint8Array(sshAuthorizationProofMaterial(parseSshSignRequest(body))),
+    ),
+  ));
+  const value = await fixture(body);
+  const split = separateBeholderAuthorization({
+    ...body, beholder_authorization: value.authorization,
+  });
+  const accepted = await evaluateBeholderAuthorization({
+    ...value,
+    authorization: split.authorization,
+    semanticBody: split.semanticBody,
+    authorityMode: "dogfood-v1",
+    nowSeconds: NOW + 1,
+    requesterDeviceId: REQUESTER,
+  });
+  assert.equal(accepted.accepted?.evidenceId, value.authorization.evidence_id);
+  const parsed = parseSshSignRequest(split.semanticBody);
+  const verify = () => crypto.subtle.verify(
+    "Ed25519", sessionKey.publicKey,
+    new Uint8Array(decodeBase64Url(parsed.authorization_session!.proof)),
+    new Uint8Array(sshAuthorizationProofMaterial(parsed)),
+  );
+  assert.equal(await verify(), true);
+  parsed.item_id = "changed-item";
+  assert.equal(await verify(), false);
+  const changed = await evaluateBeholderAuthorization({
+    ...value,
+    semanticBody: { ...split.semanticBody, item_id: "changed-item" },
+    authorityMode: "dogfood-v1",
+    nowSeconds: NOW + 1,
+    requesterDeviceId: REQUESTER,
+  });
+  assert.equal(changed.accepted, undefined);
 });
 
 test("an accepted evidence identity can authorize only one Gateway request", () => {

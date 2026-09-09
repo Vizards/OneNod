@@ -145,6 +145,9 @@ func requestSshSignature(
 		ItemID:              identity.catalog.ItemID,
 		Operation:           operation,
 	}
+	// Core binds the semantic request including this session proof. Gateway
+	// removes the Beholder envelope before verifying the proof, so an allow
+	// must preserve these bytes rather than sign again over the envelope.
 	if err := attachSshAuthorizationSession(&request, localClient, sessionKey); err != nil {
 		return sshSignConsumeResponse{}, err
 	}

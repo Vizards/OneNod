@@ -32,6 +32,10 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, sessionKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	signer, err := ssh.NewSignerFromKey(privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +100,18 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 			digest := sha256.Sum256(canonical)
 			clear(canonical)
 			createdSemanticDigest = hex.EncodeToString(digest[:])
+			if body.AuthorizationSession == nil || body.AuthorizationSession.ScopeID != "fixture-application" {
+				t.Fatal("SSH request omitted its application authorization session")
+			}
+			proof, err := base64.RawURLEncoding.Strict().DecodeString(body.AuthorizationSession.Proof)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body.AuthorizationSession.Proof = ""
+			proofMaterial, err := canonicalJSON(body)
+			if err != nil || !ed25519.Verify(sessionKey.Public().(ed25519.PublicKey), proofMaterial, proof) {
+				t.Fatal("SSH application proof does not verify over the final semantic request")
+			}
 			return jsonHTTPResponse(
 				http.StatusOK,
 				`{"authorization_source":"beholder-authoritative","expires_at":"2099-01-01T00:00:00Z","poll_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","request_id":"request-ssh-1","status":"approved"}`,
@@ -190,12 +206,16 @@ func TestAgentVerifiesTheGatewaySignatureBeforeRelease(t *testing.T) {
 			stderr: io.Discard,
 		},
 		identities: []servedSSHIdentity{identity},
+		sessionKey: sessionKey,
 	}
+	localClient := unknownLocalClientContext()
+	localClient.ScopeID = "fixture-application"
+	localClient.ScopeKind = "application"
 	connection := approvalAgentConnection{
 		agent: agent,
 		state: sshAgentConnectionState{
 			beholderBinding: strings.Repeat("b", 32),
-			client:          unknownLocalClientContext(),
+			client:          localClient,
 		},
 	}
 	result, err := connection.Sign(signer.PublicKey(), data)

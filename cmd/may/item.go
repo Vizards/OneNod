@@ -391,8 +391,9 @@ func mutationExpectedVersion(
 	return version, nil
 }
 
-func submitAndConsumeItemMutation(
-	request any,
+// Preserve the concrete type so &request can receive authorization or diagnostics.
+func submitAndConsumeItemMutation[T itemCreateRequest | itemPatchRequest | itemArchiveRequest](
+	request T,
 	localClient localClientContext,
 	config cliConfig,
 	deps dependencies,
