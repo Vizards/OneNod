@@ -44,7 +44,7 @@ timeout = 5
 [[hooks.Interrupt.hooks]]
 type = "command"
 command = "'/Library/Application Support/Beholder/codex-hooks/beholder-e1-context' --core-socket '/Library/Application Support/Beholder/run/core.sock' >/dev/null 2>&1 || :; printf '{}\\n'; exit 0"
-timeout = 3
+timeout = 5
 
 [[hooks.SessionEnd]]
 

@@ -34,6 +34,10 @@ def commands_from_config(data):
                 for line in data.decode().splitlines() if line.startswith('command = ')]
     if len(commands) not in (2, 6) or any(command != managed_command() for command in commands):
         raise RuntimeError('Managed Hook command differs from the reviewed availability contract')
+    timeouts = [json.loads(line.split('=', 1)[1].strip())
+                for line in data.decode().splitlines() if line.startswith('timeout = ')]
+    if len(timeouts) != len(commands) or any(type(value) is not int or value < 5 for value in timeouts):
+        raise RuntimeError('Managed Hook timeout must leave shutdown margin after the three-second watchdog')
     return commands
 
 
@@ -153,6 +157,13 @@ MAY_BINARY = None
 
 
 class GuardTests(unittest.TestCase):
+    def test_host_timeout_retains_watchdog_shutdown_margin(self):
+        config = Path(__file__).resolve().parents[2] / 'cmd/may/internal/beholdercontext/managed.example.toml'
+        data = config.read_bytes()
+        commands_from_config(data)
+        with self.assertRaisesRegex(RuntimeError, 'shutdown margin'):
+            commands_from_config(data.replace(b'timeout = 5', b'timeout = 3', 1))
+
     @classmethod
     def setUpClass(cls):
         cls.build = tempfile.TemporaryDirectory(prefix='beholder-release-', dir='/private/tmp')
