@@ -287,6 +287,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 					source.TranscriptSnapshot.RetainedCandidates < 0 ||
 					(manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v30" &&
 						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v31" &&
+						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v32" &&
 						source.TranscriptSnapshot.RetainedCandidates > 256)) {
 					result.Errors = append(result.Errors, "transcript-snapshot-invalid")
 				}
@@ -613,7 +614,7 @@ func jsonSemanticallyEqual(left, right []byte) bool {
 }
 
 func modelInputMatches(selected, requestBody json.RawMessage, versions ...string) bool {
-	if len(versions) == 1 && versions[0] == "e2-authoritative-dogfood-v31" {
+	if len(versions) == 1 && (versions[0] == "e2-authoritative-dogfood-v31" || versions[0] == "e2-authoritative-dogfood-v32") {
 		projected, err := modelcontract.DirectModelInput(selected)
 		if err != nil {
 			return false
@@ -997,7 +998,8 @@ func authoritativeDogfoodVersion(version string) bool {
 		version == "e2-authoritative-dogfood-v26" ||
 		version == "e2-authoritative-dogfood-v27" ||
 		version == "e2-authoritative-dogfood-v30" ||
-		version == "e2-authoritative-dogfood-v31"
+		version == "e2-authoritative-dogfood-v31" ||
+		version == "e2-authoritative-dogfood-v32"
 }
 
 func primaryVariantForVersion(version string) string {

@@ -275,7 +275,7 @@ func TestBrokerRejectsRequestWithoutRegisteredExecutionRoot(t *testing.T) {
 	}
 }
 
-func TestBrokerLateBindsTheUnmodifiedSSHProcessToTheLatestHookObservation(t *testing.T) {
+func TestBrokerLateBindsUnmodifiedSSHWithOneEligibleObservation(t *testing.T) {
 	t.Parallel()
 	fixture := newBrokerFixture(t)
 	fixture.host.ToolInput = json.RawMessage(`{"command":"ssh example.invalid"}`)
@@ -293,7 +293,7 @@ func TestBrokerLateBindsTheUnmodifiedSSHProcessToTheLatestHookObservation(t *tes
 	}
 	checked := fixture.core.checkRequest(fixture.request, peer)
 	if !checked.Accepted || checked.Envelope == nil ||
-		checked.Envelope.Attribution.BindingMethod != "process-birth-unique-candidate" ||
+		checked.Envelope.Attribution.BindingMethod != "process-birth-candidate-set" ||
 		checked.Envelope.Attribution.LateBindingCandidateCount != 1 ||
 		!slices.Contains(checked.Envelope.Attribution.EvidenceKinds, "late-process-binding") {
 		t.Fatalf("late-bound request lost causal evidence: %+v", checked)
@@ -340,13 +340,15 @@ func TestBrokerLateBindingExcludesObservationsAfterProcessBirth(t *testing.T) {
 	if bound := fixture.core.registerLatestExecutionRoot(fixture.sessionID, leasePurposeSSH, peer); !bound.Accepted {
 		t.Fatalf("process birth association failed: %+v", bound)
 	}
-	claim := fixture.core.claimsByToolRef[sshRegistration.ToolRef]
-	if claim == nil || claim.executionRootRef == "" {
-		t.Fatal("process birth did not select its only earlier observation")
+	checked := fixture.core.checkRequest(fixture.request, peer)
+	defer checked.clearTransient()
+	if !checked.Accepted || checked.Envelope.Attribution.LateBindingCandidateCount != 1 ||
+		string(checked.decisionContext.ToolInput) != string(sshHost.ToolInput) {
+		t.Fatal("process birth did not preserve its only earlier observation")
 	}
 }
 
-func TestBrokerLateBindingFailsClosedOnAnExactTemporalTie(t *testing.T) {
+func TestBrokerLateBindingPreservesBothCandidatesOnAnExactTemporalTie(t *testing.T) {
 	t.Parallel()
 	fixture := newBrokerFixture(t)
 	first := fixture.host
@@ -365,12 +367,20 @@ func TestBrokerLateBindingFailsClosedOnAnExactTemporalTie(t *testing.T) {
 	peer.Nodes[0].Path = "/Library/Application Support/Beholder/bin/ssh"
 	peer.Roles[0] = "ssh-client"
 	result := fixture.core.registerLatestExecutionRoot(fixture.sessionID, leasePurposeSSH, peer)
-	if result.Accepted || result.ErrorCode == nil || *result.ErrorCode != "late-binding-ambiguous" {
-		t.Fatalf("tied observations were guessed instead of escalated: %+v", result)
+	if !result.Accepted || result.BindingAttempt == nil || result.BindingAttempt.EligibleCount != 2 {
+		t.Fatalf("tied observations were not retained: %+v", result)
+	}
+	checked := fixture.core.checkRequest(fixture.request, peer)
+	defer checked.clearTransient()
+	if !checked.Accepted || checked.Envelope.Attribution.Result != "task-bound-tool-candidates" ||
+		checked.Envelope.Attribution.ToolRefMatched || checked.Envelope.Attribution.ToolUseRef != "" ||
+		!bytes.Contains(checked.decisionContext.ToolInput, []byte("ssh first.invalid")) ||
+		!bytes.Contains(checked.decisionContext.ToolInput, []byte("ssh second.invalid")) {
+		t.Fatal("ambiguous tool identity was guessed or a candidate was omitted")
 	}
 }
 
-func TestBrokerConcurrentLateBindingHasExactlyOneWinner(t *testing.T) {
+func TestBrokerConcurrentExecutionsDoNotConsumeTheirSharedObservation(t *testing.T) {
 	t.Parallel()
 	fixture := newBrokerFixture(t)
 	fixture.host.ToolInput = json.RawMessage(`{"command":"ssh example.invalid"}`)
@@ -403,8 +413,8 @@ func TestBrokerConcurrentLateBindingHasExactlyOneWinner(t *testing.T) {
 			winners++
 		}
 	}
-	if winners != 1 {
-		t.Fatalf("concurrent late bind winners=%d, want 1", winners)
+	if winners != contenders || len(fixture.core.claimRefByExecution) != contenders {
+		t.Fatalf("independent execution bindings=%d, want %d", winners, contenders)
 	}
 }
 

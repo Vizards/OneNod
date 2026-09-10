@@ -108,6 +108,12 @@ func TestBeholderAuthorityMatchesGatewayInteroperabilityVector(t *testing.T) {
 }
 
 func TestAuthoritativeGatekeeperAllowProducesBoundAuthorization(t *testing.T) {
+	for _, mode := range []string{"legacy-selector", "single-candidate", "concurrent-candidates"} {
+		t.Run(mode, func(t *testing.T) { testAuthoritativeGatekeeperAllow(t, mode) })
+	}
+}
+
+func testAuthoritativeGatekeeperAllow(t *testing.T, mode string) {
 	root, err := os.MkdirTemp("/tmp", "bh-authority-")
 	if err != nil {
 		t.Fatal(err)
@@ -176,8 +182,25 @@ func TestAuthoritativeGatekeeperAllowProducesBoundAuthorization(t *testing.T) {
 	}
 	fixture := newBrokerFixture(t)
 	broker := fixture.core
-	if r := fixture.registerPrimaryHost(); !r.Accepted {
-		t.Fatal(r)
+	if mode == "legacy-selector" {
+		if r := fixture.registerPrimaryHost(); !r.Accepted {
+			t.Fatal(r)
+		}
+	} else {
+		if r := broker.registerHost(fixture.host, fixture.hookPeer); !r.Accepted {
+			t.Fatal(r)
+		}
+		if mode == "concurrent-candidates" {
+			second := fixture.host
+			second.ToolUseID = "concurrent-authority-observation"
+			second.ToolInput = json.RawMessage(`{"command":"sleep 20"}`)
+			if r := broker.registerHost(second, fixture.hookPeer); !r.Accepted {
+				t.Fatal(r)
+			}
+		}
+		if r := broker.registerLatestExecutionRoot(fixture.sessionID, "direct", fixture.requestPeer); !r.Accepted {
+			t.Fatal(r)
+		}
 	}
 	response := fixture.checkPrimaryRequest()
 	broker.trustMode, broker.gatekeeper, broker.authority = "production", client, authority
@@ -215,6 +238,16 @@ func TestAuthoritativeGatekeeperAllowProducesBoundAuthorization(t *testing.T) {
 }
 
 func TestInterruptedContextCannotReceiveAuthorizationAfterModelAllow(t *testing.T) {
+	for _, rebind := range []bool{false, true} {
+		name := "cancelled"
+		if rebind {
+			name = "cancelled-and-rebound-same-process"
+		}
+		t.Run(name, func(t *testing.T) { testInterruptedContextCannotReceiveAuthorization(t, rebind) })
+	}
+}
+
+func testInterruptedContextCannotReceiveAuthorization(t *testing.T, rebind bool) {
 	root, err := os.MkdirTemp("/tmp", "bh-authority-")
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +318,11 @@ func TestInterruptedContextCannotReceiveAuthorizationAfterModelAllow(t *testing.
 	}
 	fixture := newBrokerFixture(t)
 	broker := fixture.core
-	if r := fixture.registerPrimaryHost(); !r.Accepted {
+	if r := broker.registerHost(fixture.host, fixture.hookPeer); !r.Accepted {
+		t.Fatal(r)
+	}
+	fixture.requestPeer.Roles[0] = "onenod-requester"
+	if r := broker.registerLatestExecutionRoot(fixture.sessionID, "direct", fixture.requestPeer); !r.Accepted {
 		t.Fatal(r)
 	}
 	response := fixture.checkPrimaryRequest()
@@ -303,6 +340,12 @@ func TestInterruptedContextCannotReceiveAuthorizationAfterModelAllow(t *testing.
 		claim := broker.claimsByToolRef[broker.claimRefByTool[response.contextToolUseRef]]
 		broker.removeClaimLocked(claim)
 		broker.mu.Unlock()
+		if rebind {
+			result := broker.registerLatestExecutionRoot(fixture.sessionID, "direct", fixture.requestPeer)
+			if !result.Accepted {
+				t.Error("replacement execution snapshot was not created")
+			}
+		}
 	}
 	disposition, evidenceID, authorization := broker.runGatekeeperWithEvidence(
 		&response,

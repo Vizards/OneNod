@@ -243,7 +243,7 @@ func (coordinator *transportCoordinator) issueClientLease(
 	}
 	if bound := coordinator.broker.registerLatestExecutionRoot(threadID, purpose, peer); !bound.Accepted {
 		if bound.ErrorCode != nil {
-			return transportError(*bound.ErrorCode)
+			return bound
 		}
 		return transportError("task-binding-unverified")
 	}
@@ -289,9 +289,10 @@ func (coordinator *transportCoordinator) issueClientLease(
 	}
 	coordinator.pending[nonceRef] = binding
 	return wireResponse{
-		SchemaVersion: protocolSchemaVersion,
-		Accepted:      true,
-		Binding:       encodedNonce,
+		SchemaVersion:  protocolSchemaVersion,
+		Accepted:       true,
+		BindingAttempt: checked.BindingAttempt,
+		Binding:        encodedNonce,
 	}
 }
 
@@ -380,7 +381,7 @@ func (coordinator *transportCoordinator) observeAgentOperation(
 	if !operationMatchesPurpose(binding.purpose, target) {
 		return transportError("operation-target-mismatch")
 	}
-	context, result := coordinator.broker.contexts.acquireRefs(binding.turnRef, binding.toolUseRef)
+	context, result := coordinator.broker.acquireDecisionContext(binding.turnRef, binding.toolUseRef)
 	if !result.Accepted {
 		return transportError(result.ErrorCode)
 	}
@@ -416,26 +417,40 @@ func (coordinator *transportCoordinator) checkDirectOperation(
 	requesterDeviceIDs ...string,
 ) wireResponse {
 	if coordinator == nil || !safeJoinKey(threadID) || !safeJoinKey(nonce) ||
-		!validOperationTarget(target) {
+		!validOperationTarget(target) || len(peer.Nodes) == 0 {
 		return transportError("direct-operation-invalid")
 	}
-	if bound := coordinator.broker.registerLatestExecutionRoot(threadID, "direct", peer); !bound.Accepted {
-		// checkRequest below produces the complete fail-closed evidence envelope;
-		// the late-binding error itself remains a local transport diagnostic.
-	}
+	bound := coordinator.broker.registerLatestExecutionRoot(threadID, "direct", peer)
 	encodedTarget, err := json.Marshal(target)
 	if err != nil {
 		return transportError("direct-operation-invalid")
 	}
 	targetDigest := sha256.Sum256(encodedTarget)
 	clear(encodedTarget)
-	checked := coordinator.broker.checkRequest(requestObservation{
+	observation := requestObservation{
 		ThreadID: threadID, Nonce: nonce, Surface: target.Surface,
 		Operation: target.Operation, TargetKind: target.TargetKind,
 		TargetID:            hex.EncodeToString(targetDigest[:]),
 		ObservedAt:          time.Now().UTC().Format(time.RFC3339Nano),
 		EnvironmentPresence: environmentPresence{CodexThreadID: true},
-	}, peer)
+	}
+	var checked wireResponse
+	if bound.Accepted {
+		checked = coordinator.broker.checkRequest(observation, peer)
+	} else {
+		envelope := coordinator.broker.baseEnvelope(observation, peer)
+		envelope.Attribution.BindingAttempt = bound.BindingAttempt
+		if bound.BindingAttempt != nil {
+			envelope.Attribution.LateBindingCandidateCount = bound.BindingAttempt.EligibleCount
+		}
+		code := "task-binding-unverified"
+		if bound.ErrorCode != nil {
+			code = *bound.ErrorCode
+		}
+		checked = coordinator.broker.escalateResponse(wireResponse{
+			SchemaVersion: protocolSchemaVersion, Envelope: &envelope, BindingAttempt: bound.BindingAttempt,
+		}, code)
+	}
 	threadID, nonce = "", ""
 	if !checked.Accepted {
 		evidenceID := coordinator.broker.recordShadowEscalationWithEvidence(&checked, target)
@@ -443,6 +458,7 @@ func (coordinator *transportCoordinator) checkDirectOperation(
 		if checked.ErrorCode != nil {
 			response := transportError(*checked.ErrorCode)
 			response.EvidenceID = evidenceID
+			response.BindingAttempt = checked.BindingAttempt
 			return response
 		}
 		response := transportError("task-binding-unverified")

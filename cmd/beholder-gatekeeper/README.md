@@ -1,17 +1,18 @@
-# Beholder v31 runtime candidate
+# Beholder v32 runtime candidate
 
 This module contains the experimental Beholder approval integration shipped
 inside the authenticated native OneNod archive. Its presence does not enable
 model authority or install a privileged service. Root service installation is
 an attended local operation after immutable Release provenance verification.
 
-The runtime supports multiple task directories, follows kernel process
-identity across child requests, keeps overlapping tool observations ambiguous,
-and separates observation lifetime from short-lived exact-request authority.
-There is no trusted host call-to-spawn event: kernel ancestry and one eligible
-observation provide an inference. Shared helpers, overlapping executions and
-same-user session manipulation remain documented limitations. Attribution
-ambiguity falls back to human approval.
+The runtime supports multiple task directories and independent concurrent
+executions. Each process retains all eligible same-task tool observations,
+separately from short-lived exact-request authority. The model receives
+overlapping candidates with their causal identity explicitly unresolved;
+candidate count alone does not trigger human fallback. There is no trusted
+host call-to-spawn event. Shared helpers, unrelated same-task candidates and
+same-user session manipulation remain documented limitations. Process/task
+conflicts and request replay still prevent authority.
 
 The model receives ordered human messages, Agent explanations, current request
 facts and explicit coverage information in one request, without API tools or

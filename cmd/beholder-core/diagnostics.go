@@ -27,17 +27,22 @@ func logCoreDiagnostic(kind, traceID, threadID string, response wireResponse) {
 		digest := sha256.Sum256([]byte(threadID))
 		threadDigest = hex.EncodeToString(digest[:])
 	}
+	attempt := response.BindingAttempt
+	if attempt == nil && response.Envelope != nil {
+		attempt = response.Envelope.Attribution.BindingAttempt
+	}
 	_ = json.NewEncoder(os.Stderr).Encode(struct {
-		Event             string    `json:"event"`
-		ObservedAt        time.Time `json:"observed_at"`
-		Kind              string    `json:"kind"`
-		TraceID           string    `json:"trace_id,omitempty"`
-		ThreadSHA256      string    `json:"thread_sha256,omitempty"`
-		Accepted          bool      `json:"accepted"`
-		ErrorCode         *string   `json:"error_code,omitempty"`
-		DecisionErrorCode *string   `json:"decision_error_code,omitempty"`
-		EvidenceID        string    `json:"evidence_id,omitempty"`
-		ModelCalled       *bool     `json:"model_called,omitempty"`
+		Event             string                   `json:"event"`
+		ObservedAt        time.Time                `json:"observed_at"`
+		Kind              string                   `json:"kind"`
+		TraceID           string                   `json:"trace_id,omitempty"`
+		ThreadSHA256      string                   `json:"thread_sha256,omitempty"`
+		Accepted          bool                     `json:"accepted"`
+		ErrorCode         *string                  `json:"error_code,omitempty"`
+		DecisionErrorCode *string                  `json:"decision_error_code,omitempty"`
+		EvidenceID        string                   `json:"evidence_id,omitempty"`
+		ModelCalled       *bool                    `json:"model_called,omitempty"`
+		BindingAttempt    *executionBindingAttempt `json:"binding_attempt,omitempty"`
 	}{"beholder-core-request", time.Now().UTC(), kind, traceID, threadDigest,
-		response.Accepted, response.ErrorCode, response.DecisionErrorCode, response.EvidenceID, response.ModelCalled})
+		response.Accepted, response.ErrorCode, response.DecisionErrorCode, response.EvidenceID, response.ModelCalled, attempt})
 }
