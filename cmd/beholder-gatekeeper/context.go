@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -942,33 +943,25 @@ func cloneExternalDecisionInput(input externalDecisionInput) externalDecisionInp
 	// model input remained usable, but persisting SelectedModelInput then failed
 	// before the provider call. Copy each owned container directly instead.
 	clone := input
-	clone.HumanIntent.PriorMessages = append([]sourceText(nil), input.HumanIntent.PriorMessages...)
-	clone.AgentContext.PriorTaskTrajectory = append(
-		[]sourceText(nil), input.AgentContext.PriorTaskTrajectory...,
-	)
-	clone.AgentContext.CurrentExecutionTrajectory = append(
-		[]sourceText(nil), input.AgentContext.CurrentExecutionTrajectory...,
-	)
-	clone.AgentContext.AmbientContext = append([]sourceText(nil), input.AgentContext.AmbientContext...)
-	clone.ToolCall.Input = append(json.RawMessage(nil), input.ToolCall.Input...)
-	clone.CompletedToolActivity = append([]recentToolContext(nil), input.CompletedToolActivity...)
-	clone.Coverage.Summary = append([]contextCandidateSummary(nil), input.Coverage.Summary...)
-	clone.Environment.WorkspaceRoots = append([]string(nil), input.Environment.WorkspaceRoots...)
-	clone.Environment.ResolvedExecutables = make(map[string]string, len(input.Environment.ResolvedExecutables))
+	clone.HumanIntent.PriorMessages = slices.Clone(input.HumanIntent.PriorMessages)
+	clone.AgentContext.PriorTaskTrajectory = slices.Clone(input.AgentContext.PriorTaskTrajectory)
+	clone.AgentContext.CurrentExecutionTrajectory = slices.Clone(input.AgentContext.CurrentExecutionTrajectory)
+	clone.AgentContext.AmbientContext = slices.Clone(input.AgentContext.AmbientContext)
+	clone.ToolCall.Input = slices.Clone(input.ToolCall.Input)
+	clone.CompletedToolActivity = slices.Clone(input.CompletedToolActivity)
+	clone.Coverage.Summary = slices.Clone(input.Coverage.Summary)
+	clone.Environment.WorkspaceRoots = slices.Clone(input.Environment.WorkspaceRoots)
+	if input.Environment.ResolvedExecutables != nil {
+		clone.Environment.ResolvedExecutables = make(map[string]string, len(input.Environment.ResolvedExecutables))
+	}
 	for name, path := range input.Environment.ResolvedExecutables {
 		clone.Environment.ResolvedExecutables[name] = path
 	}
-	clone.RequesterContext.Arguments = append(
-		[]requesterArgument(nil), input.RequesterContext.Arguments...,
-	)
-	clone.RequesterContext.RelevantEnvironment = append(
-		[]requesterEnvironmentValue(nil), input.RequesterContext.RelevantEnvironment...,
-	)
-	clone.CoreEvidence = append(json.RawMessage(nil), input.CoreEvidence...)
-	clone.ActualRequest.TargetID = append(json.RawMessage(nil), input.ActualRequest.TargetID...)
-	clone.ActualRequest.RequestContext = append(
-		json.RawMessage(nil), input.ActualRequest.RequestContext...,
-	)
+	clone.RequesterContext.Arguments = slices.Clone(input.RequesterContext.Arguments)
+	clone.RequesterContext.RelevantEnvironment = slices.Clone(input.RequesterContext.RelevantEnvironment)
+	clone.CoreEvidence = slices.Clone(input.CoreEvidence)
+	clone.ActualRequest.TargetID = slices.Clone(input.ActualRequest.TargetID)
+	clone.ActualRequest.RequestContext = slices.Clone(input.ActualRequest.RequestContext)
 	return clone
 }
 

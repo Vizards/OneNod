@@ -17,26 +17,28 @@ import (
 )
 
 type broker struct {
-	promptLedger        *promptLedger
-	mu                  sync.Mutex
-	key                 []byte
-	epochRef            string
-	sessionRoot         string
-	trustMode           string
-	trustedHookPath     string
-	trustedHook         trustedExecutableIdentity
-	allowedUID          uint32
-	socketOwnerUID      int
-	claimTTL            time.Duration
-	now                 func() time.Time
-	processAlive        func(processIdentity) bool
-	contexts            *transientContextStore
-	gatekeeper          *shadowGatekeeperClient
-	authority           *beholderAuthority
-	claimsByToolRef     map[string]*hostClaim
-	claimRefByTool      map[string]string
-	claimRefByExecution map[string]string
-	nonces              map[string]string
+	promptLedger          *promptLedger
+	mu                    sync.Mutex
+	key                   []byte
+	epochRef              string
+	sessionRoot           string
+	trustMode             string
+	trustedHookPath       string
+	trustedHook           trustedExecutableIdentity
+	allowedUID            uint32
+	socketOwnerUID        int
+	claimTTL              time.Duration
+	now                   func() time.Time
+	processAlive          func(processIdentity) bool
+	contexts              *transientContextStore
+	gatekeeper            *shadowGatekeeperClient
+	authority             *beholderAuthority
+	claimsByToolRef       map[string]*hostClaim
+	claimRefByTool        map[string]string
+	claimRefByExecution   map[string]string
+	nonces                map[string]string
+	executionContextBytes int
+	executionSequence     uint64
 }
 
 const maximumHostObservations = 2048
@@ -115,6 +117,11 @@ func (broker *broker) close() {
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
 	clear(broker.key)
+	for _, claim := range broker.claimsByToolRef {
+		if claim.executionContext != nil {
+			claim.executionContext.clear()
+		}
+	}
 	clear(broker.claimsByToolRef)
 	clear(broker.claimRefByTool)
 	clear(broker.claimRefByExecution)
@@ -185,6 +192,14 @@ func (broker *broker) registerHost(observation hostObservation, peer processChai
 		contextResult = broker.contexts.registerToolInput(observation.SessionID, observation.TurnID, observation.ToolUseID, observation.ToolInput)
 	}
 	if !contextResult.Accepted {
+		if contextResult.ErrorCode == "tool-input-observation-conflict" {
+			broker.mu.Lock()
+			if source := broker.claimsByToolRef[broker.keyedRef("tool-selector", []byte(observation.ToolUseID))]; source != nil {
+				source.conflictCode = contextResult.ErrorCode
+				broker.invalidateExecutionCandidatesLocked(source, contextResult.ErrorCode)
+			}
+			broker.mu.Unlock()
+		}
 		return responseWithError(response, contextResult.ErrorCode)
 	}
 	registeredAt := broker.now().UTC()
@@ -222,6 +237,7 @@ func (broker *broker) registerHost(observation hostObservation, peer processChai
 		if !exists || !sameHostRegistration(existing, claim) {
 			if exists {
 				existing.conflictCode = "tool-registration-conflict"
+				broker.invalidateExecutionCandidatesLocked(existing, existing.conflictCode)
 			}
 			return responseWithError(response, "tool-registration-conflict")
 		}
@@ -303,89 +319,6 @@ func (broker *broker) registerExecutionRoot(toolRef, threadID string, peer proce
 	return response
 }
 
-// registerLatestExecutionRoot is an observation-only fallback. Kernel ancestry
-// identifies a stable direct execution child. Birth time rules out impossible
-// observations, but does not prove a call-to-spawn mapping. All remaining
-// candidates must be unique; neither command meaning nor recency breaks ties.
-func (broker *broker) registerLatestExecutionRoot(
-	threadID, purpose string,
-	peer processChain,
-) wireResponse {
-	response := wireResponse{SchemaVersion: protocolSchemaVersion}
-	if !safeJoinKey(threadID) || len(peer.Nodes) == 0 || len(peer.Roles) != len(peer.Nodes) {
-		return responseWithError(response, "late-binding-unverified")
-	}
-	runtimeIndex := firstRoleIndex(peer, "codex-runtime")
-	if runtimeIndex < 0 || (broker.trustMode == "production" && firstRoleIndex(peer, "codex-desktop-host") < 0) {
-		return responseWithError(response, "codex-host-ancestry-unverified")
-	}
-	if broker.trustMode == "production" && !validLateBindingRole(peer.Roles[0], purpose) {
-		return responseWithError(response, "late-binding-requester-mismatch")
-	}
-	threadRef := broker.keyedRef("thread", []byte(threadID))
-	runtimeRef := broker.processRef(peer.Nodes[runtimeIndex])
-	now := broker.now().UTC()
-
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	broker.expireLocked(now)
-
-	// Idempotence also covers a descendant of an already bound shell root.
-	for _, node := range peer.Nodes {
-		ref := broker.processRef(node)
-		toolRef, found := broker.claimRefByExecution[ref]
-		if !found {
-			continue
-		}
-		claim := broker.claimsByToolRef[toolRef]
-		if claim == nil || claim.threadRef != threadRef || claim.runtimeBindingRef != runtimeRef {
-			return responseWithError(response, "late-binding-conflict")
-		}
-		response.Accepted = true
-		return response
-	}
-	executionIndex := runtimeIndex - 1
-	if executionIndex < 0 || peer.Nodes[executionIndex].ParentPID != peer.Nodes[runtimeIndex].PID {
-		return responseWithError(response, "execution-root-unverified")
-	}
-	execution := peer.Nodes[executionIndex]
-	executionRef := broker.processRef(execution)
-	born := time.Unix(int64(execution.StartSeconds), int64(execution.StartMicroseconds)*1000).UTC()
-	if other, found := broker.claimRefByExecution[executionRef]; found && other != "" {
-		return responseWithError(response, "execution-root-conflict")
-	}
-
-	type candidate struct {
-		toolRef string
-		claim   *hostClaim
-	}
-	candidates := make([]candidate, 0, len(broker.claimsByToolRef))
-	for toolRef, claim := range broker.claimsByToolRef {
-		if claim == nil || claim.executionRootRef != "" || claim.conflictCode != "" ||
-			claim.threadRef != threadRef || claim.runtimeBindingRef != runtimeRef {
-			continue
-		}
-		if claim.registeredAt.After(born) || (!claim.returnedAt.IsZero() && born.After(claim.returnedAt)) {
-			continue
-		}
-		candidates = append(candidates, candidate{toolRef: toolRef, claim: claim})
-	}
-	if len(candidates) == 0 {
-		return responseWithError(response, "late-binding-missing")
-	}
-	if len(candidates) > 1 {
-		return responseWithError(response, "late-binding-ambiguous")
-	}
-	selected := candidates[0]
-	selected.claim.executionRootRef = executionRef
-	selected.claim.executionIdentity = execution
-	selected.claim.bindingMethod = "process-birth-unique-candidate"
-	selected.claim.lateBindingCandidates = len(candidates)
-	broker.claimRefByExecution[executionRef] = selected.toolRef
-	response.Accepted = true
-	return response
-}
-
 func validLateBindingRole(role, purpose string) bool {
 	switch purpose {
 	case leasePurposeSSH:
@@ -452,7 +385,7 @@ func (broker *broker) checkRequest(
 	contextToolUseRef := claim.contextToolUseRef
 	broker.mu.Unlock()
 
-	context, contextResult := broker.contexts.acquireRefs(contextTurnRef, contextToolUseRef)
+	context, contextResult := broker.acquireDecisionContext(contextTurnRef, contextToolUseRef)
 	if !contextResult.Accepted {
 		return broker.escalateResponse(response, contextResult.ErrorCode)
 	}
@@ -486,10 +419,12 @@ func (broker *broker) checkRequest(
 	response.Envelope.Attribution.ToolUseRef = claim.toolUseRef
 	response.Envelope.Attribution.SessionCandidateCount = claim.sessionCandidateCount
 	response.Envelope.Attribution.SessionMetadataMatched = claim.metadataMatched
-	response.Envelope.Attribution.ToolRefMatched = true
+	response.Envelope.Attribution.ToolRefMatched = len(claim.executionCandidates) <= 1
 	response.Envelope.Attribution.ExecutionRootMatched = true
 	response.Envelope.Attribution.BindingMethod = claim.bindingMethod
 	response.Envelope.Attribution.LateBindingCandidateCount = claim.lateBindingCandidates
+	response.Envelope.Attribution.BindingAttempt = claim.bindingAttempt
+	response.BindingAttempt = claim.bindingAttempt
 	response.Envelope.Attribution.ExecutionRootRequestIndex = executionRootIndex
 	response.Envelope.Attribution.RequestThreadMatched = hmac.Equal([]byte(threadRef), []byte(claim.threadRef))
 	response.Envelope.Temporal.HostObservationAgeMS = maxInt64(0, now.Sub(claim.registeredAt).Milliseconds())
@@ -500,7 +435,9 @@ func (broker *broker) checkRequest(
 	pendingInvocations := 0
 	for _, candidate := range broker.claimsByToolRef {
 		if candidate.threadRef == claim.threadRef {
-			pendingInvocations++
+			if candidate.executionContext == nil {
+				pendingInvocations++
+			}
 			if candidate.executionRootRef != "" {
 				runtimeBindings[candidate.runtimeBindingRef] = true
 			}
@@ -530,11 +467,14 @@ func (broker *broker) checkRequest(
 	broker.nonces[nonceRef] = toolRef
 	response.Envelope.Attribution.RequestNonceFresh = true
 	response.Envelope.Attribution.Result = "unique"
+	if len(claim.executionCandidates) > 1 {
+		response.Envelope.Attribution.Result = "task-bound-tool-candidates"
+	}
 	response.Envelope.Attribution.EvidenceKinds = []string{
 		"broker-memory", "cwd", "execution-root", "host-process-anchor", "pid-start", "process-ancestry",
 		"request-nonce", "session-meta", "thread-join-key", "tool-ref", "tool-use", "turn",
 	}
-	if claim.bindingMethod == "process-birth-unique-candidate" {
+	if claim.bindingMethod == "process-birth-candidate-set" {
 		response.Envelope.Attribution.EvidenceKinds = append(
 			response.Envelope.Attribution.EvidenceKinds, "late-process-binding",
 		)
@@ -624,7 +564,7 @@ func (broker *broker) escalateResponse(response wireResponse, code string) wireR
 }
 
 func (broker *broker) expireLocked(now time.Time) {
-	for toolRef, claim := range broker.claimsByToolRef {
+	for _, claim := range broker.claimsByToolRef {
 		// Observation ownership follows the kernel process lifetime. The short
 		// claimTTL below remains the independent nonce/transport lifetime.
 		alive := broker.processAlive(claim.runtimeIdentity)
@@ -632,14 +572,7 @@ func (broker *broker) expireLocked(now time.Time) {
 			alive = alive && broker.processAlive(claim.executionIdentity)
 		}
 		if !alive {
-			broker.contexts.releaseRefs(claim.contextTurnRef, claim.contextToolUseRef)
-			delete(broker.claimsByToolRef, toolRef)
-			if broker.claimRefByTool[claim.contextToolUseRef] == toolRef {
-				delete(broker.claimRefByTool, claim.contextToolUseRef)
-			}
-			if claim.executionRootRef != "" && broker.claimRefByExecution[claim.executionRootRef] == toolRef {
-				delete(broker.claimRefByExecution, claim.executionRootRef)
-			}
+			broker.removeClaimLocked(claim)
 		}
 	}
 	for nonce, toolRef := range broker.nonces {

@@ -53,7 +53,7 @@ func (broker *broker) observeLifecycle(event lifecycleObservation, peer processC
 		if claim.threadRef != thread || claim.runtimeBindingRef != runtime || claim.transcriptInfo == nil || !os.SameFile(info, claim.transcriptInfo) {
 			continue
 		}
-		if event.Event != "SessionEnd" && claim.turnRef != turn {
+		if event.Event != "SessionEnd" && !claimContainsTurn(claim, turn) {
 			continue
 		}
 		if event.Event == "PostToolUse" && claim.toolUseRef != tool {
@@ -81,7 +81,12 @@ func (broker *broker) observeLifecycle(event lifecycleObservation, peer processC
 }
 
 func (broker *broker) removeClaimLocked(claim *hostClaim) {
-	broker.contexts.releaseRefs(claim.contextTurnRef, claim.contextToolUseRef)
+	if claim.executionContext != nil {
+		broker.executionContextBytes -= len(claim.executionContext.Prompt) + len(claim.executionContext.ToolInput)
+		claim.executionContext.clear()
+	} else {
+		broker.contexts.releaseRefs(claim.contextTurnRef, claim.contextToolUseRef)
+	}
 	delete(broker.claimsByToolRef, claim.toolRef)
 	if broker.claimRefByTool[claim.contextToolUseRef] == claim.toolRef {
 		delete(broker.claimRefByTool, claim.contextToolUseRef)

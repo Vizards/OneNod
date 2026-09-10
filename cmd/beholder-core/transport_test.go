@@ -159,6 +159,13 @@ func TestOptionCFallsBackToExistingAgentWhenBindingExtensionIsUnsupported(t *tes
 func TestDirectMayOperationUsesTheSameCurrentHookClaimAndReplayGate(t *testing.T) {
 	fixture := newTransportFixture(t, leasePurposeSSH, false)
 	defer fixture.close()
+	coreFixture := newBrokerFixture(t)
+	fixture.transport.broker.close()
+	fixture.transport.broker = coreFixture.core
+	fixture.threadID, fixture.requesterPeer = coreFixture.sessionID, coreFixture.requestPeer
+	if registered := coreFixture.registerPrimaryHost(); !registered.Accepted {
+		t.Fatal("host registration failed")
+	}
 	target := operationTarget{
 		SchemaVersion: decisionBindingSchemaVersion,
 		Surface:       "direct-may",

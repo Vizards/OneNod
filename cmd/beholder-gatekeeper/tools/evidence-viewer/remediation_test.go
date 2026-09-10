@@ -38,7 +38,7 @@ func TestViewerDoesNotTreatUnknownSchemasAsLegacy(t *testing.T) {
 	if modelContextProvenanceValid(json.RawMessage(`{"schema_version":999}`)) {
 		t.Fatal("unknown schema bypassed provenance validation")
 	}
-	for _, version := range []string{"e2-authoritative-dogfood-v27", "e2-authoritative-dogfood-v30", "e2-authoritative-dogfood-v31"} {
+	for _, version := range []string{"e2-authoritative-dogfood-v27", "e2-authoritative-dogfood-v30", "e2-authoritative-dogfood-v31", "e2-authoritative-dogfood-v32"} {
 		if !authoritativeDogfoodVersion(version) || primaryVariantForVersion(version) != "thinking-disabled" ||
 			!validProviderEvidenceRefs([]string{"user_messages", "core_verified_facts"}, version) {
 			t.Fatalf("missing authoritative evidence contract for %s", version)

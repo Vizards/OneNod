@@ -46,7 +46,7 @@ def verify_directory(directory, version, commit, arch, execute=True):
     manifest = json.loads(checked_file(directory / 'manifest.json'))
     if not (manifest.get('schema_version') == 1
             and manifest.get('record_type') == 'onenod_beholder_artifacts'
-            and manifest.get('beholder_version') == 'v31'
+            and manifest.get('beholder_version') == 'v32'
             and manifest.get('release_version') == version
             and manifest.get('source_commit') == commit
             and manifest.get('architecture') == arch):
@@ -135,7 +135,7 @@ def main():
     parser.add_argument('--arch', choices=['arm64', 'amd64'], required=True)
     args = parser.parse_args()
     verify_archive(args.archive, args.version, args.commit, args.arch)
-    print(json.dumps({'beholder_version': 'v31', 'release_version': args.version,
+    print(json.dumps({'beholder_version': 'v32', 'release_version': args.version,
                       'source_commit': args.commit, 'architecture': args.arch, 'verified': True}))
 
 

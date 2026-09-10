@@ -55,12 +55,20 @@ deployment confirmation. Its dogfooding limitations are explicit:
 
 - Tool attribution combines kernel process lifetime with eligible Hook
   observations. The host does not provide a trusted call-to-spawn event, and
-  same-user session data is not an independent authority. Overlapping or shared
-  execution roots can therefore require human review.
+  same-user session data is not an independent authority. In v32 each live
+  execution retains its own immutable set of time-compatible observations from
+  the same task, runtime and active transcript. Several observations may match
+  one process, and one observation may match several processes. The model sees
+  all candidates with the causal tool explicitly unresolved; candidate count
+  alone does not prevent model review. An unrelated concurrent operation may
+  therefore enter this captured context, and a model can confuse its relevance.
+  This is a deliberate dogfooding concession, not proof of a call-to-spawn
+  mapping. Existing process bindings cannot switch tasks; runtime/transcript
+  identity conflicts and request replay still prevent authority.
 - Working directory, command keywords and history length do not independently
   decide user authorization. The model receives source-labelled context and
   declared coverage gaps, including different task and execution directories.
-- The v31 model input includes human messages, Agent explanations and current
+- The model input includes human messages, Agent explanations and current
   request facts. Historical tool activity remains in local evidence but is not
   sent to the model; no retrieval tools or generated history summary are used.
   Material facts or contamination present only in that omitted history may

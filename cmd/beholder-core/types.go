@@ -111,6 +111,7 @@ type beholderAuthorization struct {
 }
 
 type wireResponse struct {
+	BindingAttempt         *executionBindingAttempt  `json:"binding_attempt,omitempty"`
 	ModelCalled            *bool                     `json:"model_called,omitempty"`
 	DecisionErrorCode      *string                   `json:"decision_error_code,omitempty"`
 	SchemaVersion          int                       `json:"schema_version"`
@@ -205,23 +206,24 @@ type gatekeeperEvidence struct {
 }
 
 type attributionEvidence struct {
-	Result                    string   `json:"result"`
-	BindingMethod             string   `json:"binding_method,omitempty"`
-	LateBindingCandidateCount int      `json:"late_binding_candidate_count"`
-	ThreadRef                 string   `json:"thread_ref,omitempty"`
-	TurnRef                   string   `json:"turn_ref,omitempty"`
-	ToolUseRef                string   `json:"tool_use_ref,omitempty"`
-	SessionCandidateCount     int      `json:"session_candidate_count"`
-	SessionMetadataMatched    bool     `json:"session_metadata_matched"`
-	ToolRefMatched            bool     `json:"tool_ref_matched"`
-	RequestThreadMatched      bool     `json:"request_thread_matched"`
-	ExecutionRootMatched      bool     `json:"execution_root_matched"`
-	ExecutionRootRequestIndex int      `json:"execution_root_request_index"`
-	RuntimeBindingCount       int      `json:"runtime_binding_count"`
-	PendingInvocationCount    int      `json:"pending_invocation_count"`
-	RequestNonceFresh         bool     `json:"request_nonce_fresh"`
-	EvidenceKinds             []string `json:"evidence_kinds"`
-	Conflicts                 []string `json:"conflicts"`
+	BindingAttempt            *executionBindingAttempt `json:"binding_attempt,omitempty"`
+	Result                    string                   `json:"result"`
+	BindingMethod             string                   `json:"binding_method,omitempty"`
+	LateBindingCandidateCount int                      `json:"late_binding_candidate_count"`
+	ThreadRef                 string                   `json:"thread_ref,omitempty"`
+	TurnRef                   string                   `json:"turn_ref,omitempty"`
+	ToolUseRef                string                   `json:"tool_use_ref,omitempty"`
+	SessionCandidateCount     int                      `json:"session_candidate_count"`
+	SessionMetadataMatched    bool                     `json:"session_metadata_matched"`
+	ToolRefMatched            bool                     `json:"tool_ref_matched"`
+	RequestThreadMatched      bool                     `json:"request_thread_matched"`
+	ExecutionRootMatched      bool                     `json:"execution_root_matched"`
+	ExecutionRootRequestIndex int                      `json:"execution_root_request_index"`
+	RuntimeBindingCount       int                      `json:"runtime_binding_count"`
+	PendingInvocationCount    int                      `json:"pending_invocation_count"`
+	RequestNonceFresh         bool                     `json:"request_nonce_fresh"`
+	EvidenceKinds             []string                 `json:"evidence_kinds"`
+	Conflicts                 []string                 `json:"conflicts"`
 }
 
 type hostEvidence struct {
@@ -305,6 +307,9 @@ type brokerSummary struct {
 }
 
 type hostClaim struct {
+	executionContext      *transientDecisionContext
+	executionCandidates   []executionCandidateEvidence
+	bindingAttempt        *executionBindingAttempt
 	runtimeIdentity       processIdentity
 	executionIdentity     processIdentity
 	transcriptInfo        os.FileInfo

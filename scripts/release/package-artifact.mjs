@@ -120,7 +120,7 @@ async function stageBeholderRuntime(root, values) {
     files[name] = { sha256: await sha256File(join(destination, name)) };
   }
   await writeFile(join(destination, "manifest.json"), `${JSON.stringify({
-    schema_version: 1, record_type: "onenod_beholder_artifacts", beholder_version: "v31",
+    schema_version: 1, record_type: "onenod_beholder_artifacts", beholder_version: "v32",
     release_version: values.version, source_commit: values.commit, architecture: values.arch,
     files,
   }, null, 2)}\n`, { mode: 0o644, flag: "wx" });
