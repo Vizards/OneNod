@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -165,5 +166,65 @@ func TestInvalidArgumentsAndCancellation(t *testing.T) {
 	cancel()
 	if r := s.Call(ctx, "query_context", json.RawMessage(`{}`)); r.Error == "" {
 		t.Fatal("ignored cancellation")
+	}
+}
+
+func TestTurnStartsBeforeTurnContext(t *testing.T) {
+	s := fixture(t, `{"type":"turn_context","payload":{"turn_id":"old"}}`+"\n"+
+		message("user", "previous")+`{"type":"event_msg","payload":{"type":"task_started","turn_id":"current"}}`+"\n"+
+		message("user", "new instruction before context")+`{"type":"turn_context","payload":{"turn_id":""}}`+"\n"+
+		message("assistant", "still current")+`{"type":"turn_context","payload":{"turn_id":"current"}}`+"\n", "one")
+	if got := ids(call(s, "query_context", map[string]any{"turn_id": "current"})); !reflect.DeepEqual(got, []string{"L6", "L4"}) {
+		t.Fatal(got)
+	}
+	if got := ids(call(s, "query_context", map[string]any{"turn_id": "old"})); !reflect.DeepEqual(got, []string{"L2"}) {
+		t.Fatal(got)
+	}
+	for _, index := range []int{2, 3, 4, 5, 6} {
+		if s.records[index].TurnID != "current" {
+			t.Fatal("turn boundary lost", index)
+		}
+	}
+}
+
+// Cancel on a chosen context checkpoint, without relying on scheduler timing.
+type checkpointContext struct {
+	context.Context
+	remaining int
+	cancel    context.CancelFunc
+}
+
+func (c *checkpointContext) Err() error {
+	c.remaining--
+	if c.remaining <= 0 {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestSearchBudgetsAndInnerLoopCancellation(t *testing.T) {
+	s := fixture(t, message("user", "needle"), "one")
+	for _, terms := range [][]string{make([]string, 100000), {strings.Repeat("a", MaximumSearchTermBytes+1)}, {strings.Repeat("汉", MaximumSearchTermBytes/3+1)}} {
+		if r := call(s, "search_context", map[string]any{"terms": terms}); r.Error == "" {
+			t.Fatal("accepted excessive terms")
+		}
+	}
+	values := make([]any, MaximumSearchTerms)
+	for i := range values {
+		values[i] = "absent"
+	}
+	// Preparation and the record scan must both observe cancellation.
+	for _, checkpoints := range []int{4, MaximumSearchTerms + 6} {
+		ctx, cancel := context.WithCancel(context.Background())
+		checked := &checkpointContext{Context: ctx, remaining: checkpoints, cancel: cancel}
+		_, _, err := s.selectRecords(checked, "search_context", map[string]any{"terms": values})
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("search ignored cancellation", checkpoints, err)
+		}
+	}
+	values[0] = "needle"
+	if r := call(s, "search_context", map[string]any{"terms": values}); r.Error != "" || r.Matched != 1 {
+		t.Fatal("bounded legitimate search failed", r)
 	}
 }

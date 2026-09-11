@@ -36,10 +36,21 @@ The primary has a 30-second total budget, including admission and snapshot
 collection, with no automatic retry or model fallback. There are at most 24
 rounds, 32 calls per round, eight concurrent local reads, 128,000 payload
 characters per page, a 256 MiB source snapshot and a 16 MiB provider request.
+Searches accept up to 32 literal terms and 8,192 total UTF-8 term bytes per
+call, return a correctable tool error for larger queries, and check cancellation
+within record/term scans. No words or topics are filtered.
 These are resource bounds; a limit or invalid provider response retains PWA
 approval. A bare decision without any successful evidence read cannot authorize.
 DSML text and malformed decision JSON are not repaired into API calls or allows.
 The client/Core transport budgets leave room around this primary deadline.
+
+`read_request` includes the original requester executable, arguments and redacted
+environment metadata. Turn filters advance on both `task_started` events and
+nonempty `turn_context` records. Missing, malformed, invalid or unread final
+citations produce `evidence_ref_diagnostics` in private evidence and warnings in
+the evidence viewer. Citations remain optional diagnostics and do not add an
+authorization gate; a delivered reference does not prove the model interpreted
+it correctly or read every page of an oversized record.
 
 Thinking-enabled runs afterward for observation, over the same snapshot and
 initial input, with its own retrieval choices and a 180-second budget. At most

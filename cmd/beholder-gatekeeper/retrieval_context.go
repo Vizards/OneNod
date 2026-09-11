@@ -94,6 +94,9 @@ func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[strin
 		return fail("retrieval-snapshot-read-failed")
 	}
 	local := localRequestForEvidence(request)
+	// The source evidence stores this parsed at its root to support redaction.
+	// read_request must still include the original executable/arguments/env.
+	local.ActualRequest.RequesterContext = request.ActualRequest.RequesterContext
 	// A local filesystem path is not needed for any model query. Tools cannot
 	// open a path supplied by the model; they only navigate this captured source.
 	local.TranscriptPath = ""

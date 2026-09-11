@@ -83,6 +83,10 @@ deployment confirmation. Its dogfooding limitations are explicit:
   Thinking-enabled observation cannot change authority; it is skipped when its
   separate capacity is full. Per-round evidence and replay expose retrieval
   behavior but cannot prove that a model decision is correct.
+- Final citations are diagnostic, not an independent authorization gate. Missing,
+  malformed or unread references are recorded and surfaced by the evidence
+  viewer without overriding an otherwise valid model decision. A returned page
+  proves delivery of that page, not correct interpretation or complete reading.
 - Arbitrary task text may contain sensitive information. It is sent to the
   configured model without heuristic credential scanning; protocol-owned
   credentials and signing material remain excluded at their sources.

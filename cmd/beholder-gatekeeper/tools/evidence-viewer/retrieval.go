@@ -66,7 +66,6 @@ type retrievalToolAudit struct {
 }
 
 var retrievalRoundPattern = regexp.MustCompile(`^round-thinking-(disabled|enabled)-(00[1-9]|01[0-9]|02[0-4])-(request|response|tools)\.json$`)
-var retrievalReferencePattern = regexp.MustCompile(`^(session|request):L[1-9][0-9]*$`)
 
 func retrievalVersion(version string) bool { return version == "e2-authoritative-dogfood-v33" }
 func validRetrievalStage(name string, base []string) bool {
@@ -128,7 +127,7 @@ func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
 	var refs, normalized []string
 	if json.Unmarshal(decision.EvidenceRefs, &refs) == nil {
 		for _, ref := range refs {
-			if len(ref) <= 256 && retrievalReferencePattern.MatchString(ref) {
+			if retrieval.ValidReference(ref) {
 				normalized = append(normalized, ref)
 			}
 		}
@@ -169,15 +168,34 @@ func inspectRetrieval(bundle string, m manifest, source sourceAuditRecord, prima
 		return
 	}
 	var original struct {
-		Request map[string]json.RawMessage `json:"core_local_decision_request"`
+		Request          map[string]json.RawMessage `json:"core_local_decision_request"`
+		RequesterContext json.RawMessage            `json:"onenod_requester_context"`
 	}
 	if !decodeBundleRecord(bundle, "01-source-context.json", &original) {
 		fail("request-origin-invalid")
 		return
 	}
 	original.Request["transcript_path"] = json.RawMessage(`""`)
+	// The source stores requester context as parsed JSON, while the Core wire
+	// and read_request retain its original JSON string. Compare those values
+	// semantically before comparing the rest of the request.
+	var retrieved, actual map[string]json.RawMessage
+	var requesterContext string
+	if json.Unmarshal(request, &retrieved) != nil || json.Unmarshal(retrieved["actual_request"], &actual) != nil ||
+		(actual["requester_context"] != nil && json.Unmarshal(actual["requester_context"], &requesterContext) != nil) {
+		fail("request-origin-invalid")
+		return
+	}
+	if requesterContext != "" || len(original.RequesterContext) > 0 {
+		if !jsonSemanticallyEqual([]byte(requesterContext), original.RequesterContext) {
+			fail("requester-context-origin-mismatch")
+		}
+	}
+	delete(actual, "requester_context")
+	retrieved["actual_request"], _ = json.Marshal(actual)
+	retrievedBytes, _ := json.Marshal(retrieved)
 	normalized, _ := json.Marshal(original.Request)
-	if !jsonSemanticallyEqual(normalized, request) {
+	if !jsonSemanticallyEqual(normalized, retrievedBytes) {
 		fail("request-origin-mismatch")
 	}
 	for _, pair := range []struct {
@@ -202,6 +220,7 @@ func inspectRetrievalRounds(bundle string, m manifest, store *retrieval.Store, i
 	reasoningPresent := false
 	localMS := 0.0
 	readEvidence := false
+	deliveredRefs := map[string]bool{}
 	for round := 1; round <= summary.ModelRounds; round++ {
 		prefix := fmt.Sprintf("round-%s-%03d-", initial.Variant, round)
 		var req modelRequestAuditRecord
@@ -263,6 +282,11 @@ func inspectRetrievalRounds(bundle string, m manifest, store *retrieval.Store, i
 				return
 			}
 			readEvidence = readEvidence || replayed.Error == ""
+			if replayed.Error == "" {
+				for _, record := range replayed.Records {
+					deliveredRefs[record.SourceRef] = true
+				}
+			}
 			msg, _ := json.Marshal(map[string]any{"role": "tool", "tool_call_id": output.ID, "content": output.Content})
 			messages = append(messages, msg)
 			calls++
@@ -273,6 +297,25 @@ func inspectRetrievalRounds(bundle string, m manifest, store *retrieval.Store, i
 	}
 	if summary.ModelUsed && (!readEvidence || !jsonSemanticallyEqual(last, summary.Body)) {
 		fail("final-response-mismatch")
+	}
+	if summary.ModelUsed {
+		var response retrievalResponseAudit
+		var assistant retrievalAssistantAudit
+		var decision struct {
+			Refs json.RawMessage `json:"evidence_refs"`
+		}
+		if json.Unmarshal(last, &response) != nil || len(response.Choices) != 1 ||
+			json.Unmarshal(response.Choices[0].Message, &assistant) != nil || json.Unmarshal([]byte(assistant.Content), &decision) != nil {
+			fail("reference-diagnostics-unavailable")
+			return
+		}
+		_, diagnostics := retrieval.ReviewReferences(decision.Refs, deliveredRefs)
+		if !equalStrings(diagnostics, summary.EvidenceRefDiagnostics) {
+			fail("reference-diagnostics-mismatch")
+		}
+		for _, diagnostic := range diagnostics {
+			out.Warnings = append(out.Warnings, "retrieval-"+initial.Variant+"-evidence-refs-"+diagnostic)
+		}
 	}
 	if calls != summary.ToolCalls || reasoningBytes != summary.ReasoningBytes || reasoningTokens != summary.ReasoningTokens || reasoningPresent != summary.ReasoningPresent || localMS != summary.ToolLatencyMS {
 		fail("aggregate-telemetry-mismatch")

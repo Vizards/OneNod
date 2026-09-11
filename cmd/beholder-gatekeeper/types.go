@@ -182,28 +182,29 @@ type operationTarget struct {
 }
 
 type localDecisionResponse struct {
-	ModelRounds      int      `json:"-"`
-	ToolCalls        int      `json:"-"`
-	ToolLatencyMS    float64  `json:"-"`
-	SchemaVersion    int      `json:"schema_version"`
-	RequestID        string   `json:"request_id"`
-	Decision         string   `json:"decision"`
-	Reason           string   `json:"reason"`
-	ErrorCode        *string  `json:"error_code"`
-	ModelUsed        bool     `json:"model_used"`
-	ModelCalled      bool     `json:"model_called"`
-	ModelTransport   string   `json:"model_transport,omitempty"`
-	TransportDetail  *string  `json:"transport_error_detail,omitempty"`
-	ResponseShape    string   `json:"response_shape,omitempty"`
-	ScopeResolution  string   `json:"scope_resolution,omitempty"`
-	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
-	ReasoningPresent bool     `json:"reasoning_present"`
-	ReasoningBytes   int      `json:"reasoning_bytes"`
-	ReasoningTokens  int      `json:"reasoning_tokens"`
-	FinishReason     string   `json:"finish_reason,omitempty"`
-	LatencyMS        int64    `json:"latency_ms"`
-	EvidenceID       string   `json:"evidence_id,omitempty"`
-	OutcomeRecorded  bool     `json:"outcome_recorded,omitempty"`
+	ModelRounds            int      `json:"-"`
+	EvidenceRefDiagnostics []string `json:"-"`
+	ToolCalls              int      `json:"-"`
+	ToolLatencyMS          float64  `json:"-"`
+	SchemaVersion          int      `json:"schema_version"`
+	RequestID              string   `json:"request_id"`
+	Decision               string   `json:"decision"`
+	Reason                 string   `json:"reason"`
+	ErrorCode              *string  `json:"error_code"`
+	ModelUsed              bool     `json:"model_used"`
+	ModelCalled            bool     `json:"model_called"`
+	ModelTransport         string   `json:"model_transport,omitempty"`
+	TransportDetail        *string  `json:"transport_error_detail,omitempty"`
+	ResponseShape          string   `json:"response_shape,omitempty"`
+	ScopeResolution        string   `json:"scope_resolution,omitempty"`
+	EvidenceRefs           []string `json:"evidence_refs,omitempty"`
+	ReasoningPresent       bool     `json:"reasoning_present"`
+	ReasoningBytes         int      `json:"reasoning_bytes"`
+	ReasoningTokens        int      `json:"reasoning_tokens"`
+	FinishReason           string   `json:"finish_reason,omitempty"`
+	LatencyMS              int64    `json:"latency_ms"`
+	EvidenceID             string   `json:"evidence_id,omitempty"`
+	OutcomeRecorded        bool     `json:"outcome_recorded,omitempty"`
 }
 
 type outcomeStatus struct {
@@ -450,6 +451,7 @@ type localDecisionRequestEvidence struct {
 
 type decisionRecord struct {
 	ModelRounds               int                       `json:"model_rounds,omitempty"`
+	EvidenceRefDiagnostics    []string                  `json:"evidence_ref_diagnostics,omitempty"`
 	ToolCalls                 int                       `json:"tool_calls,omitempty"`
 	ToolLatencyMS             float64                   `json:"tool_latency_ms,omitempty"`
 	SchemaVersion             int                       `json:"schema_version"`
@@ -505,27 +507,28 @@ type decisionRecord struct {
 }
 
 type comparisonDecisionRecord struct {
-	ModelRounds      int      `json:"model_rounds,omitempty"`
-	ToolCalls        int      `json:"tool_calls,omitempty"`
-	ToolLatencyMS    float64  `json:"tool_latency_ms,omitempty"`
-	Variant          string   `json:"variant"`
-	ThinkingType     string   `json:"thinking_type"`
-	Decision         string   `json:"decision"`
-	Reason           string   `json:"reason"`
-	ErrorCode        *string  `json:"error_code"`
-	ModelUsed        bool     `json:"model_used"`
-	ModelCalled      bool     `json:"model_called"`
-	ModelTransport   string   `json:"model_transport,omitempty"`
-	TransportDetail  *string  `json:"transport_error_detail,omitempty"`
-	ResponseShape    string   `json:"response_shape"`
-	ScopeResolution  string   `json:"scope_resolution"`
-	EvidenceRefs     []string `json:"evidence_refs"`
-	ReasoningPresent bool     `json:"reasoning_present"`
-	ReasoningBytes   int      `json:"reasoning_bytes"`
-	ReasoningTokens  int      `json:"reasoning_tokens"`
-	FinishReason     string   `json:"finish_reason"`
-	LatencyMS        int64    `json:"latency_ms"`
-	HTTPStatus       int      `json:"http_status,omitempty"`
+	ModelRounds            int      `json:"model_rounds,omitempty"`
+	EvidenceRefDiagnostics []string `json:"evidence_ref_diagnostics,omitempty"`
+	ToolCalls              int      `json:"tool_calls,omitempty"`
+	ToolLatencyMS          float64  `json:"tool_latency_ms,omitempty"`
+	Variant                string   `json:"variant"`
+	ThinkingType           string   `json:"thinking_type"`
+	Decision               string   `json:"decision"`
+	Reason                 string   `json:"reason"`
+	ErrorCode              *string  `json:"error_code"`
+	ModelUsed              bool     `json:"model_used"`
+	ModelCalled            bool     `json:"model_called"`
+	ModelTransport         string   `json:"model_transport,omitempty"`
+	TransportDetail        *string  `json:"transport_error_detail,omitempty"`
+	ResponseShape          string   `json:"response_shape"`
+	ScopeResolution        string   `json:"scope_resolution"`
+	EvidenceRefs           []string `json:"evidence_refs"`
+	ReasoningPresent       bool     `json:"reasoning_present"`
+	ReasoningBytes         int      `json:"reasoning_bytes"`
+	ReasoningTokens        int      `json:"reasoning_tokens"`
+	FinishReason           string   `json:"finish_reason"`
+	LatencyMS              int64    `json:"latency_ms"`
+	HTTPStatus             int      `json:"http_status,omitempty"`
 }
 
 func stringPointer(value string) *string { return &value }

@@ -39,7 +39,7 @@ Return one final JSON object, without markdown, with decision, reason, and evide
 const (
 	gatekeeperVersion     = "e2-authoritative-dogfood-v33"
 	confirmedConfigSHA256 = "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07"
-	confirmedPolicySHA256 = "9f7e7a4eed7a4c659fdcad055b0860c8481c529f1c31dfbb45096f726971f154"
+	confirmedPolicySHA256 = "9dddf2ba3558c426f9d8ff034bf6ab6dc6d5ccc603e9e1d6c4b7cde74634732b"
 )
 
 const (
@@ -112,25 +112,26 @@ type gatekeeperService struct {
 }
 
 type modelCallResult struct {
-	modelRounds      int
-	toolCalls        int
-	toolLatencyMS    float64
-	decision         string
-	reason           string
-	errorCode        string
-	modelCalled      bool
-	modelTransport   string
-	transportDetail  string
-	responseShape    string
-	modelUsed        bool
-	scopeResolution  string
-	evidenceRefs     []string
-	reasoningPresent bool
-	reasoningBytes   int
-	reasoningTokens  int
-	finishReason     string
-	latencyMS        int64
-	httpStatus       int
+	modelRounds            int
+	evidenceRefDiagnostics []string
+	toolCalls              int
+	toolLatencyMS          float64
+	decision               string
+	reason                 string
+	errorCode              string
+	modelCalled            bool
+	modelTransport         string
+	transportDetail        string
+	responseShape          string
+	modelUsed              bool
+	scopeResolution        string
+	evidenceRefs           []string
+	reasoningPresent       bool
+	reasoningBytes         int
+	reasoningTokens        int
+	finishReason           string
+	latencyMS              int64
+	httpStatus             int
 }
 
 type modelCallVariant struct {
@@ -445,6 +446,7 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 
 func applyModelResult(response *localDecisionResponse, result modelCallResult) {
 	response.ModelRounds, response.ToolCalls, response.ToolLatencyMS = result.modelRounds, result.toolCalls, result.toolLatencyMS
+	response.EvidenceRefDiagnostics = append([]string(nil), result.evidenceRefDiagnostics...)
 	response.Decision = result.decision
 	response.Reason = result.reason
 	response.ModelUsed = result.modelUsed
@@ -615,7 +617,8 @@ func (service *gatekeeperService) submitShadowDecision(
 			ReasoningPresent: result.reasoningPresent, ReasoningBytes: result.reasoningBytes,
 			ReasoningTokens: result.reasoningTokens, FinishReason: result.finishReason,
 			ModelRounds: result.modelRounds, ToolCalls: result.toolCalls, ToolLatencyMS: result.toolLatencyMS,
-			LatencyMS: result.latencyMS, EvidenceID: request.RequestID,
+			EvidenceRefDiagnostics: append([]string(nil), result.evidenceRefDiagnostics...),
+			LatencyMS:              result.latencyMS, EvidenceID: request.RequestID,
 		}
 		if result.errorCode != "" {
 			final.ErrorCode = stringPointer(result.errorCode)
@@ -771,7 +774,8 @@ func localResponseFromModelResult(evidenceID string, result modelCallResult) loc
 		ReasoningPresent: result.reasoningPresent, ReasoningBytes: result.reasoningBytes,
 		ReasoningTokens: result.reasoningTokens, FinishReason: result.finishReason,
 		ModelRounds: result.modelRounds, ToolCalls: result.toolCalls, ToolLatencyMS: result.toolLatencyMS,
-		LatencyMS: result.latencyMS, EvidenceID: evidenceID,
+		EvidenceRefDiagnostics: append([]string(nil), result.evidenceRefDiagnostics...),
+		LatencyMS:              result.latencyMS, EvidenceID: evidenceID,
 	}
 	if result.errorCode != "" {
 		response.ErrorCode = stringPointer(result.errorCode)
@@ -1325,6 +1329,7 @@ func (service *gatekeeperService) finishEvidenceBundleVariant(
 		ReasoningTokens: response.ReasoningTokens, FinishReason: response.FinishReason,
 		LatencyMS:   response.LatencyMS,
 		ModelRounds: response.ModelRounds, ToolCalls: response.ToolCalls, ToolLatencyMS: response.ToolLatencyMS,
+		EvidenceRefDiagnostics: append([]string(nil), response.EvidenceRefDiagnostics...),
 	}
 	if errorCode != nil {
 		if strings.HasPrefix(*errorCode, "model-transport") || *errorCode == "model-timeout" {

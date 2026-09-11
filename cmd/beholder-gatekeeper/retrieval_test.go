@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -80,9 +81,49 @@ func retrievalFixtureRequest(t *testing.T) localDecisionRequest {
 		t.Fatal(err)
 	}
 	r.TranscriptPath = path
-	r.ActualRequest.RequesterContext = `{"executable":"/fixture/may","executable_sha256":"` + strings.Repeat("b", 64) + `","arguments":[]}`
+	r.ActualRequest.RequesterContext = `{"executable": "/fixture/may", "executable_sha256":"` + strings.Repeat("b", 64) + `","arguments":["fixture-inspect"],"environment":{"TOKEN":"[redacted]"}}`
 	r.Mode = "authoritative"
 	return r
+}
+
+func TestRetrievalCitationDiagnosticsDoNotChangeAuthority(t *testing.T) {
+	for _, test := range []struct{ name, refs, diagnostic string }{
+		{"missing", "", "missing"},
+		{"unread", `,"evidence_refs":["request:L999"]`, "unread-reference"},
+		{"malformed", `,"evidence_refs":"request:L1"`, "malformed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := retrievalServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Messages []json.RawMessage `json:"messages"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				if len(request.Messages) == 2 {
+					retrievalProviderReply(w, "tool_calls", retrievalCallsMessage("read"))
+					return
+				}
+				retrievalProviderReply(w, "stop", map[string]any{"role": "assistant", "content": `{"decision":"allow","reason":"用户已委托此操作。"` + test.refs + `}`})
+			})
+			request := retrievalFixtureRequest(t)
+			out := s.decide(request)
+			s.jobs.Wait()
+			want := []string{test.diagnostic}
+			if !out.ModelUsed || out.Decision != "allow" || !reflect.DeepEqual(out.EvidenceRefDiagnostics, want) {
+				t.Fatal("citation quality changed authority or was not diagnosed", out)
+			}
+			path, err := s.evidence.findBundleLocked(request.RequestID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range []string{primaryModelVariant.responseFile, comparisonModelVariant.responseFile} {
+				body, err := os.ReadFile(filepath.Join(path, file))
+				var summary modelResponseEvidence
+				if err != nil || json.Unmarshal(body, &summary) != nil || !reflect.DeepEqual(summary.EvidenceRefDiagnostics, want) {
+					t.Fatal("citation diagnostics missing from private evidence", file, err)
+				}
+			}
+		})
+	}
 }
 
 func TestRetrievalProductionUsesZeroHistoryAndPreservesParallelContinuation(t *testing.T) {
@@ -128,6 +169,9 @@ func TestRetrievalProductionUsesZeroHistoryAndPreservesParallelContinuation(t *t
 		}
 		if len(req.Messages) != 5 || !bytes.Contains(req.Messages[2], []byte("fixture reasoning")) || !bytes.Contains(req.Messages[4], []byte("HISTORICAL_ONLY")) {
 			t.Error("lost assistant/tool continuation")
+		}
+		if !bytes.Contains(req.Messages[3], []byte("/fixture/may")) || !bytes.Contains(req.Messages[3], []byte("fixture-inspect")) || !bytes.Contains(req.Messages[3], []byte("[redacted]")) {
+			t.Error("read_request omitted requester executable, arguments or redacted environment")
 		}
 		for i, id := range []string{"first-request", "first-history"} {
 			var msg struct {

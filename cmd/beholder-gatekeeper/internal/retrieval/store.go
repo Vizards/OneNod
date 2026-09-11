@@ -19,7 +19,11 @@ import (
 	"unicode/utf8"
 )
 
-const PageCharacters = 128000
+const (
+	PageCharacters         = 128000
+	MaximumSearchTerms     = 32
+	MaximumSearchTermBytes = 8192
+)
 
 //go:embed tools.json
 var toolDefinitions []byte
@@ -165,7 +169,7 @@ func New(ctx context.Context, session []byte, request string, binding string) (*
 		}
 		// Non-object payloads are still readable as runtime data.
 		_ = json.Unmarshal(event.Payload, &fields)
-		if event.Type == "turn_context" {
+		if fields.TurnID != "" && (event.Type == "turn_context" || (event.Type == "event_msg" && fields.Type == "task_started")) {
 			turn = fields.TurnID
 		}
 		r := Record{ID: fmt.Sprintf("L%d", i+1), Line: i + 1, Timestamp: event.Timestamp, RecordType: event.Type, PayloadType: fields.Type,
@@ -236,6 +240,9 @@ func (s *Store) Call(ctx context.Context, name string, raw json.RawMessage) (res
 	result.Records = []PageRecord{}
 	fail := func(err error) Result {
 		return Result{Records: []PageRecord{}, Error: "invalid-tool-arguments", Detail: err.Error()}
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
 	}
 	var args map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -554,20 +561,12 @@ func (s *Store) selectRecords(ctx context.Context, name string, args map[string]
 			}
 		}
 	}
-	terms, err := list(args, "terms", nil)
-	if err != nil {
-		return nil, meta, err
-	}
+	var terms []string
 	match := "any"
 	if name == "search_context" {
-		if len(terms) == 0 {
-			return nil, meta, errors.New("terms must contain nonempty literal strings")
-		}
-		for i, t := range terms {
-			if t == "" {
-				return nil, meta, errors.New("empty search term")
-			}
-			terms[i] = strings.ToLower(t)
+		terms, err = searchTerms(ctx, args["terms"])
+		if err != nil {
+			return nil, meta, err
 		}
 		if v, ok := args["match"]; ok {
 			if v != "all" && v != "any" {
@@ -576,11 +575,9 @@ func (s *Store) selectRecords(ctx context.Context, name string, args map[string]
 			match = v.(string)
 		}
 	}
-	for i, r := range s.records {
-		if i%128 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, meta, err
-			}
+	for _, r := range s.records {
+		if err := ctx.Err(); err != nil {
+			return nil, meta, err
 		}
 		if r.Line <= lo || r.Line >= hi || (kind != "all" && r.Kind != kind) || (selectedRoles != nil && !slices.Contains(selectedRoles, r.Role)) {
 			continue
@@ -616,8 +613,15 @@ func (s *Store) selectRecords(ctx context.Context, name string, args map[string]
 			folded := strings.ToLower(r.text)
 			hits := 0
 			for _, term := range terms {
-				if strings.Contains(folded, term) {
+				if err := ctx.Err(); err != nil {
+					return nil, meta, err
+				}
+				found := strings.Contains(folded, term)
+				if found {
 					hits++
+				}
+				if (match == "any" && found) || (match == "all" && !found) {
+					break
 				}
 			}
 			if (match == "any" && hits == 0) || (match == "all" && hits != len(terms)) {
@@ -630,4 +634,31 @@ func (s *Store) selectRecords(ctx context.Context, name string, args map[string]
 		slices.Reverse(out)
 	}
 	return out, meta, nil
+}
+
+// These are query resource budgets, independent of the words being searched.
+// Bound the array before allocating or walking it, and honor cancellation both
+// while preparing terms and within each record's comparison loop.
+func searchTerms(ctx context.Context, value any) ([]string, error) {
+	values, ok := value.([]any)
+	if !ok || len(values) == 0 || len(values) > MaximumSearchTerms {
+		return nil, fmt.Errorf("terms must contain 1 to %d literal strings", MaximumSearchTerms)
+	}
+	terms := make([]string, len(values))
+	total := 0
+	for i, value := range values {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		term, ok := value.(string)
+		if !ok || term == "" {
+			return nil, errors.New("terms must contain nonempty literal strings")
+		}
+		total += len(term)
+		if total > MaximumSearchTermBytes {
+			return nil, fmt.Errorf("search terms exceed %d total UTF-8 bytes; split the query", MaximumSearchTermBytes)
+		}
+		terms[i] = strings.ToLower(term)
+	}
+	return terms, nil
 }

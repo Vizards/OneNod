@@ -109,6 +109,7 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 		}
 	}()
 	readEvidence := false
+	deliveredRefs := map[string]bool{}
 	seenCallIDs := map[string]bool{}
 	for round := 1; round <= maximumRetrievalRounds; round++ {
 		if ctx.Err() != nil {
@@ -266,6 +267,9 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 			for _, out := range outputs {
 				if out.Result.Error == "" {
 					readEvidence = true
+					for _, record := range out.Result.Records {
+						deliveredRefs[record.SourceRef] = true
+					}
 				}
 				result.toolLatencyMS += out.LatencyMS
 				encoded, _ := json.Marshal(struct {
@@ -293,14 +297,7 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 		if json.Unmarshal(decision.ScopeResolution, &scope) == nil && validScopeResolution(scope) {
 			result.scopeResolution = scope
 		}
-		var refs []string
-		if json.Unmarshal(decision.EvidenceRefs, &refs) == nil {
-			for _, ref := range refs {
-				if validRetrievalReference(ref) {
-					result.evidenceRefs = append(result.evidenceRefs, ref)
-				}
-			}
-		}
+		result.evidenceRefs, result.evidenceRefDiagnostics = retrieval.ReviewReferences(decision.EvidenceRefs, deliveredRefs)
 		result.decision = decision.Decision
 		result.reason = decision.Reason
 		result.errorCode = ""
@@ -342,21 +339,4 @@ func (bundle *evidenceBundle) writeRetrievalRound(variant modelCallVariant, roun
 	}
 	name := fmt.Sprintf("round-%s-%03d-%s.json", variant.name, round, kind)
 	return bundle.writeStage(name, value, "collecting", nil, nil)
-}
-
-func validRetrievalReference(ref string) bool {
-	if len(ref) > 256 {
-		return false
-	}
-	for _, prefix := range []string{"session:L", "request:L"} {
-		if digits, ok := strings.CutPrefix(ref, prefix); ok && digits != "" {
-			for _, r := range digits {
-				if r < '0' || r > '9' {
-					return false
-				}
-			}
-			return digits[0] != '0'
-		}
-	}
-	return false
 }
