@@ -19,7 +19,14 @@ func loadProductionConfig(path, expectedSHA256 string) (confirmedConfig, string,
 	if expectedSHA256 != confirmedConfigSHA256 {
 		return confirmedConfig{}, "", errors.New("configuration is not the confirmed deployment")
 	}
-	return loadConfirmedConfig(path, expectedSHA256)
+	config, digest, err := loadConfirmedConfig(path, expectedSHA256)
+	if err != nil {
+		return config, digest, err
+	}
+	if config.Revision.ID != "E2-AI0-R16" || !config.Retrieval.Enabled {
+		return confirmedConfig{}, "", errors.New("production requires the retrieval deployment revision")
+	}
+	return config, digest, nil
 }
 
 func loadConfirmedConfig(path, expectedSHA256 string) (confirmedConfig, string, error) {

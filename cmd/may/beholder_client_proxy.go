@@ -19,6 +19,7 @@ const (
 )
 
 type beholderClientProxy struct {
+	log          *transportLog
 	diagnostic   *beholderDiagnostic
 	listener     *net.UnixListener
 	root         string
@@ -34,7 +35,7 @@ func startBeholderClientProxy(nonce []byte) (*beholderClientProxy, error) {
 	return startBeholderClientProxyWithDiagnostic(nonce, nil)
 }
 
-func startBeholderClientProxyWithDiagnostic(nonce []byte, diagnostic *beholderDiagnostic) (*beholderClientProxy, error) {
+func startBeholderClientProxyWithDiagnostic(nonce []byte, diagnostic *beholderDiagnostic, logs ...*transportLog) (*beholderClientProxy, error) {
 	upstreamPath := defaultAgentSocket()
 	if ((len(nonce) < 16 || len(nonce) > 128) && !(len(nonce) == 0 && validBeholderDiagnostic(diagnostic))) || !validBeholderAgentSocket(upstreamPath) {
 		return nil, errors.New("Beholder client proxy input is invalid")
@@ -65,6 +66,9 @@ func startBeholderClientProxyWithDiagnostic(nonce []byte, diagnostic *beholderDi
 		diagnostic: diagnostic,
 		listener:   listener, root: root, socketPath: socketPath, upstreamPath: upstreamPath,
 		nonce: append([]byte(nil), nonce...), expectedPeer: make(chan int, 1), done: make(chan struct{}),
+	}
+	if len(logs) == 1 {
+		proxy.log = logs[0]
 	}
 	go proxy.serve()
 	return proxy, nil
@@ -105,12 +109,13 @@ func (proxy *beholderClientProxy) serve() {
 	if err != nil || peerPID != expectedPID {
 		return
 	}
-	upstream, err := proxy.connectWithDiagnostic(proxy.diagnostic)
+	upstream, observation, err := proxy.connectWithDiagnostic(proxy.diagnostic)
 	if err != nil {
 		return
 	}
 	if len(proxy.nonce) > 0 {
-		if err := sendBeholderBindingExtension(upstream, proxy.nonce); err != nil {
+		if err := sendBeholderBindingExtension(upstream, proxy.nonce, observation); err != nil {
+			observation.begin("binding-fallback", 0).finish(err)
 			_ = upstream.Close()
 			var diagnostic *beholderDiagnostic
 			if validBeholderDiagnostic(proxy.diagnostic) {
@@ -118,7 +123,7 @@ func (proxy *beholderClientProxy) serve() {
 				value.Stage, value.Code = "binding", "binding-extension-rejected"
 				diagnostic = &value
 			}
-			upstream, err = proxy.connectWithDiagnostic(diagnostic)
+			upstream, observation, err = proxy.connectWithDiagnostic(diagnostic)
 			if err != nil {
 				return
 			}
@@ -144,25 +149,49 @@ func (proxy *beholderClientProxy) serve() {
 	<-results
 }
 
-func sendBeholderBindingExtension(connection net.Conn, nonce []byte) error {
+func sendBeholderBindingExtension(connection net.Conn, nonce []byte, observations ...*transportObservation) error {
+	var observation *transportObservation
+	if len(observations) == 1 {
+		observation = observations[0]
+	}
 	contents := make([]byte, 4)
 	binary.BigEndian.PutUint32(contents, beholderBindingVersion)
 	contents = appendBeholderAgentString(contents, nonce)
 	request := []byte{27}
 	request = appendBeholderAgentString(request, []byte(beholderBindingExtensionName))
 	request = append(request, contents...)
-	if err := connection.SetDeadline(time.Now().Add(beholderClientProxyHandshake)); err != nil {
+	deadline := time.Now().Add(beholderClientProxyHandshake)
+	if err := connection.SetDeadline(deadline); err != nil {
+		observation.begin("binding-deadline", beholderClientProxyHandshake, deadline).finish(err)
 		return err
 	}
 	defer connection.SetDeadline(time.Time{})
-	if err := writeBeholderAgentFrame(connection, request); err != nil {
+	write := observation.begin("binding-write", beholderClientProxyHandshake, deadline)
+	err := writeBeholderAgentFrame(connection, request)
+	write.finish(err)
+	if err != nil {
 		return err
 	}
+	read := observation.begin("binding-read", beholderClientProxyHandshake, deadline)
 	response, err := readBeholderAgentFrame(connection)
-	if err != nil || len(response) != 1 || response[0] != sshAgentSuccessResponse {
-		return errors.New("Beholder binding extension was rejected")
+	err = classifyBeholderExtensionResponse(response, err, "Beholder binding extension was rejected")
+	read.finish(err)
+	return err
+}
+
+func classifyBeholderExtensionResponse(response []byte, err error, message string) error {
+	if err != nil {
+		return &transportFailure{message: message, class: transportErrorClass(err), cause: err}
 	}
-	return nil
+	if len(response) == 1 {
+		switch response[0] {
+		case sshAgentSuccessResponse:
+			return nil
+		case 5, 28: // SSH_AGENT_FAILURE and SSH_AGENT_EXTENSION_FAILURE.
+			return &transportFailure{message: message, class: "rejected"}
+		}
+	}
+	return &transportFailure{message: message, class: "malformed-response"}
 }
 
 func appendBeholderAgentString(target, value []byte) []byte {
@@ -193,7 +222,7 @@ func readBeholderAgentFrame(reader io.Reader) ([]byte, error) {
 	}
 	size := binary.BigEndian.Uint32(length[:])
 	if size == 0 || size > beholderClientProxyFrameLimit {
-		return nil, errors.New("invalid SSH Agent frame")
+		return nil, &transportFailure{message: "invalid SSH Agent frame", class: "malformed-frame"}
 	}
 	payload := make([]byte, int(size))
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -215,7 +244,11 @@ func (proxy *beholderClientProxy) close() {
 	})
 }
 
-func sendBeholderDiagnosticExtension(connection net.Conn, diagnostic *beholderDiagnostic) error {
+func sendBeholderDiagnosticExtension(connection net.Conn, diagnostic *beholderDiagnostic, observations ...*transportObservation) error {
+	var observation *transportObservation
+	if len(observations) == 1 {
+		observation = observations[0]
+	}
 	if !validBeholderDiagnostic(diagnostic) {
 		return errors.New("invalid Beholder diagnostic")
 	}
@@ -225,28 +258,54 @@ func sendBeholderDiagnosticExtension(connection net.Conn, diagnostic *beholderDi
 	}
 	request := appendBeholderAgentString([]byte{27}, []byte(beholderDiagnosticExtensionName))
 	request = append(request, encoded...)
-	_ = connection.SetDeadline(time.Now().Add(beholderClientProxyHandshake))
+	deadline := time.Now().Add(beholderClientProxyHandshake)
+	_ = connection.SetDeadline(deadline)
 	defer connection.SetDeadline(time.Time{})
-	if err := writeBeholderAgentFrame(connection, request); err != nil {
+	write := observation.begin("diagnostic-write", beholderClientProxyHandshake, deadline)
+	err = writeBeholderAgentFrame(connection, request)
+	write.finish(err)
+	if err != nil {
 		return err
 	}
+	read := observation.begin("diagnostic-read", beholderClientProxyHandshake, deadline)
 	response, err := readBeholderAgentFrame(connection)
-	if err != nil || len(response) != 1 || response[0] != sshAgentSuccessResponse {
-		return errors.New("diagnostic extension unavailable")
-	}
-	return nil
+	err = classifyBeholderExtensionResponse(response, err, "diagnostic extension unavailable")
+	read.finish(err)
+	return err
 }
 
 // A rejected or timed-out optional extension must not leave a partial frame on
 // the connection used for ordinary SSH Agent traffic.
-func (proxy *beholderClientProxy) connectWithDiagnostic(diagnostic *beholderDiagnostic) (net.Conn, error) {
-	connection, err := net.DialTimeout("unix", proxy.upstreamPath, time.Second)
-	if err != nil {
-		return nil, err
+func (proxy *beholderClientProxy) connectWithDiagnostic(diagnostic *beholderDiagnostic) (net.Conn, *transportObservation, error) {
+	traceID := ""
+	if validBeholderDiagnostic(proxy.diagnostic) {
+		traceID = proxy.diagnostic.TraceID
 	}
-	if !validBeholderDiagnostic(diagnostic) || sendBeholderDiagnosticExtension(connection, diagnostic) == nil {
-		return connection, nil
+	dial := func() (net.Conn, *transportObservation, error) {
+		observation := newTransportObservation(proxy.log, "ssh-client", traceID)
+		span := observation.begin("agent-dial", time.Second)
+		connection, err := net.DialTimeout("unix", proxy.upstreamPath, time.Second)
+		if err == nil {
+			observation.setPeer(transportPeerPID(connection))
+		}
+		span.finish(err)
+		return connection, observation, err
+	}
+	connection, observation, err := dial()
+	if err != nil {
+		return nil, observation, err
+	}
+	if !validBeholderDiagnostic(diagnostic) {
+		observation.begin("diagnostic-omitted", 0).finishResult("unavailable", nil)
+		return connection, observation, nil
+	}
+	if err := sendBeholderDiagnosticExtension(connection, diagnostic, observation); err == nil {
+		return connection, observation, nil
+	} else {
+		observation.begin("diagnostic-fallback", 0).finish(err)
 	}
 	_ = connection.Close()
-	return net.DialTimeout("unix", proxy.upstreamPath, time.Second)
+	connection, observation, err = dial()
+	observation.begin("diagnostic-omitted", 0).finishResult("fallback-without-diagnostic", nil)
+	return connection, observation, err
 }

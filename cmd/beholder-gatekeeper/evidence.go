@@ -78,6 +78,9 @@ type modelRequestEvidence struct {
 }
 
 type modelResponseEvidence struct {
+	ModelRounds      int               `json:"model_rounds,omitempty"`
+	ToolCalls        int               `json:"tool_calls,omitempty"`
+	ToolLatencyMS    float64           `json:"tool_latency_ms,omitempty"`
 	SchemaVersion    int               `json:"schema_version"`
 	RecordType       string            `json:"record_type"`
 	EvidenceID       string            `json:"evidence_id"`
@@ -151,6 +154,7 @@ type evidenceStore struct {
 }
 
 type evidenceBundle struct {
+	retrieval   *retrievalInput
 	store       *evidenceStore
 	evidenceID  string
 	path        string

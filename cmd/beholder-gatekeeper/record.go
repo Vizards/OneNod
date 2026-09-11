@@ -131,8 +131,9 @@ func (service *gatekeeperService) writeRecord(
 		ReasoningTokens:  response.ReasoningTokens,
 		FinishReason:     response.FinishReason,
 		LatencyMS:        response.LatencyMS,
-		HTTPStatus:       httpStatus,
-		Metrics:          metrics, RawPromptStored: fullSourceStored && len(request.Prompt) > 0,
+		ModelRounds:      response.ModelRounds, ToolCalls: response.ToolCalls, ToolLatencyMS: response.ToolLatencyMS,
+		HTTPStatus: httpStatus,
+		Metrics:    metrics, RawPromptStored: fullSourceStored && len(request.Prompt) > 0,
 		RawToolInputStored:        fullSourceStored && len(request.ToolInput) > 0,
 		RawModelResponseStored:    presence.response && response.ModelCalled,
 		RawReasoningContentStored: presence.response && response.ReasoningPresent,
@@ -160,6 +161,7 @@ func (service *gatekeeperService) writeRecord(
 			ReasoningPresent: comparison.reasoningPresent, ReasoningBytes: comparison.reasoningBytes,
 			ReasoningTokens: comparison.reasoningTokens, FinishReason: comparison.finishReason,
 			LatencyMS: comparison.latencyMS, HTTPStatus: comparison.httpStatus,
+			ModelRounds: comparison.modelRounds, ToolCalls: comparison.toolCalls, ToolLatencyMS: comparison.toolLatencyMS,
 		}
 		if record.Comparison.EvidenceRefs == nil {
 			record.Comparison.EvidenceRefs = []string{}

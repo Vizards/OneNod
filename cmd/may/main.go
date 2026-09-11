@@ -32,6 +32,7 @@ type dependencies struct {
 	processRun             processRunFunc
 	releases               releaseSource
 	stderr                 io.Writer
+	transportLog           *transportLog
 	stdin                  io.Reader
 	stdout                 io.Writer
 }
@@ -66,6 +67,29 @@ func main() {
 		stdin:               os.Stdin,
 		stdout:              os.Stdout,
 	}
+	var transportFile *os.File
+	if binaryName == beholderSSHShimBinaryName || binaryName == gitSignAdapterBinaryName {
+		transportFile, _ = openClientTransportLog()
+		if transportFile != nil {
+			deps.transportLog = newTransportLog(transportFile)
+		} else {
+			fmt.Fprintln(os.Stderr, "OneNod handshake diagnostics unavailable; operation continues.")
+		}
+	} else {
+		deps.transportLog = newTransportLog(os.Stderr)
+	}
+	transportLogClosed := false
+	closeTransportLog := func() {
+		if transportLogClosed {
+			return
+		}
+		transportLogClosed = true
+		deps.transportLog.close()
+		if transportFile != nil {
+			_ = transportFile.Close()
+		}
+	}
+	defer closeTransportLog()
 	var err error
 	if binaryName == "may" && len(os.Args) > 1 && os.Args[1] == "__transport-finalize" {
 		err = runInternalTransportFinalize(os.Args[2:])
@@ -93,6 +117,7 @@ func main() {
 			err = runCLI(os.Args[1:], deps)
 		}
 	}
+	closeTransportLog()
 	if err != nil {
 		var targetExit shellPluginProcessExitError
 		if errors.As(err, &targetExit) {

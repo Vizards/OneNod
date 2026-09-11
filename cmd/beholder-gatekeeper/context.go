@@ -38,13 +38,10 @@ type sessionEnvelope struct {
 }
 
 type messagePayload struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Phase   string `json:"phase"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
+	Type             string                  `json:"type"`
+	Role             string                  `json:"role"`
+	Phase            string                  `json:"phase"`
+	Content          []transcriptContentPart `json:"content"`
 	InternalMetadata struct {
 		ContentItemKinds []string `json:"content_item_kinds"`
 	} `json:"internal_chat_message_metadata_passthrough"`
@@ -400,7 +397,15 @@ func readRelatedContextFromCapture(
 				})
 				continue
 			}
-			if message.Role == "user" && text == currentPrompt {
+			boundaryReason := ""
+			if message.Role == "user" {
+				if text == currentPrompt {
+					boundaryReason = "exact-current-prompt-from-core"
+				} else if projected, unwrapped := promptWithoutImageWrappers(message.Content); unwrapped && projected == currentPrompt {
+					boundaryReason = "current-prompt-from-core-with-image-wrappers"
+				}
+			}
+			if boundaryReason != "" {
 				// Use the last exact match as the current boundary. If the same prompt
 				// occurred earlier, its execution becomes prior task trajectory instead
 				// of disappearing from the long-horizon context.
@@ -425,7 +430,7 @@ func readRelatedContextFromCapture(
 				output.currentPromptOrdinal = ordinal
 				output.candidates = append(output.candidates, contextCandidate{
 					Ordinal: ordinal, Type: "message", Role: message.Role, Phase: message.Phase,
-					Content: text, Disposition: "boundary", Reason: "exact-current-prompt-from-core",
+					Content: text, Disposition: "boundary", Reason: boundaryReason,
 				})
 				continue
 			}
@@ -1231,6 +1236,12 @@ func clearExternalInput(input *externalDecisionInput) {
 	if input == nil {
 		return
 	}
+	if input.retrieval != nil {
+		clear(input.retrieval.session)
+		input.retrieval.session = nil
+		// A running comparison retains the immutable store through its bundle.
+		input.retrieval = nil
+	}
 	input.HumanIntent.CurrentPrompt = ""
 	for index := range input.HumanIntent.PriorMessages {
 		input.HumanIntent.PriorMessages[index].Text = ""
@@ -1265,6 +1276,9 @@ func clearExternalInput(input *externalDecisionInput) {
 }
 
 func joinModelContent(input externalDecisionInput) ([]byte, error) {
+	if input.retrieval != nil {
+		return append([]byte(nil), input.retrieval.initial...), nil
+	}
 	captured, err := json.Marshal(input)
 	if err != nil {
 		return nil, err

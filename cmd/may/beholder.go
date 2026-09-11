@@ -24,7 +24,7 @@ const (
 	beholderBindingExtensionName  = "beholder-bind@github.com/Vizards/OneNod"
 	beholderBindingVersion        = 1
 	beholderMaximumWireSize       = 2 * 1024 * 1024
-	beholderRoundTripTimeout      = 15 * time.Second
+	beholderRoundTripTimeout      = 35 * time.Second
 	beholderLeasePurposeSSH       = "ssh"
 	beholderLeasePurposeGit       = "git-sign"
 	beholderSSHShimBinaryName     = "ssh"
@@ -52,6 +52,7 @@ type beholderOperationTarget struct {
 }
 
 type beholderWireRequest struct {
+	observation       *transportObservation    // Local only; never encoded on the wire.
 	TraceID           string                   `json:"trace_id,omitempty"`
 	SchemaVersion     int                      `json:"schema_version"`
 	Kind              string                   `json:"kind"`
@@ -140,20 +141,34 @@ func (lease *beholderSSHLease) clear() {
 }
 
 func defaultBeholderRoundTrip(request beholderWireRequest) (beholderWireResponse, error) {
+	dial := request.observation.begin("core-dial", beholderRoundTripTimeout)
 	connection, err := net.DialTimeout("unix", beholderCoreSocketPath, beholderRoundTripTimeout)
+	dial.finish(err)
 	if err != nil {
-		return beholderWireResponse{}, errors.New("Beholder Core is unavailable")
+		return beholderWireResponse{}, &transportFailure{message: "Beholder Core is unavailable", class: transportErrorClass(err), cause: err}
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(beholderRoundTripTimeout))
-	if err := json.NewEncoder(connection).Encode(request); err != nil {
-		return beholderWireResponse{}, errors.New("send Beholder request failed")
+	deadline := time.Now().Add(beholderRoundTripTimeout)
+	_ = connection.SetDeadline(deadline)
+	write := request.observation.begin("core-request-write", beholderRoundTripTimeout, deadline)
+	err = json.NewEncoder(connection).Encode(request)
+	write.finish(err)
+	if err != nil {
+		return beholderWireResponse{}, &transportFailure{message: "send Beholder request failed", class: transportErrorClass(err), cause: err}
 	}
 	var response beholderWireResponse
 	decoder := json.NewDecoder(io.LimitReader(connection, beholderMaximumWireSize+1))
-	if decoder.Decode(&response) != nil || response.SchemaVersion != beholderProtocolSchemaVersion {
-		return beholderWireResponse{}, errors.New("Beholder Core returned an invalid response")
+	read := request.observation.begin("core-response-read", beholderRoundTripTimeout, deadline)
+	err = decoder.Decode(&response)
+	if err != nil || response.SchemaVersion != beholderProtocolSchemaVersion {
+		class := "malformed-response"
+		if err != nil {
+			class = transportErrorClass(err)
+		}
+		read.finishResult(class, nil)
+		return beholderWireResponse{}, &transportFailure{message: "Beholder Core returned an invalid response", class: class, cause: err}
 	}
+	read.finishResult("ok", &response.Accepted)
 	return response, nil
 }
 
@@ -198,23 +213,41 @@ func requestBeholderSSHLease(deps dependencies, purpose string) (beholderSSHLeas
 }
 
 func consumeBeholderAgentBinding(deps dependencies, nonce []byte, diagnostics ...*beholderDiagnostic) (string, error) {
+	var diagnostic *beholderDiagnostic
+	if len(diagnostics) == 1 {
+		diagnostic = diagnostics[0]
+	}
+	return consumeBeholderAgentBindingObserved(deps, nonce, diagnostic, nil)
+}
+
+func consumeBeholderAgentBindingObserved(deps dependencies, nonce []byte, diagnostic *beholderDiagnostic, observation *transportObservation) (string, error) {
 	if deps.beholder == nil || len(nonce) < 16 || len(nonce) > 128 {
 		return "", errors.New("Beholder Agent binding is unavailable")
 	}
 	encodedNonce := base64.RawURLEncoding.EncodeToString(nonce)
 	traceID := ""
-	if len(diagnostics) == 1 && validBeholderDiagnostic(diagnostics[0]) {
-		traceID = diagnostics[0].TraceID
+	if validBeholderDiagnostic(diagnostic) {
+		traceID = diagnostic.TraceID
 	}
-	response, err := deps.beholder(beholderWireRequest{TraceID: traceID,
+	span := observation.begin("core-binding-round-trip", 0)
+	response, err := deps.beholder(beholderWireRequest{TraceID: traceID, observation: observation,
 		SchemaVersion: beholderProtocolSchemaVersion,
 		Kind:          "agent-binding-consume",
 		Nonce:         encodedNonce,
 	})
-	if err != nil || !response.Accepted || response.ErrorCode != nil ||
-		!safeBeholderToken(response.Binding, 32, 256) {
-		return "", errors.New("Beholder Agent binding was rejected")
+	if err != nil {
+		span.finish(err)
+		return "", &transportFailure{message: "Beholder Agent binding was rejected", class: transportErrorClass(err), cause: err}
 	}
+	if !response.Accepted || response.ErrorCode != nil || !safeBeholderToken(response.Binding, 32, 256) {
+		class := "rejected"
+		if response.Accepted && response.ErrorCode == nil {
+			class = "malformed-response"
+		}
+		span.finishResult(class, &response.Accepted)
+		return "", &transportFailure{message: "Beholder Agent binding was rejected", class: class}
+	}
+	span.finishResult("ok", &response.Accepted)
 	return response.Binding, nil
 }
 

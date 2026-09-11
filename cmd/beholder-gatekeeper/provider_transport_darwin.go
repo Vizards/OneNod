@@ -64,7 +64,7 @@ func systemCurlProviderRoundTrip(
 ) (*http.Response, error) {
 	if ctx == nil || request == nil || request.URL == nil || !providercontract.UsesSystemCurl(request.URL.String()) ||
 		contentType != "application/json" || len(apiKey) < 16 || len(apiKey) > maximumCredentialSize ||
-		bytes.IndexAny(apiKey, "\r\n\x00") >= 0 || len(body) == 0 || len(body) > maximumLocalWireSize {
+		bytes.IndexAny(apiKey, "\r\n\x00") >= 0 || len(body) == 0 || len(body) > maximumModelRequestBytes {
 		return nil, &systemCurlTransportError{Stage: "validation", ExitCode: -1}
 	}
 	info, err := os.Lstat(systemCurlPath)

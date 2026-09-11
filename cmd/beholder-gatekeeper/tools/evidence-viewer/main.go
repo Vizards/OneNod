@@ -122,7 +122,7 @@ func main() {
 
 func listEvidence(root string, output io.Writer) error {
 	path := filepath.Join(root, "index.jsonl")
-	contents, err := readPrivateFile(path, 64*1024*1024)
+	contents, err := readPrivateFile(path, evidenceFileLimit(filepath.Base(path)))
 	if errors.Is(err, os.ErrNotExist) {
 		_, err = fmt.Fprintln(output, "[]")
 		return err
@@ -159,9 +159,14 @@ func showEvidence(root, evidenceID string, output io.Writer) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		contents, err := readPrivateFile(filepath.Join(bundle, name), 64*1024*1024)
+		contents, err := readPrivateFile(filepath.Join(bundle, name), evidenceFileLimit(name))
 		if err != nil {
 			return err
+		}
+		if name == "07-session-snapshot.jsonl" {
+			encoded, _ := json.Marshal(string(contents))
+			clear(contents)
+			contents = encoded
 		}
 		if !json.Valid(contents) {
 			clear(contents)
@@ -288,8 +293,15 @@ func validManifest(value manifest, evidenceID string) bool {
 	}
 	validSchema := (!dualShadow && value.SchemaVersion == 1) || (dualShadow && value.SchemaVersion == 2)
 	if !validSchema || value.RecordType != "beholder_decision_evidence_manifest" ||
-		value.EvidenceID != evidenceID || value.SecretMaterialStored || len(value.Files) != len(stageNames) {
+		value.EvidenceID != evidenceID || value.SecretMaterialStored || (!retrievalVersion(value.GatekeeperVersion) && len(value.Files) != len(stageNames)) {
 		return false
+	}
+	if retrievalVersion(value.GatekeeperVersion) {
+		for name, digest := range value.Files {
+			if !validRetrievalStage(name, stageNames) || (digest != nil && !validSHA256(*digest)) {
+				return false
+			}
+		}
 	}
 	if value.State != "reserved" && value.State != "collecting" && value.State != "model-finalized" &&
 		value.State != "human-finalized" && value.State != "partial" {
@@ -367,7 +379,7 @@ func readPrivateFile(path string, maximum int64) ([]byte, error) {
 }
 
 func digestPrivateFile(path string) (string, error) {
-	contents, err := readPrivateFile(path, 64*1024*1024)
+	contents, err := readPrivateFile(path, evidenceFileLimit(filepath.Base(path)))
 	if err != nil {
 		return "", err
 	}

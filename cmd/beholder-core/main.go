@@ -114,6 +114,8 @@ func main() {
 			fatal("broker initialization failed: " + err.Error())
 		}
 		defer core.close()
+		core.transportLog = newTransportLog(os.Stderr)
+		defer core.transportLog.close()
 		if trustMode == "production" {
 			if err := core.configureProductionUser(productionUID); err != nil {
 				fatal("production user configuration failed: " + err.Error())

@@ -40,8 +40,11 @@ type sshAgentConnectionState struct {
 }
 
 type approvalAgentConnection struct {
-	agent approvalAgent
-	state sshAgentConnectionState
+	agent              approvalAgent
+	state              sshAgentConnectionState
+	observation        *transportObservation
+	pendingACK         string
+	pendingACKAccepted bool
 }
 
 type agentRuntimeVersion struct {
@@ -228,15 +231,29 @@ func (agent approvalAgent) serveListener(ctx context.Context, listener net.Liste
 
 func (agent approvalAgent) serveConnection(connection net.Conn) {
 	defer connection.Close()
+	observation := newTransportObservation(agent.deps.transportLog, "ssh-agent", "")
+	observation.setPeer(transportPeerPID(connection))
+	identity := observation.begin("application-identity", keychainHelperTimeout)
 	client := unknownLocalClientContext()
 	if agent.resolveClient != nil {
 		client = agent.resolveClient(connection)
 	}
+	result := "unverified"
+	if client.Observation.Identity.Assurance == applicationAssuranceVerified {
+		result = "verified"
+	}
+	identity.finishResult(result, nil)
 	defer client.Evidence.close()
-	_ = sshagent.ServeAgent(&approvalAgentConnection{
-		agent: agent,
-		state: sshAgentConnectionState{client: client},
-	}, connection)
+	state := &approvalAgentConnection{
+		agent:       agent,
+		state:       sshAgentConnectionState{client: client},
+		observation: observation,
+	}
+	stream := &observedAgentStream{Conn: connection, owner: state}
+	protocol := observation.begin("agent-protocol", 0)
+	err := sshagent.ServeAgent(state, stream)
+	stream.finishACK(err)
+	protocol.finish(err)
 }
 
 func (connection *approvalAgentConnection) List() ([]*sshagent.Key, error) {
@@ -321,6 +338,7 @@ func (connection *approvalAgentConnection) Extension(
 		connection.state.binding = &binding
 		return []byte{sshAgentSuccessResponse}, nil
 	case beholderDiagnosticExtensionName:
+		connection.pendingACK, connection.pendingACKAccepted = "diagnostic", false
 		if len(contents) == 0 || len(contents) > 2048 {
 			return nil, errors.New("invalid Beholder diagnostic")
 		}
@@ -335,8 +353,11 @@ func (connection *approvalAgentConnection) Extension(
 			return nil, errors.New("invalid Beholder diagnostic")
 		}
 		connection.state.beholderDiagnostic = &diagnostic
+		connection.observation.setTrace(diagnostic.TraceID)
+		connection.pendingACKAccepted = true
 		return []byte{sshAgentSuccessResponse}, nil
 	case beholderBindingExtensionName:
+		connection.pendingACK, connection.pendingACKAccepted = "binding", false
 		if connection.state.beholderBinding != "" {
 			return nil, errors.New("Beholder binding is already set for this Agent connection")
 		}
@@ -344,12 +365,13 @@ func (connection *approvalAgentConnection) Extension(
 		if err != nil {
 			return nil, err
 		}
-		binding, err := consumeBeholderAgentBinding(connection.agent.deps, nonce, connection.state.beholderDiagnostic)
+		binding, err := consumeBeholderAgentBindingObserved(connection.agent.deps, nonce, connection.state.beholderDiagnostic, connection.observation)
 		clear(nonce)
 		if err != nil {
 			return nil, err
 		}
 		connection.state.beholderBinding = binding
+		connection.pendingACKAccepted = true
 		return []byte{sshAgentSuccessResponse}, nil
 	default:
 		return nil, sshagent.ErrExtensionUnsupported

@@ -25,7 +25,7 @@ func runGitSignAdapter(args []string, deps dependencies) error {
 	}
 	if leaseErr == nil || diagnostic != nil {
 		var err error
-		proxy, err = startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic)
+		proxy, err = startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic, deps.transportLog)
 		lease.clear()
 		if err == nil {
 			socketPath = proxy.socketPath

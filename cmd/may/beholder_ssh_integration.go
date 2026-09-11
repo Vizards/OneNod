@@ -83,7 +83,7 @@ func runBeholderSSHShim(args []string, deps dependencies) error {
 		logBeholderDiagnostic(deps.stderr, diagnostic, "")
 	}
 	defer lease.clear()
-	proxy, proxyErr := startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic)
+	proxy, proxyErr := startBeholderClientProxyWithDiagnostic(lease.Nonce, diagnostic, deps.transportLog)
 	if proxyErr != nil {
 		if diagnostic != nil {
 			diagnostic.Stage, diagnostic.Code = "proxy", "proxy-unavailable"

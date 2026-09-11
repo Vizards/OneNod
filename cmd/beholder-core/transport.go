@@ -299,7 +299,12 @@ func (coordinator *transportCoordinator) issueClientLease(
 func (coordinator *transportCoordinator) consumeBinding(
 	encodedNonce string,
 	peer processChain,
+	observations ...*transportObservation,
 ) wireResponse {
+	var observation *transportObservation
+	if len(observations) == 1 {
+		observation = observations[0]
+	}
 	if coordinator == nil || len(peer.Nodes) == 0 {
 		return transportError("binding-unavailable")
 	}
@@ -312,7 +317,11 @@ func (coordinator *transportCoordinator) consumeBinding(
 	nonceRef := coordinator.broker.keyedRef("transport-nonce", nonce)
 	clear(nonce)
 	now := coordinator.broker.now().UTC()
+	lockWait := observation.begin("consume-lock-wait", 0)
 	coordinator.mu.Lock()
+	lockWait.finish(nil)
+	lockHeld := observation.begin("consume-lock-held", 0)
+	defer lockHeld.finish(nil)
 	defer coordinator.mu.Unlock()
 	coordinator.expireLocked(now)
 	if coordinator.closed {
@@ -325,7 +334,7 @@ func (coordinator *transportCoordinator) consumeBinding(
 	if !found {
 		return transportError("binding-missing")
 	}
-	if !coordinator.validAgentPeer(peer, binding.requester.UID) {
+	if !coordinator.validAgentPeer(peer, binding.requester.UID, observation) {
 		return transportError("agent-identity-mismatch")
 	}
 	tokenBytes := make([]byte, 32)
@@ -617,14 +626,27 @@ func operationTargetSHA256(target operationTarget) (string, bool) {
 	return hex.EncodeToString(digest[:]), true
 }
 
-func (coordinator *transportCoordinator) validAgentPeer(peer processChain, expectedUID uint32) bool {
+func (coordinator *transportCoordinator) validAgentPeer(peer processChain, expectedUID uint32, observations ...*transportObservation) bool {
 	if len(peer.Nodes) == 0 || len(peer.Roles) != len(peer.Nodes) ||
 		peer.Nodes[0].UID != expectedUID || peer.Nodes[0].RealUID != expectedUID {
 		return false
 	}
 	if coordinator.broker.trustMode == "production" {
-		return peer.Nodes[0].UID == coordinator.agentUID &&
-			coordinator.agentIdentity.matches(peer.Nodes[0].Path) &&
+		if peer.Nodes[0].UID != coordinator.agentUID {
+			return false
+		}
+		var observation *transportObservation
+		if len(observations) == 1 {
+			observation = observations[0]
+		}
+		identity := observation.begin("agent-executable-check", 0)
+		matches := coordinator.agentIdentity.matches(peer.Nodes[0].Path)
+		result := "mismatch"
+		if matches {
+			result = "ok"
+		}
+		identity.finishResult(result, nil)
+		return matches &&
 			coordinator.broker.processRef(peer.Nodes[0]) == coordinator.agentInstanceRef
 	}
 	base := strings.ToLower(filepath.Base(peer.Nodes[0].Path))

@@ -48,14 +48,15 @@ type indexRecord struct {
 }
 
 type sourceAuditRecord struct {
-	SchemaVersion         int             `json:"schema_version"`
-	RecordType            string          `json:"record_type"`
-	EvidenceID            string          `json:"evidence_id"`
-	CapturedAt            time.Time       `json:"captured_at"`
-	OperationTargetSHA256 string          `json:"operation_target_sha256"`
-	SelectedModelInput    json.RawMessage `json:"selected_model_input"`
-	RequesterContext      json.RawMessage `json:"onenod_requester_context"`
-	CollectorError        *string         `json:"collector_error"`
+	Retrieval             *retrievalSourceAudit `json:"retrieval,omitempty"`
+	SchemaVersion         int                   `json:"schema_version"`
+	RecordType            string                `json:"record_type"`
+	EvidenceID            string                `json:"evidence_id"`
+	CapturedAt            time.Time             `json:"captured_at"`
+	OperationTargetSHA256 string                `json:"operation_target_sha256"`
+	SelectedModelInput    json.RawMessage       `json:"selected_model_input"`
+	RequesterContext      json.RawMessage       `json:"onenod_requester_context"`
+	CollectorError        *string               `json:"collector_error"`
 	TranscriptSnapshot    struct {
 		TaskID               string `json:"codex_task_id"`
 		CaptureBoundary      string `json:"capture_boundary"`
@@ -99,6 +100,9 @@ type modelRequestAuditRecord struct {
 }
 
 type modelResponseAuditRecord struct {
+	ModelRounds      int             `json:"model_rounds"`
+	ToolCalls        int             `json:"tool_calls"`
+	ToolLatencyMS    float64         `json:"tool_latency_ms"`
 	SchemaVersion    int             `json:"schema_version"`
 	RecordType       string          `json:"record_type"`
 	EvidenceID       string          `json:"evidence_id"`
@@ -221,6 +225,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 	}
 	result.State = manifestValue.State
 	result.GatekeeperVersion = manifestValue.GatekeeperVersion
+	isRetrieval := retrievalVersion(manifestValue.GatekeeperVersion)
 	redactedStages := declaredRedactionStages(bundle, evidenceID, manifestValue)
 	strictTargetBinding := strictAuditableVersion(manifestValue.GatekeeperVersion)
 	if strictTargetBinding && manifestValue.CreatedAt.IsZero() {
@@ -261,6 +266,9 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 			source.EvidenceID != evidenceID || source.LocalRequest.RequestID != evidenceID || source.CapturedAt.IsZero() {
 			result.Errors = append(result.Errors, "source-identity-mismatch")
 		} else {
+			if isRetrieval && source.Retrieval != nil {
+				source.SelectedModelInput = source.Retrieval.InitialInput
+			}
 			result.Facts.Surface = source.LocalRequest.ActualRequest.Surface
 			result.Facts.Operation = source.LocalRequest.ActualRequest.Operation
 			result.Facts.PayloadDigest = source.LocalRequest.ActualRequest.PayloadDigest
@@ -287,7 +295,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 					source.TranscriptSnapshot.RetainedCandidates < 0 ||
 					(manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v30" &&
 						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v31" &&
-						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v32" &&
+						manifestValue.GatekeeperVersion != "e2-authoritative-dogfood-v32" && !isRetrieval &&
 						source.TranscriptSnapshot.RetainedCandidates > 256)) {
 					result.Errors = append(result.Errors, "transcript-snapshot-invalid")
 				}
@@ -296,7 +304,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 					manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v14" ||
 					manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v15" ||
 					dualShadowVersion(manifestValue.GatekeeperVersion)) && !fallbackSource &&
-					(source.TranscriptSnapshot.CaptureBoundary != "file-size-at-open" ||
+					((source.TranscriptSnapshot.CaptureBoundary != "file-size-at-open" && !(isRetrieval && source.TranscriptSnapshot.CaptureBoundary == "file-prefix-at-request-admission")) ||
 						source.TranscriptSnapshot.ScannedBytes != source.TranscriptSnapshot.FileBytesAtOpen) {
 					result.Errors = append(result.Errors, "transcript-causal-boundary-invalid")
 				}
@@ -305,7 +313,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 					manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v14" ||
 					manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v15" ||
 					dualShadowVersion(manifestValue.GatekeeperVersion)) &&
-					!modelContextProvenanceValid(source.SelectedModelInput) {
+					!isRetrieval && !modelContextProvenanceValid(source.SelectedModelInput) {
 					result.Errors = append(result.Errors, "context-provenance-invalid")
 				}
 			}
@@ -527,6 +535,9 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 		}
 	}
 
+	if isRetrieval {
+		inspectRetrieval(bundle, manifestValue, source, modelRequest, modelResponse, comparisonRequest, comparisonResponse, &result)
+	}
 	inspectIndex(bundle, manifestValue, modelResponse, comparisonResponse, outcome, allIndex, &result)
 	result.Errors = uniqueSorted(result.Errors)
 	result.Warnings = uniqueSorted(result.Warnings)
@@ -614,6 +625,9 @@ func jsonSemanticallyEqual(left, right []byte) bool {
 }
 
 func modelInputMatches(selected, requestBody json.RawMessage, versions ...string) bool {
+	if len(versions) == 1 && retrievalVersion(versions[0]) {
+		return retrievalInitialMatches(selected, requestBody)
+	}
 	if len(versions) == 1 && (versions[0] == "e2-authoritative-dogfood-v31" || versions[0] == "e2-authoritative-dogfood-v32") {
 		projected, err := modelcontract.DirectModelInput(selected)
 		if err != nil {
@@ -683,6 +697,9 @@ func oneOfString(value any, allowed ...string) bool {
 }
 
 func policyHashMatches(value manifest, requestBody json.RawMessage) bool {
+	if retrievalVersion(value.GatekeeperVersion) {
+		return retrievalPolicyMatches(value, requestBody)
+	}
 	var request struct {
 		Messages []struct {
 			Role    string `json:"role"`
@@ -697,6 +714,9 @@ func policyHashMatches(value manifest, requestBody json.RawMessage) bool {
 }
 
 func providerDecisionMatches(response modelResponseAuditRecord, gatekeeperVersion string, responseRedacted bool) bool {
+	if retrievalVersion(gatekeeperVersion) {
+		return retrievalDecisionMatches(response)
+	}
 	var provider struct {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
@@ -999,7 +1019,7 @@ func authoritativeDogfoodVersion(version string) bool {
 		version == "e2-authoritative-dogfood-v27" ||
 		version == "e2-authoritative-dogfood-v30" ||
 		version == "e2-authoritative-dogfood-v31" ||
-		version == "e2-authoritative-dogfood-v32"
+		version == "e2-authoritative-dogfood-v32" || retrievalVersion(version)
 }
 
 func primaryVariantForVersion(version string) string {

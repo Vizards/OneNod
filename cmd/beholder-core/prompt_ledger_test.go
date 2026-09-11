@@ -32,8 +32,15 @@ func TestLongActiveTurnKeepsLiveObservationIndependentOfNonceTTL(t *testing.T) {
 }
 
 func TestProtectedPromptProofRestoresAfterExpiryAndCoreRestart(t *testing.T) {
-	for _, restart := range []bool{false, true} {
-		t.Run(fmt.Sprint(restart), func(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		restart       bool
+		imageAttached bool
+	}{
+		{"text-expiry", false, false}, {"text-restart", true, false},
+		{"image-expiry", false, true}, {"image-restart", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			fixture := newBrokerFixture(t)
 			ledgerRoot := filepath.Join(t.TempDir(), "proofs")
 			if err := fixture.core.configurePromptLedger(ledgerRoot); err != nil {
@@ -44,7 +51,15 @@ func TestProtectedPromptProofRestoresAfterExpiryAndCoreRestart(t *testing.T) {
 			if got := fixture.core.registerPrompt(observation, fixture.hookPeer); !got.Accepted {
 				t.Fatal(got)
 			}
-			event, _ := json.Marshal(map[string]any{"type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}})
+			content := []transcriptContentPart{{Type: "input_text", Text: prompt}}
+			if test.imageAttached {
+				content = append(content,
+					transcriptContentPart{Type: "input_text", Text: `<image name=[Image #1] path="/tmp/fixture.png">`},
+					transcriptContentPart{Type: "input_image"},
+					transcriptContentPart{Type: "input_text", Text: "</image>"},
+				)
+			}
+			event, _ := json.Marshal(map[string]any{"type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": content}})
 			file, err := os.OpenFile(fixture.transcriptPath, os.O_APPEND|os.O_WRONLY, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -59,7 +74,7 @@ func TestProtectedPromptProofRestoresAfterExpiryAndCoreRestart(t *testing.T) {
 				t.Fatal("raw prompt persisted")
 			}
 			fixture.advance(48 * time.Minute)
-			if restart {
+			if test.restart {
 				fixture.core.close()
 				fixture.core, err = newBrokerWithKey(fixture.root, "fixture", "", "", 30*time.Second, bytes.Repeat([]byte{7}, 32), fixture.now)
 				if err != nil {

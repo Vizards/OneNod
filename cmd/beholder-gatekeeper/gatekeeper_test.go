@@ -475,7 +475,7 @@ func TestGatekeeperSuccessfulDecisionWritesSummaryAndCompleteEvidence(t *testing
 		!bytes.Contains(record, []byte(`"raw_prompt_stored":true`)) ||
 		!bytes.Contains(record, []byte(`"raw_reasoning_content_stored":false`)) ||
 		!bytes.Contains(record, []byte(`"target_alias":"fixture-a"`)) ||
-		!bytes.Contains(record, []byte(`"gatekeeper_version":"e2-authoritative-dogfood-v32"`)) ||
+		!bytes.Contains(record, []byte(`"gatekeeper_version":"`+gatekeeperVersion+`"`)) ||
 		!bytes.Contains(record, []byte(`"model_called":true`)) ||
 		!bytes.Contains(record, []byte(`"response_shape":"decision-json-valid"`)) ||
 		!bytes.Contains(record, []byte(`"scope_resolution":"task-consistent"`)) ||
@@ -1955,7 +1955,7 @@ func TestFrozenDeploymentConfigMatchesCompiledIdentity(t *testing.T) {
 		t.Skip("the deployment confirmation is machine-local; set BEHOLDER_CONFIRMED_CONFIG for release acceptance")
 	}
 	config, actual, err := loadConfirmedConfig(configPath, confirmedConfigSHA256)
-	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R15" {
+	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R16" {
 		t.Fatalf("frozen deployment config did not match compiled identity: actual=%q err=%v", actual, err)
 	}
 }

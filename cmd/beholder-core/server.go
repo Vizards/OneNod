@@ -215,17 +215,45 @@ func handleBrokerConnectionWithTransport(
 	connection *net.UnixConn,
 	broker *broker,
 	transport *transportCoordinator,
-) (string, error) {
+) (kind string, handleErr error) {
 	deadline := 5 * time.Second
 	if broker != nil && broker.authority != nil {
-		deadline = 20 * time.Second
+		// Leave room around the Gatekeeper's 30-second primary budget for
+		// local transport and signing the resulting authorization.
+		deadline = 40 * time.Second
 	}
-	_ = connection.SetDeadline(time.Now().Add(deadline))
+	deadlineAt := time.Now().Add(deadline)
+	_ = connection.SetDeadline(deadlineAt)
+	observation := newTransportObservation(broker.transportLog, "core", "")
+	total := observation.begin("core-request", deadline, deadlineAt)
+	var request wireRequest
+	var response wireResponse
+	auditThreadID := ""
+	responseWriteResult := "not-attempted"
+	var handler *transportSpan
+	defer response.clearTransient()
+	defer func() {
+		handler.finish(handleErr)
+		total.finish(handleErr)
+		completion := coreTransportCompletion{ResponseWriteResult: responseWriteResult}
+		if observation != nil {
+			completion.ConnectionID = observation.connectionID
+		}
+		if handleErr != nil {
+			completion.HandlerErrorCode = brokerConnectionErrorCode(handleErr)
+		}
+		logCoreDiagnostic(request.Kind, request.TraceID, auditThreadID, response, completion)
+	}()
+	peerLookup := observation.begin("peer-pid", 0)
 	peerPID, err := unixPeerPID(connection)
+	observation.setPeer(peerPID)
+	peerLookup.finish(err)
 	if err != nil {
 		return "", brokerConnectionFailure{code: "peer-pid-unavailable"}
 	}
+	peerCapture := observation.begin("peer-process-capture", 0)
 	peer, err := captureProcessChain(peerPID)
+	peerCapture.finish(err)
 	if err != nil {
 		return "", brokerConnectionFailure{code: "peer-process-unavailable"}
 	}
@@ -235,8 +263,11 @@ func handleBrokerConnectionWithTransport(
 		return "", brokerConnectionFailure{code: "peer-uid-mismatch"}
 	}
 	decoder := json.NewDecoder(io.LimitReader(connection, maximumWireSize+1))
-	var request wireRequest
-	if decoder.Decode(&request) != nil || request.SchemaVersion != protocolSchemaVersion {
+	decode := observation.begin("request-decode", deadline, deadlineAt)
+	err = decoder.Decode(&request)
+	observation.setTrace(request.TraceID)
+	decode.finish(err)
+	if err != nil || request.SchemaVersion != protocolSchemaVersion {
 		return "", brokerConnectionFailure{code: "invalid-wire-request"}
 	}
 	if request.Kind != "execution-lifecycle" && request.Lifecycle != nil {
@@ -248,16 +279,14 @@ func handleBrokerConnectionWithTransport(
 	if request.TraceID != "" && !validDiagnosticTraceID(request.TraceID) {
 		return "", brokerConnectionFailure{code: "invalid-diagnostic-trace"}
 	}
-	auditThreadID := request.ThreadID
+	auditThreadID = request.ThreadID
 	if request.Host != nil {
 		auditThreadID = request.Host.SessionID
 	}
 	if request.Prompt != nil {
 		auditThreadID = request.Prompt.SessionID
 	}
-	var response wireResponse
-	defer response.clearTransient()
-	defer func() { logCoreDiagnostic(request.Kind, request.TraceID, auditThreadID, response) }()
+	handler = observation.begin("request-handler", 0)
 	switch request.Kind {
 	case "execution-lifecycle":
 		if request.Lifecycle == nil || request.Host != nil || request.Prompt != nil || request.Request != nil || !emptyTransportWireFields(request) {
@@ -316,7 +345,7 @@ func handleBrokerConnectionWithTransport(
 			request.Prompt != nil || request.Host != nil || request.Request != nil {
 			return "", brokerConnectionFailure{code: "invalid-binding-request"}
 		}
-		response = transport.consumeBinding(request.Nonce, peer)
+		response = transport.consumeBinding(request.Nonce, peer, observation)
 		request.Nonce = ""
 	case "agent-operation":
 		if transport == nil || request.Binding == "" || request.Operation == nil ||
@@ -354,10 +383,21 @@ func handleBrokerConnectionWithTransport(
 	default:
 		return "", brokerConnectionFailure{code: "unsupported-wire-request"}
 	}
-	if err := json.NewEncoder(connection).Encode(response); err != nil {
+	handler.finishResult("ok", &response.Accepted)
+	handler = nil
+	err = writeObservedCoreResponse(connection, response, observation, deadline, deadlineAt)
+	responseWriteResult = transportErrorClass(err)
+	if err != nil {
 		return "", brokerConnectionFailure{code: "response-write-failed"}
 	}
 	return request.Kind, nil
+}
+
+func writeObservedCoreResponse(writer io.Writer, response wireResponse, observation *transportObservation, budget time.Duration, deadline time.Time) error {
+	write := observation.begin("response-write", budget, deadline)
+	err := json.NewEncoder(writer).Encode(response)
+	write.finishResult(transportErrorClass(err), &response.Accepted)
+	return err
 }
 
 func emptyTransportWireFields(request wireRequest) bool {

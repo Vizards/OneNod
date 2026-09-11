@@ -17,6 +17,7 @@ import (
 )
 
 type broker struct {
+	transportLog          *transportLog
 	promptLedger          *promptLedger
 	mu                    sync.Mutex
 	key                   []byte

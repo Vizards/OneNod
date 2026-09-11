@@ -1,0 +1,288 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "read_request",
+      "description": "Read the original Core request and exact proposed action. Core attribution fields describe their recorded scope; captured Agent explanations or copied transcript text do not become independent Core proof. This is current-operation evidence, not historical human permission.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum records per page, default 20. Ordinary records are returned whole. Follow next_call for additional records or an unusually large record."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_context",
+      "description": "Read original records selected by role, kind, time, call or turn. Default latest user/assistant messages; roles=[\"user\"] reads user messages. Host messages remain accessible with kind=\"message\" or roles=[\"developer\",\"system\"]. Complete returned records need no extra read. The source_class and source_ref label origin, not truth or permission.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum records per page, default 20. Ordinary records are returned whole. Follow next_call for additional records or an unusually large record."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "message",
+              "tool_call",
+              "tool_result",
+              "runtime",
+              "all"
+            ],
+            "description": "Default conversation (user and assistant messages). If call_id or tool_name is given, defaults to all; if roles is given, defaults to message. Explicit message includes host developer/system messages. all includes every original record."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "user",
+                "assistant",
+                "developer",
+                "system"
+              ]
+            }
+          },
+          "since": {
+            "type": "string",
+            "description": "Inclusive ISO timestamp with timezone."
+          },
+          "until": {
+            "type": "string",
+            "description": "Inclusive ISO timestamp with timezone."
+          },
+          "after_record_id": {
+            "type": "string",
+            "description": "Exclusive session position bound, using a returned record ID."
+          },
+          "before_record_id": {
+            "type": "string",
+            "description": "Exclusive session position bound, using a returned record ID."
+          },
+          "tool_name": {
+            "type": "string",
+            "description": "Exact stored session name and linked returns. Core may name the same caller surface differently; no aliases are inferred."
+          },
+          "call_id": {
+            "type": "string",
+            "description": "Exact session call ID. Core hook tool-use IDs can use a different namespace; an absent exact match does not establish an integrity failure."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "A turn ID actually recorded in this snapshot."
+          },
+          "newest_first": {
+            "type": "boolean",
+            "description": "Default true; false reads oldest first."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_context",
+      "description": "Search original payloads for your literal phrases, case-insensitively; match any is OR and all is AND. Default scope is user/assistant dialogue; explicit kind=\"all\" searches calls, results and host/runtime data too. Results contain original text, not relevance summaries. next_call resumes the same query.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum records per page, default 20. Ordinary records are returned whole. Follow next_call for additional records or an unusually large record."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "message",
+              "tool_call",
+              "tool_result",
+              "runtime",
+              "all"
+            ],
+            "description": "Default conversation (user and assistant messages). If call_id or tool_name is given, defaults to all; if roles is given, defaults to message. Explicit message includes host developer/system messages. all includes every original record."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "user",
+                "assistant",
+                "developer",
+                "system"
+              ]
+            }
+          },
+          "since": {
+            "type": "string",
+            "description": "Inclusive ISO timestamp with timezone."
+          },
+          "until": {
+            "type": "string",
+            "description": "Inclusive ISO timestamp with timezone."
+          },
+          "after_record_id": {
+            "type": "string",
+            "description": "Exclusive session position bound, using a returned record ID."
+          },
+          "before_record_id": {
+            "type": "string",
+            "description": "Exclusive session position bound, using a returned record ID."
+          },
+          "tool_name": {
+            "type": "string",
+            "description": "Exact stored session name and linked returns. Core may name the same caller surface differently; no aliases are inferred."
+          },
+          "call_id": {
+            "type": "string",
+            "description": "Exact session call ID. Core hook tool-use IDs can use a different namespace; an absent exact match does not establish an integrity failure."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "A turn ID actually recorded in this snapshot."
+          },
+          "newest_first": {
+            "type": "boolean",
+            "description": "Default true; false reads oldest first."
+          },
+          "terms": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "Literal phrases chosen by you, not regex."
+          },
+          "match": {
+            "type": "string",
+            "enum": [
+              "any",
+              "all"
+            ]
+          }
+        },
+        "required": [
+          "terms"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_call",
+      "description": "Read the original call and every recorded return with this exact session call_id. Process/session IDs and Core hook IDs are different namespaces. A return can still be running; inspect correctly paired follow-up calls/results when completion matters. A missing match is reported without guessing an alias.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum records per page, default 20. Ordinary records are returned whole. Follow next_call for additional records or an unusually large record."
+          },
+          "call_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_record",
+      "description": "Read one original record or its raw storage line, optionally with neighbors. Default neighbors are conversation, calls and results; host/runtime records remain accessible explicitly. A complete record already obtained from search/query does not need another read.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum records per page, default 20. Ordinary records are returned whole. Follow next_call for additional records or an unusually large record."
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "payload",
+              "raw_event"
+            ]
+          },
+          "start_char": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "before": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "neighbor_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "conversation",
+                "message",
+                "tool_call",
+                "tool_result",
+                "runtime",
+                "all"
+              ]
+            }
+          }
+        },
+        "required": [
+          "record_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_next",
+      "description": "Continue the exact snapshot, query, order and text position using next_call.arguments.cursor. No need to reconstruct filters. Query exhaustion means no further matches in that scope, not that authorization is sufficient.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]
