@@ -165,13 +165,10 @@ func recoverVerifiedPrompt(proof promptProof) ([]byte, error) {
 		var event struct {
 			Type    string `json:"type"`
 			Payload struct {
-				Type    string `json:"type"`
-				TurnID  string `json:"turn_id"`
-				Role    string `json:"role"`
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
+				Type    string                  `json:"type"`
+				TurnID  string                  `json:"turn_id"`
+				Role    string                  `json:"role"`
+				Content []transcriptContentPart `json:"content"`
 			} `json:"payload"`
 		}
 		if json.Unmarshal(line, &event) != nil {
@@ -195,6 +192,13 @@ func recoverVerifiedPrompt(proof promptProof) ([]byte, error) {
 			}
 			text := []byte(strings.Join(parts, "\n"))
 			digest := sha256.Sum256(text)
+			if hex.EncodeToString(digest[:]) != proof.PromptSHA256 {
+				if projected, unwrapped := promptWithoutImageWrappers(event.Payload.Content); unwrapped {
+					clear(text)
+					text = []byte(projected)
+					digest = sha256.Sum256(text)
+				}
+			}
 			if hex.EncodeToString(digest[:]) == proof.PromptSHA256 {
 				clear(candidate)
 				candidate = text

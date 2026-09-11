@@ -1,4 +1,4 @@
-# Beholder v32 runtime candidate
+# Beholder v33 runtime candidate
 
 This module contains the experimental Beholder approval integration shipped
 inside the authenticated native OneNod archive. Its presence does not enable
@@ -14,24 +14,74 @@ host call-to-spawn event. Shared helpers, unrelated same-task candidates and
 same-user session manipulation remain documented limitations. Process/task
 conflicts and request replay still prevent authority.
 
-The model receives ordered human messages, Agent explanations, current request
-facts and explicit coverage information in one request, without API tools or
-tool choice. Historical tool calls and results stay in local source evidence
-and are excluded from both model variants. Capture coverage and model delivery
-are recorded separately. Human history is preserved within a byte budget;
-Agent and ambient messages reserve the remaining capacity before historical
-tools, so unsent tools cannot displace delivered explanations. Other context
-can have declared gaps. There is no generated history summary
-or model-driven retrieval. Unsent tool history can contain material facts the
-model will not assess; this is an explicit dogfooding limitation. Arbitrary task
-text may contain sensitive information. No heuristic credential scanner is
-used. Protocol-owned credentials and signing material remain isolated at their
-sources. A model can misjudge authorization or injected content.
+The R16 production profile uses `deepseek-flash`. Its first request contains
+only the pending operation and target, with no history, selected human goal or
+generated progress summary. Six read-only tools expose the original request
+and task snapshot: `read_request`, `query_context`, `search_context`, `read_call`,
+`read_record` and `read_next`. Queries default to newest user/assistant messages;
+explicit roles and kinds expose host messages and runtime records. Search hits
+include original payloads. Call IDs are matched exactly without guessing aliases
+or treating a still-running result as completion.
 
-Benchmark plans are checked against the actual provider projection before
-credential access. Opposite labels with identical projected inputs are rejected.
-The archived R10 tool-output injection pair is therefore inapplicable to this
-profile; its frozen cases and labels are not rewritten to manufacture a result.
+Each admission captures an immutable file prefix, including its original line
+numbers. Query cursors bind both the source digest and the request identity.
+Parallel calls and the two model variants share only immutable records, with
+independent queries and continuation messages. Ordinary records are delivered
+whole; oversized records use lossless Unicode paging. Invalid JSON lines are
+retained as opaque runtime records with a parse diagnostic. The model selects
+what to read and when to stop. Native tool results and the complete preceding
+assistant message, including reasoning content, are returned in the next round.
+
+The primary has a 30-second total budget, including admission and snapshot
+collection, with no automatic retry or model fallback. There are at most 24
+rounds, 32 calls per round, eight concurrent local reads, 128,000 payload
+characters per page, a 256 MiB source snapshot and a 16 MiB provider request.
+Searches accept up to 32 literal terms and 8,192 total UTF-8 term bytes per
+call, return a correctable tool error for larger queries, and check cancellation
+within record/term scans. No words or topics are filtered.
+These are resource bounds; a limit or invalid provider response retains PWA
+approval. A bare decision without any successful evidence read cannot authorize.
+DSML text and malformed decision JSON are not repaired into API calls or allows.
+The client/Core transport budgets leave room around this primary deadline.
+
+`read_request` includes the original requester executable, arguments and redacted
+environment metadata. Turn filters advance on both `task_started` events and
+nonempty `turn_context` records. Missing, malformed, invalid or unread final
+citations produce `evidence_ref_diagnostics` in private evidence and warnings in
+the evidence viewer. Citations remain optional diagnostics and do not add an
+authorization gate; a delivered reference does not prove the model interpreted
+it correctly or read every page of an oversized record.
+
+Thinking-enabled runs afterward for observation, over the same snapshot and
+initial input, with its own retrieval choices and a 180-second budget. At most
+two observations run concurrently; saturation records a skipped observation
+instead of queuing more retained snapshots or delaying primary authority.
+
+Evidence stores the source prefix, original request, exact requests/responses,
+tool results and local latency for every round. The viewer checks continuation
+and replays reads against the recorded snapshot. These checks establish what
+was delivered, not whether the model interpreted it correctly. Raw reasoning
+stays in private local evidence; only aggregate telemetry enters summary logs.
+
+The model can miss a constraint, choose an unhelpful search or stop too soon;
+there is no complete-human-history delivery guarantee. Later appends are outside
+this request's snapshot. Retrieved tool/runtime text can contain contamination
+or sensitive information. No heuristic credential scanner is used. Protocol-owned
+credentials and signing material remain isolated at their sources. These and
+the existing attribution limitations are explicit dogfooding concessions.
+
+Current-prompt matching accepts the exact Core text with separately stored
+Codex image attachment wrappers removed. It recognizes complete text/image/text
+content-item sequences, preserves all surrounding user text, and records this
+projection in boundary evidence while retaining the original text there. This
+matches text representations; image pixels are not interpreted by the current
+text-only approval model. Core prompt recovery uses the same shared fixtures.
+
+Compact-input R15 helpers remain for offline regression fixtures. They cannot
+load as the v33 production profile, and a retrieval-configured model call cannot
+silently fall back to the compact request path. Historical compact benchmarks
+do not measure this retrieval profile; the new tests exercise its native loop,
+parallel reads, snapshot isolation, failure fallback and evidence replay.
 
 The production confirmation JSON, provider routing, credential reference,
 installed service configuration and experiment records remain machine-local.

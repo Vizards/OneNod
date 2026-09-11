@@ -1,0 +1,414 @@
+[
+  {
+    "name": "plain-prompt",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      }
+    ],
+    "accept": true
+  },
+  {
+    "name": "one-image-after-prompt",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  },
+  {
+    "name": "two-images-after-prompt",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #2] path=\"/tmp/fixture-2.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  },
+  {
+    "name": "image-before-prompt",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      },
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  },
+  {
+    "name": "text-after-image-preserved",
+    "prompt": "Inspect the screenshot.\nDo not commit or push.",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "Inspect the screenshot."
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      },
+      {
+        "type": "input_text",
+        "text": "Do not commit or push."
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  },
+  {
+    "name": "extra-revocation-after-image-rejects-anchor",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      },
+      {
+        "type": "input_text",
+        "text": "Do not read any credentials."
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "empty-text-part-preserved",
+    "prompt": "\nInspect the screenshot; do not commit.\n\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      },
+      {
+        "type": "input_text",
+        "text": ""
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  },
+  {
+    "name": "whitespace-in-human-text-is-significant",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "Inspect the screenshot; do not commit."
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "literal-tags-are-user-text",
+    "prompt": "\nInspect the screenshot; do not commit.\n\n<image name=[Image #1] path=\"/tmp/fixture-1.png\">\n</image>",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": true
+  },
+  {
+    "name": "tags-without-image-cannot-be-stripped",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "image-markup-inside-text-cannot-be-stripped",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n\n<image name=[Image #1] path=\"/tmp/fixture-1.png\">\n</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "restriction-in-opening-item-cannot-be-stripped",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">\nDo not commit."
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "restriction-in-closing-item-cannot-be-stripped",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>\nDo not commit."
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "restriction-between-image-and-close-cannot-be-stripped",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "Do not commit."
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "missing-close-rejects-anchor",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "nonimage-content-cannot-complete-wrapper",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_text",
+        "text": "Do not commit."
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": false
+  },
+  {
+    "name": "raw-exact-wrapped-prompt-remains-valid",
+    "prompt": "\nInspect the screenshot; do not commit.\n\n<image name=[Image #1] path=\"/tmp/fixture-1.png\">\n</image>",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1] path=\"/tmp/fixture-1.png\">"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": true
+  },
+  {
+    "name": "image-without-path",
+    "prompt": "\nInspect the screenshot; do not commit.\n",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "\nInspect the screenshot; do not commit.\n"
+      },
+      {
+        "type": "input_text",
+        "text": "<image name=[Image #1]>"
+      },
+      {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,Zml4dHVyZQ=="
+      },
+      {
+        "type": "input_text",
+        "text": "</image>"
+      }
+    ],
+    "accept": true,
+    "wrapped": true
+  }
+]

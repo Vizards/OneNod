@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,9 +37,9 @@ Return one final JSON object, without markdown, with decision, reason, and evide
 {"decision":"allow|escalate","reason":"short human-readable explanation","evidence_refs":["input path"]}`
 
 const (
-	gatekeeperVersion     = "e2-authoritative-dogfood-v32"
-	confirmedConfigSHA256 = "bc2efe4f48d937dc51200fd51c3e15b8adfb4c55ff98f89b904c3d614c8de896"
-	confirmedPolicySHA256 = "29cc5c75ba5be181177b767e18cc8a4fbe2bf5eea28b41596d85d3718d27c516"
+	gatekeeperVersion     = "e2-authoritative-dogfood-v33"
+	confirmedConfigSHA256 = "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07"
+	confirmedPolicySHA256 = "9dddf2ba3558c426f9d8ff034bf6ab6dc6d5ccc603e9e1d6c4b7cde74634732b"
 )
 
 const (
@@ -114,22 +112,26 @@ type gatekeeperService struct {
 }
 
 type modelCallResult struct {
-	decision         string
-	reason           string
-	errorCode        string
-	modelCalled      bool
-	modelTransport   string
-	transportDetail  string
-	responseShape    string
-	modelUsed        bool
-	scopeResolution  string
-	evidenceRefs     []string
-	reasoningPresent bool
-	reasoningBytes   int
-	reasoningTokens  int
-	finishReason     string
-	latencyMS        int64
-	httpStatus       int
+	modelRounds            int
+	evidenceRefDiagnostics []string
+	toolCalls              int
+	toolLatencyMS          float64
+	decision               string
+	reason                 string
+	errorCode              string
+	modelCalled            bool
+	modelTransport         string
+	transportDetail        string
+	responseShape          string
+	modelUsed              bool
+	scopeResolution        string
+	evidenceRefs           []string
+	reasoningPresent       bool
+	reasoningBytes         int
+	reasoningTokens        int
+	finishReason           string
+	latencyMS              int64
+	httpStatus             int
 }
 
 type modelCallVariant struct {
@@ -191,7 +193,7 @@ func newGatekeeperService(
 		return nil, errors.New("invalid evidence store configuration")
 	}
 	evidence := evidenceStores[0]
-	return &gatekeeperService{
+	service := &gatekeeperService{
 		config: config, configSHA256: configSHA256,
 		endpoint: strings.TrimSuffix(config.Provider.BaseURL, "/") + "/chat/completions",
 		apiKey:   append([]byte(nil), apiKey...), targetAliases: aliases, records: records, evidence: evidence,
@@ -206,15 +208,20 @@ func newGatekeeperService(
 		comparisonSemaphore: make(chan struct{}, config.Comparison.MaximumParallelPairs),
 		binarySHA256:        binarySHA256, policySHA256: gatekeeperPolicySHA256(),
 		buildInput: buildExternalDecisionInputWithEvidenceFromCapture,
-	}, nil
+	}
+	if config.Retrieval.Enabled {
+		service.buildInput = buildRetrievalDecisionInput
+	}
+	return service, nil
 }
 
 func gatekeeperPolicySHA256() string {
-	digest := sha256.Sum256([]byte(gatekeeperSystemPrompt))
-	return hex.EncodeToString(digest[:])
+	return retrievalPolicySHA256()
 }
 
-func validateConfirmedConfig(config confirmedConfig) error {
+// Retained for offline replay of the compact-input contract. Production loading
+// separately requires the compiled R16 configuration digest and revision.
+func validateCompactConfig(config confirmedConfig) error {
 	if !validDeploymentMetadata(config) || config.SchemaVersion != 1 || config.RecordType != "e2_ai0_revision_confirmation" ||
 		config.Revision.ID != "E2-AI0-R15" ||
 		config.Revision.SupersedesConfigSHA256 != "29b16bfafb4a17c25dfd1b1ecd5a117f4b4696e4c3734da1f9ff9724bc92f542" ||
@@ -370,8 +377,11 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 		return response
 	}
 	defer func() { <-service.semaphore }()
-	input, metrics, source, err := buildExternalDecisionInputWithEvidenceFromCapture(request, service.targetAliases, capture)
+	input, metrics, source, err := service.buildInput(request, service.targetAliases, capture)
 	bundle, bundleErr := service.beginEvidenceBundleWithError(request, &source, metrics, nil)
+	if err == nil && bundleErr == nil {
+		bundleErr = attachRetrievalInput(bundle, &input)
+	}
 	if err != nil || bundleErr != nil {
 		code := "evidence-bundle-unavailable"
 		if err != nil {
@@ -385,6 +395,7 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 		service.persistUncalledModelPair(bundle, response, started, code)
 		response.EvidenceID = evidenceBundleID(bundle)
 		service.writeRecord(request, response, metrics, 0)
+		clearExternalInput(&input)
 		clearLocalDecisionRequest(&request)
 		return response
 	}
@@ -398,12 +409,20 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 			recordResponse := response
 			comparisonContent := append([]byte(nil), content...)
 			clear(content)
+			if !service.acquireComparisonSlot(bundle) {
+				comparison := service.skipComparison(bundle, request.RequestID)
+				service.writeRecord(recordRequest, recordResponse, metrics, result.httpStatus, comparison)
+				clear(comparisonContent)
+				clearLocalDecisionRequest(&recordRequest)
+				clearExternalInput(&input)
+				clearLocalDecisionRequest(&request)
+				return response
+			}
 			service.jobs.Add(1)
 			go func() {
 				defer service.jobs.Done()
 				defer clear(comparisonContent)
 				defer clearLocalDecisionRequest(&recordRequest)
-				service.comparisonSemaphore <- struct{}{}
 				defer func() { <-service.comparisonSemaphore }()
 				comparison := service.callModelVariant(
 					comparisonContent, bundle, recordRequest.RequestID, comparisonModelVariant,
@@ -426,6 +445,8 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 }
 
 func applyModelResult(response *localDecisionResponse, result modelCallResult) {
+	response.ModelRounds, response.ToolCalls, response.ToolLatencyMS = result.modelRounds, result.toolCalls, result.toolLatencyMS
+	response.EvidenceRefDiagnostics = append([]string(nil), result.evidenceRefDiagnostics...)
 	response.Decision = result.decision
 	response.Reason = result.reason
 	response.ModelUsed = result.modelUsed
@@ -558,6 +579,9 @@ func (service *gatekeeperService) submitShadowDecision(
 			request, service.targetAliases, capture,
 		)
 		sourceWriteErr := bundle.writeSource(source)
+		if buildErr == nil && sourceWriteErr == nil {
+			sourceWriteErr = attachRetrievalInput(bundle, &input)
+		}
 		if buildErr != nil || sourceWriteErr != nil {
 			code := "evidence-source-persistence-failed"
 			if buildErr != nil {
@@ -592,7 +616,9 @@ func (service *gatekeeperService) submitShadowDecision(
 			EvidenceRefs:     append([]string(nil), result.evidenceRefs...),
 			ReasoningPresent: result.reasoningPresent, ReasoningBytes: result.reasoningBytes,
 			ReasoningTokens: result.reasoningTokens, FinishReason: result.finishReason,
-			LatencyMS: result.latencyMS, EvidenceID: request.RequestID,
+			ModelRounds: result.modelRounds, ToolCalls: result.toolCalls, ToolLatencyMS: result.toolLatencyMS,
+			EvidenceRefDiagnostics: append([]string(nil), result.evidenceRefDiagnostics...),
+			LatencyMS:              result.latencyMS, EvidenceID: request.RequestID,
 		}
 		if result.errorCode != "" {
 			final.ErrorCode = stringPointer(result.errorCode)
@@ -699,10 +725,34 @@ func (service *gatekeeperService) callModelPair(
 	defer clear(content)
 
 	primary := service.callModelVariant(content, bundle, evidenceID, primaryModelVariant, deadlines...)
-	service.comparisonSemaphore <- struct{}{}
+	if !service.acquireComparisonSlot(bundle) {
+		return primary, service.skipComparison(bundle, evidenceID)
+	}
 	comparison := service.callModelVariant(content, bundle, evidenceID, comparisonModelVariant)
 	<-service.comparisonSemaphore
 	return primary, comparison
+}
+
+func (service *gatekeeperService) acquireComparisonSlot(bundle *evidenceBundle) bool {
+	if bundle != nil && bundle.retrieval != nil {
+		select {
+		case service.comparisonSemaphore <- struct{}{}:
+			return true
+		default:
+			return false
+		}
+	}
+	service.comparisonSemaphore <- struct{}{}
+	return true
+}
+
+func (service *gatekeeperService) skipComparison(bundle *evidenceBundle, id string) modelCallResult {
+	result := failedModelCallResult("comparison-capacity-unavailable", 0)
+	if err := service.writeFailedModelRequestVariant(bundle, id, time.Now(), result.errorCode, comparisonModelVariant); err != nil {
+		result.errorCode = "evidence-model-request-write-failed"
+	}
+	_ = service.finishEvidenceBundleVariant(bundle, localResponseFromModelResult(id, result), nil, 0, optionalString(result.errorCode), false, comparisonModelVariant)
+	return result
 }
 
 func failedModelCallResult(code string, latencyMS int64) modelCallResult {
@@ -723,7 +773,9 @@ func localResponseFromModelResult(evidenceID string, result modelCallResult) loc
 		EvidenceRefs:     append([]string(nil), result.evidenceRefs...),
 		ReasoningPresent: result.reasoningPresent, ReasoningBytes: result.reasoningBytes,
 		ReasoningTokens: result.reasoningTokens, FinishReason: result.finishReason,
-		LatencyMS: result.latencyMS, EvidenceID: evidenceID,
+		ModelRounds: result.modelRounds, ToolCalls: result.toolCalls, ToolLatencyMS: result.toolLatencyMS,
+		EvidenceRefDiagnostics: append([]string(nil), result.evidenceRefDiagnostics...),
+		LatencyMS:              result.latencyMS, EvidenceID: evidenceID,
 	}
 	if result.errorCode != "" {
 		response.ErrorCode = stringPointer(result.errorCode)
@@ -738,6 +790,9 @@ func (service *gatekeeperService) callModelVariant(
 	variant modelCallVariant,
 	deadlines ...time.Time,
 ) (result modelCallResult) {
+	if service.config.Retrieval.Enabled || (bundle != nil && bundle.retrieval != nil) {
+		return service.callRetrievalModel(content, bundle, evidenceID, variant, deadlines...)
+	}
 	started := time.Now()
 	result = modelCallResult{
 		decision: "escalate", reason: "The Gatekeeper model call did not complete.", responseShape: "not-called",
@@ -1272,7 +1327,9 @@ func (service *gatekeeperService) finishEvidenceBundleVariant(
 		ModelTransport: response.ModelTransport, TransportDetail: response.TransportDetail,
 		ReasoningPresent: response.ReasoningPresent, ReasoningBytes: response.ReasoningBytes,
 		ReasoningTokens: response.ReasoningTokens, FinishReason: response.FinishReason,
-		LatencyMS: response.LatencyMS,
+		LatencyMS:   response.LatencyMS,
+		ModelRounds: response.ModelRounds, ToolCalls: response.ToolCalls, ToolLatencyMS: response.ToolLatencyMS,
+		EvidenceRefDiagnostics: append([]string(nil), response.EvidenceRefDiagnostics...),
 	}
 	if errorCode != nil {
 		if strings.HasPrefix(*errorCode, "model-transport") || *errorCode == "model-timeout" {

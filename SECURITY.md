@@ -55,7 +55,7 @@ deployment confirmation. Its dogfooding limitations are explicit:
 
 - Tool attribution combines kernel process lifetime with eligible Hook
   observations. The host does not provide a trusted call-to-spawn event, and
-  same-user session data is not an independent authority. In v32 each live
+  same-user session data is not an independent authority. Since v32 each live
   execution retains its own immutable set of time-compatible observations from
   the same task, runtime and active transcript. Several observations may match
   one process, and one observation may match several processes. The model sees
@@ -68,11 +68,25 @@ deployment confirmation. Its dogfooding limitations are explicit:
 - Working directory, command keywords and history length do not independently
   decide user authorization. The model receives source-labelled context and
   declared coverage gaps, including different task and execution directories.
-- The model input includes human messages, Agent explanations and current
-  request facts. Historical tool activity remains in local evidence but is not
-  sent to the model; no retrieval tools or generated history summary are used.
-  Material facts or contamination present only in that omitted history may
-  therefore go unassessed. Shorter inputs do not guarantee correct decisions.
+- In v33 the model initially receives only the pending operation. It chooses
+  original context through six read-only tools over one immutable request-time
+  snapshot; no history is prefetched or summarized. Tools cannot open a new
+  path, query another task or execute a command. Cursors bind the request and
+  snapshot; parallel calls and model variants do not share mutable query state.
+  The model may nevertheless miss a human constraint, choose poor search terms,
+  misread provenance or stop prematurely. Complete history delivery is not
+  guaranteed, and messages appended after admission are outside this snapshot.
+  Tool/runtime records can now reach the model when it requests them, including
+  injected text or incidental sensitive data in that history.
+- Primary retrieval has bounded time, rounds, source and message sizes. Exceeding
+  these bounds or receiving malformed provider output retains PWA approval.
+  Thinking-enabled observation cannot change authority; it is skipped when its
+  separate capacity is full. Per-round evidence and replay expose retrieval
+  behavior but cannot prove that a model decision is correct.
+- Final citations are diagnostic, not an independent authorization gate. Missing,
+  malformed or unread references are recorded and surfaced by the evidence
+  viewer without overriding an otherwise valid model decision. A returned page
+  proves delivery of that page, not correct interpretation or complete reading.
 - Arbitrary task text may contain sensitive information. It is sent to the
   configured model without heuristic credential scanning; protocol-owned
   credentials and signing material remain excluded at their sources.
