@@ -289,6 +289,10 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 			fail("model-retrieval-unused", "decision-without-evidence-read")
 			return
 		}
+		var scope string
+		if json.Unmarshal(decision.ScopeResolution, &scope) == nil && validScopeResolution(scope) {
+			result.scopeResolution = scope
+		}
 		var refs []string
 		if json.Unmarshal(decision.EvidenceRefs, &refs) == nil {
 			for _, ref := range refs {

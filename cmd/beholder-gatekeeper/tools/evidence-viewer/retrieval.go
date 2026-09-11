@@ -120,6 +120,7 @@ func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
 	var decision struct {
 		Decision, Reason string
 		EvidenceRefs     json.RawMessage `json:"evidence_refs"`
+		ScopeResolution  json.RawMessage `json:"scope_resolution"`
 	}
 	if json.Unmarshal([]byte(message.Content), &decision) != nil {
 		return false
@@ -132,7 +133,12 @@ func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
 			}
 		}
 	}
-	return decision.Decision == summary.Decision && decision.Reason == summary.Reason && summary.ScopeResolution == "" && equalStrings(normalized, summary.EvidenceRefs)
+	scope := ""
+	var candidate string
+	if json.Unmarshal(decision.ScopeResolution, &candidate) == nil && validProviderScopeResolution(candidate, "e2-authoritative-dogfood-v33") {
+		scope = candidate
+	}
+	return decision.Decision == summary.Decision && decision.Reason == summary.Reason && summary.ScopeResolution == scope && equalStrings(normalized, summary.EvidenceRefs)
 }
 
 func inspectRetrieval(bundle string, m manifest, source sourceAuditRecord, primary modelRequestAuditRecord, primaryResult modelResponseAuditRecord, comparison modelRequestAuditRecord, comparisonResult modelResponseAuditRecord, out *bundleInspection) {

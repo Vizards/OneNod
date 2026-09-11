@@ -71,7 +71,7 @@ func retrievalCallsMessage(id string) map[string]any {
 		}}
 }
 func retrievalFinal() map[string]any {
-	return map[string]any{"role": "assistant", "content": `{"decision":"allow","reason":"该读取属于用户委托的检查。","evidence_refs":["session:L1","request:L1"]}`}
+	return map[string]any{"role": "assistant", "content": `{"decision":"allow","reason":"该读取属于用户委托的检查。","scope_resolution":"task-consistent","evidence_refs":["session:L1","request:L1"]}`}
 }
 func retrievalFixtureRequest(t *testing.T) localDecisionRequest {
 	r := liveRequestFixture(writeSessionFixture(t, []map[string]any{messageFixture("user", "", "检查 fixture 状态；历史标记 HISTORICAL_ONLY"), messageFixture("assistant", "", "准备读取状态")}))
@@ -145,7 +145,7 @@ func TestRetrievalProductionUsesZeroHistoryAndPreservesParallelContinuation(t *t
 	id := req.RequestID
 	out := s.decide(req)
 	s.jobs.Wait()
-	if !out.ModelUsed || out.Decision != "allow" || out.ModelRounds != 2 || out.ToolCalls != 2 {
+	if !out.ModelUsed || out.Decision != "allow" || out.ModelRounds != 2 || out.ToolCalls != 2 || out.ScopeResolution != "task-consistent" {
 		t.Fatalf("unexpected decision: %+v", out)
 	}
 	mu.Lock()
