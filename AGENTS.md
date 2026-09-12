@@ -23,9 +23,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution/signing requirements an
 ## Relevant checks
 
 Use the locked pnpm workspace and the affected package (`@onenod/gateway`,
-`@onenod/executor`, or `@onenod/protocol`). There is no control-plane package or
-production Container deployment in this tree; do not copy retired commands from
-an older project guide.
+`@onenod/executor`, or `@onenod/protocol`). Derive additional package/Go
+module paths from the checkout; do not reuse retired architecture commands.
 
 - Skill/docs-only edits: `pnpm docs:check` plus review of referenced command names
   and authorization semantics. Do not run the runtime or reinstall it to validate
@@ -40,8 +39,9 @@ an older project guide.
 
 Use a focused branch and PR, with commits signed by an existing configured signer.
 Do not change the user's signing or credential setup to work around a failure.
-Explain the final behavior and its validation; documentation edits need no model
-pin, permission-mode change, or production release.
+After pushing a PR, inspect CI and review findings for its current head, address
+applicable findings, and report unresolved checks or external blockers. Explain
+the final behavior and evidence; a source change does not authorize a release.
 
 `skills/onenod` is the source for the release-owned installed copy under `~/.onenod`.
 Change the source and let a reviewed Release distribute it. Do not hand-edit the
