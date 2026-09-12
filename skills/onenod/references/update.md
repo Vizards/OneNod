@@ -4,6 +4,11 @@ OneNod releases the CLI, SSH Agent, signing adapter, Keychain helper, Gateway,
 Executor, PWA, and Skill as one compatibility set. Use `may update check` to
 compare the installed, deployed, and latest Release versions before mutation.
 
+For a stable binary released before channel support, joining the first
+human-selected candidate uses the [Bootstrap bridge](bootstrap.md), including
+its independent provenance checks and attended setup. Do not pass unsupported
+`update --version` or `--channel` flags to that older binary.
+
 ## Choose the update flow
 
 - Use `may update` on each requester Mac when only local components are behind.

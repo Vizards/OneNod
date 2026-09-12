@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
+import { markdownLinks } from "./lib/markdown-links.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const roots = [
@@ -21,11 +22,10 @@ for (const root of roots) {
 const failures = [];
 for (const file of markdownFiles) {
   const source = await readFile(file, "utf8");
-  for (const match of source.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
-    const target = match[1].trim();
+  for (const target of markdownLinks(source, { includeImages: true })) {
     if (
       target.startsWith("#") ||
-      /^(?:https?:|mailto:)/u.test(target)
+      /^[a-z][a-z\d+.-]*:/iu.test(target)
     ) {
       continue;
     }

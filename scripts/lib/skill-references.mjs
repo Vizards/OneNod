@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { markdownLinks } from "./markdown-links.mjs";
 
 // A leaf may be linked by a task router instead of by SKILL.md itself.
 export async function unreachableSkillReferences(directory) {
@@ -13,8 +14,7 @@ export async function unreachableSkillReferences(directory) {
     if (visited.has(file)) continue;
     visited.add(file);
     const source = await readFile(file, "utf8");
-    for (const match of source.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
-      const target = match[1].trim();
+    for (const target of markdownLinks(source)) {
       if (target.startsWith("#") || /^[a-z][a-z\d+.-]*:/iu.test(target)) continue;
       const path = resolve(dirname(file), decodeURIComponent(target.split("#", 1)[0]));
       const inside = relative(root, path);

@@ -15,7 +15,7 @@ Load only the route needed for the requested installation or integration:
 
 | Task | Reference |
 | --- | --- |
-| No installed `may`; obtain and verify the first executable | [Bootstrap](bootstrap.md) |
+| No installed `may`, or a pre-channel stable binary needs the human-selected first candidate | [Bootstrap](bootstrap.md) |
 | Deploy the first Gateway with a verified Release | [Gateway deployment](gateway-setup.md) |
 | Install/enroll a requester Mac, or add an approver browser/PWA | [Requester and PWA](requester-setup.md) |
 | Opt into local quota fallback, OpenSSH, or Git signing | [Local integrations](local-integrations.md) |
