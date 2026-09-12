@@ -1,72 +1,46 @@
 ---
 name: onenod
-description: Install or operate OneNod for Gateway deployment, requester/PWA enrollment, updates, troubleshooting, approved 1Password secret reads and item changes, SSH authentication or Git signing, quota-fallback integration, and explicit credential migration. Excludes source-only development.
+description: Install, update, troubleshoot, or operate OneNod for Gateway deployment, Mac/PWA enrollment, approved 1Password reads and item changes, SSH/Git signing, shell plugins, quota fallback, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod
 
-Use this Skill for OneNod-specific workflow, authority, and safety decisions.
-Use the installed `may` binary's help for flags, argument shapes, detected
-state, and version-specific recovery instructions. Stable command-family names
-are included here so an Agent can choose the correct entry point.
-
-This distributed Skill serves installed-product operations. Editing OneNod source
-or documentation does not itself authorize installing a development build,
-changing the installed Skill, or running a production update.
-
-Treat this Skill as the complete OneNod lifecycle entry point. Do not require a
-project checkout, private maintainer documentation, or another 1Password Skill.
-Before `may` exists, use the bootstrap guidance in the Setup reference; after
-installation, let `may` own executable plans and version-specific mechanics.
+This is the self-contained entry point for the installed product; no source
+checkout or private maintainer guide is required. The installed `may` help owns
+flags, detected state, executable plans, and version-specific recovery. Reuse
+known syntax; consult command-specific help when it is missing or uncertain.
+The fixed requester is `~/.onenod/bin/may`.
 
 ## Route the task
 
-Choose the reference for the requested operation; load another only when the task
-crosses that boundary. Routine reads or SSH signing do not require repeating
-setup, migration readiness, or a deployment ceremony:
+Load the applicable reference, then only the leaves it selects:
 
-| Route | Load when |
+| Task | Reference |
 | --- | --- |
-| [Common](references/common.md) | Explain trust boundaries, `may` versus `op`, Passkeys, Lock mode, or SSH semantics |
-| [Setup](references/setup.md) | Deploy a Gateway, install or enroll a Mac, add a PWA, or opt into SSH/Git or local quota-fallback integration |
-| [Update](references/update.md) | Reconcile the CLI, helper, Skill, Gateway, Executor, and PWA |
-| [Migration](references/migration.md) | A human asks to copy a selected credential batch into `Agent` and cut consumers over |
-| [Daily use](references/daily-use.md) | Use credentials, mutate items, sign over SSH, or troubleshoot a normal request |
+| Credential reads, item changes, SSH/Git signing, normal request failures | [Daily use](references/daily-use.md) |
+| Enable or troubleshoot Shell Plugin command routing | [Shell plugins](references/shell-plugins.md) |
+| First Gateway, Mac installation/enrollment, PWA, optional integrations | [Setup](references/setup.md) |
+| Update CLI, helper, Skill, Gateway, Executor, or PWA | [Update](references/update.md) |
+| Human-selected credential copy and consumer cutover | [Migration](references/migration.md) |
+| Trust boundaries, remembered application approval, Passkeys, Lock mode | [Common](references/common.md) |
 
-For migration, load the router plus only the applicable leaf:
-[readiness](references/migration-readiness.md),
-[standard credentials](references/migration-standard-items.md),
-[SSH keys](references/migration-ssh-keys.md),
-[special items](references/migration-special-items.md), or
-[completion](references/migration-completion.md).
+## Authority boundaries
 
-## Non-negotiable boundaries
-
-- Use the installed `may` requester for Agent work. `op` is reserved for a
-  human-explicit 1Password administration or migration task described by this
-  Skill; never route normal Agent access through `op` or another Skill.
-- Outside an explicitly declared OneNod dogfooding stage, hand the terminal to
-  the human from Wrangler account selection, browser OAuth when needed, or
-  1Password unlock through the CLI's current-Mac Cloudflare revocation check.
-- When the human explicitly declares OneNod dogfooding and authorizes an exact
-  update in the current task, the Agent may drive that release-owned update
-  through deployment confirmation and verification under the guardrails in
-  [Update](references/update.md). This exception does not cover account
-  selection, new OAuth, Passkeys, 1Password unlock, a changed Keychain helper,
-  secret injection, manual rollback outside `may`'s built-in recovery, or an
-  Origin/RP-ID change.
-- Update or deployment authority never implies Wrangler revocation authority.
-  In dogfooding, retain every existing Wrangler profile and answer the CLI's
-  revocation prompt negatively unless the human separately and explicitly asks
-  to revoke the exact current-Mac authority in the current task.
-- Outside that narrow dogfooding exception, treat Passkeys, macOS security
-  prompts, account selection, production deployment confirmation, revocation,
-  and optional integration changes as human decisions.
-- Do not expose a Service Account token, recovered field, private key,
-  bootstrap capability, or secret-bearing payload through Agent-visible
-  output or storage.
-- Reconcile an unknown mutation result before retrying. A denial, revocation,
-  timeout, or Lock-mode response is not a reason to switch tools or Origins.
-  If the human opted into local quota fallback, `may` itself may request local
-  1Password approval only when the Gateway returns its authenticated Service
-  Account quota-exhaustion error; the Agent still does not invoke `op`.
+- Normal Agent access uses `may` or the configured OneNod SSH Agent. Direct `op`
+  is limited to human-explicit administration/migration under [Common](references/common.md).
+  A missing, denied, locked, revoked, or unhealthy requester never authorizes a bypass.
+- Do not expose recovered fields, private keys, Service Account tokens, bootstrap
+  capabilities, or secret-bearing payloads through Agent-visible output or storage.
+- Reconcile unknown mutation results before retrying. Local quota fallback is
+  `may`-owned, opt-in, and limited to an authenticated Service Account quota error;
+  it does not authorize switching tools or Origins.
+- Installation, deployment, changed-helper, Passkey, account, and optional-integration
+  decisions follow the human boundaries in [Setup](references/setup.md) and
+  [Update](references/update.md). Only Update's exact, explicitly declared dogfooding
+  exception permits Agent-driven deployment confirmation. It does not cover new
+  OAuth, account selection, unlock, a changed helper, secret injection, manual
+  rollback, or Origin/RP-ID changes. Update authority never implies Cloudflare
+  revocation authority; retain profiles unless that exact revocation is separately
+  requested by the human.
+- Source/docs work changes the release-owned Skill source. It does not authorize
+  altering the installed tree, installing a development build, or deploying an update.

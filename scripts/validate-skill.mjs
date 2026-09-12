@@ -1,5 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { unreachableSkillReferences } from "./lib/skill-references.mjs";
 
 const skillRoot = resolve(import.meta.dirname, "../skills/onenod");
 const skill = await readFile(resolve(skillRoot, "SKILL.md"), "utf8");
@@ -57,17 +58,8 @@ if (!required(interfaceFields, "default_prompt").includes("$onenod")) {
   fail("the OpenAI default prompt must invoke $onenod");
 }
 
-const references = await readdir(resolve(skillRoot, "references"), {
-  withFileTypes: true,
-});
-for (const entry of references) {
-  if (
-    entry.isFile() &&
-    entry.name.endsWith(".md") &&
-    !skill.includes(`references/${entry.name}`)
-  ) {
-    fail(`SKILL.md does not route reference ${entry.name}`);
-  }
+for (const reference of await unreachableSkillReferences(skillRoot)) {
+  fail(`SKILL.md has no reference route to ${reference}`);
 }
 
 process.stdout.write('{"event":"skill_metadata_verified","name":"onenod"}\n');
