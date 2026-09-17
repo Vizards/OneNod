@@ -159,14 +159,20 @@ func showEvidence(root, evidenceID string, output io.Writer) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if name == "07-session-snapshot.jsonl" {
+			digest, err := digestPrivateFile(filepath.Join(bundle, name))
+			if err != nil {
+				return err
+			}
+			if digest != *manifestValue.Files[name] {
+				return errors.New("snapshot digest mismatch")
+			}
+			files[name], _ = json.Marshal(map[string]any{"path": filepath.Join(bundle, name), "sha256": digest, "content": "File-backed snapshot; use verify for tool replay."})
+			continue
+		}
 		contents, err := readPrivateFile(filepath.Join(bundle, name), evidenceFileLimit(name))
 		if err != nil {
 			return err
-		}
-		if name == "07-session-snapshot.jsonl" {
-			encoded, _ := json.Marshal(string(contents))
-			clear(contents)
-			contents = encoded
 		}
 		if !json.Valid(contents) {
 			clear(contents)
@@ -362,30 +368,61 @@ func verifyDirectory(path string) error {
 	return nil
 }
 
-func readPrivateFile(path string, maximum int64) ([]byte, error) {
+func openPrivateFile(path string, maximum int64) (*os.File, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 ||
-		info.Size() < 0 || info.Size() > maximum {
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || (maximum > 0 && info.Size() > maximum) {
 		return nil, errors.New("private evidence file identity mismatch")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
 		return nil, errors.New("private evidence file owner mismatch")
 	}
-	return os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	actual, err := file.Stat()
+	if err != nil || !os.SameFile(info, actual) || actual.Mode() != info.Mode() || actual.Size() != info.Size() {
+		file.Close()
+		return nil, errors.New("private evidence file changed while opening")
+	}
+	return file, nil
 }
-
+func readPrivateFile(path string, maximum int64) ([]byte, error) {
+	file, err := openPrivateFile(path, maximum)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if maximum <= 0 {
+		return nil, errors.New("unbounded evidence reads require streaming")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if int64(len(body)) > maximum {
+		clear(body)
+		return nil, errors.New("private evidence file exceeds read limit")
+	}
+	return body, err
+}
 func digestPrivateFile(path string) (string, error) {
-	contents, err := readPrivateFile(path, evidenceFileLimit(filepath.Base(path)))
+	file, err := openPrivateFile(path, evidenceFileLimit(filepath.Base(path)))
 	if err != nil {
 		return "", err
 	}
-	defer clear(contents)
-	digest := sha256.Sum256(contents)
-	return hex.EncodeToString(digest[:]), nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	n, err := io.Copy(digest, io.NewSectionReader(file, 0, info.Size()))
+	if err != nil || n != info.Size() {
+		return "", errors.New("private evidence file read failed")
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func splitLines(contents []byte) [][]byte {

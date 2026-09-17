@@ -110,6 +110,7 @@ type schema struct {
 // Store is immutable after construction; independent queries and model variants
 // share original records without sharing cursors or decision state.
 type Store struct {
+	files   *fileStore
 	id      string
 	records []Record
 	byCall  map[string][]int
@@ -301,13 +302,12 @@ func (s *Store) Call(ctx context.Context, name string, raw json.RawMessage) (res
 			return fail(err)
 		}
 		r := records[index]
-		text := r.text
+		raw := args["view"] == "raw_event"
 		view := "payload"
-		if args["view"] == "raw_event" {
-			text = r.raw
+		if raw {
 			view = "raw_event"
 		}
-		total := utf8.RuneCountInString(text)
+		total := s.textLength(r, raw)
 		if offset > total {
 			return fail(errors.New("text offset exceeds record length"))
 		}
@@ -323,9 +323,9 @@ func (s *Store) Call(ctx context.Context, name string, raw json.RawMessage) (res
 		if result.Source == "request" {
 			ref = "request:L1"
 		}
-		part := text
-		if offset != 0 || take != total {
-			part = string([]rune(text)[offset : offset+take])
+		part, err := s.textPage(ctx, r, raw, offset, take)
+		if err != nil {
+			return Result{Records: []PageRecord{}, Error: "retrieval-read-failed", Detail: "Snapshot read failed or query deadline elapsed."}
 		}
 		result.Records = append(result.Records, PageRecord{Record: r, View: view, SourceClass: sourceClass, SourceRef: ref,
 			Start: offset, Total: total, Complete: offset == 0 && take == total, Text: part})
@@ -610,21 +610,11 @@ func (s *Store) selectRecords(ctx context.Context, name string, args map[string]
 			continue
 		}
 		if name == "search_context" {
-			folded := strings.ToLower(r.text)
-			hits := 0
-			for _, term := range terms {
-				if err := ctx.Err(); err != nil {
-					return nil, meta, err
-				}
-				found := strings.Contains(folded, term)
-				if found {
-					hits++
-				}
-				if (match == "any" && found) || (match == "all" && !found) {
-					break
-				}
+			matched, err := s.matches(ctx, r, terms, match)
+			if err != nil {
+				return nil, meta, err
 			}
-			if (match == "any" && hits == 0) || (match == "all" && hits != len(terms)) {
+			if !matched {
 				continue
 			}
 		}

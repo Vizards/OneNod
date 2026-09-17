@@ -1953,7 +1953,7 @@ func TestFrozenDeploymentConfigMatchesCompiledIdentity(t *testing.T) {
 		t.Skip("the deployment confirmation is machine-local; set BEHOLDER_CONFIRMED_CONFIG for release acceptance")
 	}
 	config, actual, err := loadConfirmedConfig(configPath, confirmedConfigSHA256)
-	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R16" {
+	if err != nil || actual != confirmedConfigSHA256 || config.Revision.ID != "E2-AI0-R17" {
 		t.Fatalf("frozen deployment config did not match compiled identity: actual=%q err=%v", actual, err)
 	}
 }

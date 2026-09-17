@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,6 +18,7 @@ import (
 
 type retrievalSourceAudit struct {
 	SchemaVersion     int             `json:"schema_version"`
+	StorageFormat     string          `json:"storage_format,omitempty"`
 	SnapshotID        string          `json:"snapshot_id"`
 	SessionFile       string          `json:"session_file"`
 	RequestFile       string          `json:"request_file"`
@@ -72,7 +74,7 @@ func validRetrievalStage(name string, base []string) bool {
 }
 func evidenceFileLimit(name string) int64 {
 	if name == "07-session-snapshot.jsonl" {
-		return 256 * 1024 * 1024
+		return 0 // Snapshots are streamed; zero means no total-file limit.
 	}
 	return 64 * 1024 * 1024
 }
@@ -145,24 +147,51 @@ func inspectRetrieval(bundle string, m manifest, source sourceAuditRecord, prima
 	}
 	fail := func(code string) { out.Errors = append(out.Errors, "retrieval-"+code) }
 	r := source.Retrieval
-	if r == nil || r.SchemaVersion != 1 || r.PrefetchedHistory || r.GeneratedSummary || r.SessionFile != "07-session-snapshot.jsonl" || r.RequestFile != "08-retrieval-request.json" || r.ToolsSHA256 != hashBytes(retrieval.Tools()) {
+	if r == nil || !((r.SchemaVersion == 1 && r.StorageFormat == "") || (r.SchemaVersion == 2 && r.StorageFormat == retrieval.IndexedFormat)) || r.PrefetchedHistory || r.GeneratedSummary || r.SessionFile != "07-session-snapshot.jsonl" || r.RequestFile != "08-retrieval-request.json" || r.ToolsSHA256 != hashBytes(retrieval.Tools()) {
 		fail("source-contract-invalid")
 		return
 	}
-	session, err := readPrivateFile(filepath.Join(bundle, r.SessionFile), evidenceFileLimit(r.SessionFile))
-	if err != nil {
-		fail("snapshot-unavailable")
-		return
-	}
-	defer clear(session)
 	request, err := readPrivateFile(filepath.Join(bundle, r.RequestFile), evidenceFileLimit(r.RequestFile))
 	if err != nil {
 		fail("request-unavailable")
 		return
 	}
 	defer clear(request)
-	store, err := retrieval.New(context.Background(), session, string(request), m.EvidenceID)
-	if err != nil || store.ID() != r.SnapshotID || hashBytes(session) != source.TranscriptSnapshot.ScannedContentSHA256 || int64(len(session)) != source.TranscriptSnapshot.ScannedBytes || store.Count() != source.TranscriptSnapshot.ScannedEvents {
+	var store *retrieval.Store
+	var digest string
+	var size int64
+	if r.SchemaVersion == 2 {
+		file, openErr := openPrivateFile(filepath.Join(bundle, r.SessionFile), 0)
+		if openErr != nil {
+			fail("snapshot-unavailable")
+			return
+		}
+		info, statErr := file.Stat()
+		if statErr == nil {
+			store, err = retrieval.Freeze(context.Background(), io.NewSectionReader(file, 0, info.Size()), string(request), m.EvidenceID)
+		} else {
+			err = statErr
+		}
+		file.Close()
+		if err == nil {
+			digest, size = store.SourceDigest(), store.SourceBytes()
+		}
+	} else {
+		// Preserve the original sorted-key payload formatting for old bundles.
+		var session []byte
+		session, err = readPrivateFile(filepath.Join(bundle, r.SessionFile), 256*1024*1024)
+		if err == nil {
+			store, err = retrieval.New(context.Background(), session, string(request), m.EvidenceID)
+			digest, size = hashBytes(session), int64(len(session))
+		}
+		clear(session)
+	}
+	if err != nil {
+		fail("snapshot-unavailable")
+		return
+	}
+	defer store.Close()
+	if store.ID() != r.SnapshotID || digest != source.TranscriptSnapshot.ScannedContentSHA256 || size != source.TranscriptSnapshot.ScannedBytes || store.Count() != source.TranscriptSnapshot.ScannedEvents {
 		fail("snapshot-identity-mismatch")
 		return
 	}

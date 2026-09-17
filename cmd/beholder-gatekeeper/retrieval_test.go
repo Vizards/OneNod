@@ -20,8 +20,8 @@ import (
 
 func validRetrievalTestConfig() confirmedConfig {
 	c := validTestConfig()
-	c.Revision.ID = "E2-AI0-R16"
-	c.Revision.SupersedesConfigSHA256 = "bc2efe4f48d937dc51200fd51c3e15b8adfb4c55ff98f89b904c3d614c8de896"
+	c.Revision.ID = "E2-AI0-R17"
+	c.Revision.SupersedesConfigSHA256 = "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07"
 	c.Model.PrimaryID, c.Comparison.ModelID = "deepseek-flash", "deepseek-flash"
 	c.Invocation.TimeoutMS, c.Comparison.TimeoutMS = 30000, 180000
 	c.Comparison.SaturationBehavior = "skip-observation"
@@ -223,6 +223,48 @@ func TestRetrievalProductionUsesZeroHistoryAndPreservesParallelContinuation(t *t
 	}
 	if output, err := exec.Command(viewer, "--root", s.evidence.root, "verify", id).CombinedOutput(); err != nil {
 		t.Fatalf("viewer rejected runtime evidence: %v %s", err, output)
+	}
+	originalIndex, err := os.ReadFile(s.evidence.indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema-one evidence keeps the old canonical payload reader. These
+	// fixtures use sorted member order, so the recorded pages are identical.
+	sourcePath := filepath.Join(path, evidenceSourceName)
+	sourceBytes, _ := os.ReadFile(sourcePath)
+	var legacySource map[string]any
+	_ = json.Unmarshal(sourceBytes, &legacySource)
+	legacyRetrieval := legacySource["retrieval"].(map[string]any)
+	legacyRetrieval["schema_version"] = 1
+	delete(legacyRetrieval, "storage_format")
+	legacyBytes, _ := json.Marshal(legacySource)
+	_ = os.WriteFile(sourcePath, legacyBytes, 0600)
+	manifest.Files[evidenceSourceName] = digestPointer(legacyBytes)
+	if err := writeManifest(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	// Adjust the synthetic fixture's final index digest to its schema-one
+	// manifest; production evidence is never rewritten by this compatibility path.
+	indexLines := bytes.Split(bytes.TrimSpace(originalIndex), []byte("\n"))
+	var lastIndex evidenceIndexRecord
+	if err := json.Unmarshal(indexLines[len(indexLines)-1], &lastIndex); err != nil {
+		t.Fatal(err)
+	}
+	lastIndex.ManifestSHA256 = fileSHA256(filepath.Join(path, evidenceManifestName))
+	indexLines[len(indexLines)-1], _ = json.Marshal(lastIndex)
+	if err := os.WriteFile(s.evidence.indexPath, append(bytes.Join(indexLines, []byte("\n")), '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(viewer, "--root", s.evidence.root, "verify", id).CombinedOutput(); err != nil {
+		t.Fatalf("legacy retrieval replay failed: %v %s", err, output)
+	}
+	if err := os.WriteFile(s.evidence.indexPath, originalIndex, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(sourcePath, sourceBytes, 0600)
+	manifest.Files[evidenceSourceName] = digestPointer(sourceBytes)
+	if err := writeManifest(path, manifest); err != nil {
+		t.Fatal(err)
 	}
 	stage := "round-thinking-disabled-001-tools.json"
 	data, _ := os.ReadFile(filepath.Join(path, stage))
@@ -439,4 +481,74 @@ func TestRetrievalConfigCannotFallBackToCompactClient(t *testing.T) {
 	if result.modelCalled || result.modelUsed || result.errorCode != "retrieval-snapshot-unavailable" {
 		t.Fatalf("compact fallback: %+v", result)
 	}
+}
+
+func TestRetrievalLargeSnapshotReachesModelAndReplays(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large snapshot integration")
+	}
+	s := retrievalServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			t.Error("bad provider request")
+			return
+		}
+		if len(body.Messages) == 2 {
+			retrievalProviderReply(w, "tool_calls", retrievalCallsMessage("large"))
+			return
+		}
+		if len(body.Messages) != 5 || !bytes.Contains(body.Messages[4], []byte("HISTORICAL_ONLY")) {
+			t.Error("recent authorization was not retrieved")
+		}
+		retrievalProviderReply(w, "stop", retrievalFinal())
+	})
+	// Race instrumentation can substantially slow byte-wise parsing. This fixture
+	// extends only its local clock; production still has the confirmed 30 s budget.
+	s.config.Invocation.TimeoutMS = 180000
+	req := retrievalFixtureRequest(t)
+	history, err := os.ReadFile(req.TranscriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(req.TranscriptPath, os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(file, `{"type":"event_msg","payload":{"type":"fixture","text":"`)
+	chunk := strings.Repeat("x", 1024*1024)
+	for i := 0; i < 260; i++ {
+		if _, err = io.WriteString(file, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	io.WriteString(file, "\"}}\n")
+	file.Write(history)
+	file.Close()
+	started := time.Now()
+	out := s.decide(req)
+	s.jobs.Wait()
+	if !out.ModelCalled || !out.ModelUsed || out.Decision != "allow" {
+		t.Fatalf("large source skipped provider: %+v", out)
+	}
+	path, err := s.evidence.findBundleLocked(req.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(path, retrievalSnapshotName))
+	if err != nil || info.Size() <= 256*1024*1024 {
+		t.Fatal("large evidence not persisted")
+	}
+	viewer := filepath.Join(t.TempDir(), "beholder-evidence")
+	if output, err := exec.Command("go", "build", "-o", viewer, "./tools/evidence-viewer").CombinedOutput(); err != nil {
+		t.Fatalf("viewer build: %v %s", err, output)
+	}
+	if output, err := exec.Command(viewer, "--root", s.evidence.root, "verify", req.RequestID).CombinedOutput(); err != nil {
+		t.Fatalf("large evidence verify: %v %s", err, output)
+	}
+	if output, err := exec.Command(viewer, "--root", s.evidence.root, "show", req.RequestID).CombinedOutput(); err != nil || len(output) > 1024*1024 {
+		t.Fatalf("show loaded full history: %v bytes=%d", err, len(output))
+	}
+	t.Logf("snapshot_bytes=%d full_decision_and_replay_ms=%d", info.Size(), time.Since(started).Milliseconds())
 }

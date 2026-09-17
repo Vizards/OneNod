@@ -14,7 +14,7 @@ host call-to-spawn event. Shared helpers, unrelated same-task candidates and
 same-user session manipulation remain documented limitations. Process/task
 conflicts and request replay still prevent authority.
 
-The R16 production profile uses `deepseek-flash`. Its first request contains
+The R17 production profile uses `deepseek-flash`. Its first request contains
 only the pending operation and target, with no history, selected human goal or
 generated progress summary. Six read-only tools expose the original request
 and task snapshot: `read_request`, `query_context`, `search_context`, `read_call`,
@@ -32,10 +32,23 @@ retained as opaque runtime records with a parse diagnostic. The model selects
 what to read and when to stop. Native tool results and the complete preceding
 assistant message, including reasoning content, are returned in the next round.
 
+R17 freezes the admitted prefix to private disk, retains line/role/call/turn
+metadata in memory, and reads pages and literal-search chunks from files. It
+never loads a complete transcript or oversized record into memory. Compact
+payload JSON normalizes string escapes while preserving object member order;
+`raw_event` retains the exact original bytes. Index metadata strings are bounded
+to 4 KiB; larger labels get a visible parse diagnostic and remain available in
+the original record. Both variants keep their shared snapshot alive until the
+last reader finishes; temporary files are then removed. The durable original
+snapshot remains in private evidence. Disk capacity and the total deadline
+still limit collection; this does not promise arbitrarily large files can be
+indexed within 30 seconds.
+
 The primary has a 30-second total budget, including admission and snapshot
 collection, with no automatic retry or model fallback. There are at most 24
 rounds, 32 calls per round, eight concurrent local reads, 128,000 payload
-characters per page, a 256 MiB source snapshot and a 16 MiB provider request.
+characters per page and a 16 MiB provider request. Total transcript size does
+not decide whether the model can review an operation.
 Searches accept up to 32 literal terms and 8,192 total UTF-8 term bytes per
 call, return a correctable tool error for larger queries, and check cancellation
 within record/term scans. No words or topics are filtered.
@@ -59,7 +72,10 @@ instead of queuing more retained snapshots or delaying primary authority.
 
 Evidence stores the source prefix, original request, exact requests/responses,
 tool results and local latency for every round. The viewer checks continuation
-and replays reads against the recorded snapshot. These checks establish what
+and replays reads against the recorded snapshot. Schema 2 snapshots use the
+file-backed reader; schema 1 bundles retain the historical sorted-key payload
+reader. `show` returns a checked file reference for the raw snapshot rather
+than embedding the complete history in its JSON output. These checks establish what
 was delivered, not whether the model interpreted it correctly. Raw reasoning
 stays in private local evidence; only aggregate telemetry enters summary logs.
 
