@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 )
 
 const (
-	maximumRetrievalSnapshotBytes = 256 * 1024 * 1024
+	maximumRetrievalSnapshotBytes = 0 // File-backed snapshots have no total-size admission gate.
 	maximumModelRequestBytes      = 16 * 1024 * 1024
 	maximumRetrievalRounds        = 24
 	maximumRoundToolCalls         = 32
@@ -27,10 +26,10 @@ const (
 var retrievalSystemPrompt string
 
 type retrievalInput struct {
-	store   *retrieval.Store
-	initial []byte
-	session []byte
-	request []byte
+	store    *retrieval.Store
+	initial  []byte
+	deadline time.Time
+	request  []byte
 }
 
 type retrievalSourceEvidence struct {
@@ -43,6 +42,7 @@ type retrievalSourceEvidence struct {
 	PrefetchedHistory bool            `json:"prefetched_history"`
 	GeneratedSummary  bool            `json:"generated_summary"`
 	Selection         string          `json:"selection"`
+	StorageFormat     string          `json:"storage_format,omitempty"`
 }
 
 func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[string]string, capture *transcriptCapture) (externalDecisionInput, contextMetrics, sourceContextEvidence, error) {
@@ -74,8 +74,9 @@ func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[strin
 	if capture.path != request.TranscriptPath || capture.file == nil {
 		return fail("retrieval-snapshot-identity-mismatch")
 	}
-	if capture.info.Size() > maximumRetrievalSnapshotBytes {
-		return fail("retrieval-snapshot-capacity-exceeded")
+	source.TranscriptSnapshot = transcriptSnapshot{Source: "codex-session-jsonl", CaptureBoundary: "file-prefix-at-request-admission", FileBytesAtOpen: capture.info.Size(), FileModifiedAtOpen: capture.info.ModTime().UTC()}
+	if match := codexTaskIDPattern.FindStringSubmatch(request.TranscriptPath); len(match) == 2 {
+		source.TranscriptSnapshot.TaskID = match[1]
 	}
 	ctx := context.Background()
 	cancel := func() {}
@@ -86,13 +87,6 @@ func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[strin
 	if ctx.Err() != nil {
 		return fail("gatekeeper-decision-budget-exhausted")
 	}
-	// Pin the prefix observed at request admission. Subsequent appends do not
-	// enter either model variant. The copy below is also the persisted source.
-	session, err := io.ReadAll(io.NewSectionReader(capture.file, 0, capture.info.Size()))
-	if err != nil || int64(len(session)) != capture.info.Size() {
-		clear(session)
-		return fail("retrieval-snapshot-read-failed")
-	}
 	local := localRequestForEvidence(request)
 	// The source evidence stores this parsed at its root to support redaction.
 	// read_request must still include the original executable/arguments/env.
@@ -102,17 +96,20 @@ func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[strin
 	local.TranscriptPath = ""
 	requestBytes, err := json.MarshalIndent(local, "", "  ")
 	if err != nil {
-		clear(session)
 		return fail("model-request-build-failed")
 	}
-	store, err := retrieval.New(ctx, session, string(requestBytes), request.RequestID)
+	store, err := retrieval.Freeze(ctx, io.NewSectionReader(capture.file, 0, capture.info.Size()), string(requestBytes), request.RequestID)
 	if err != nil {
-		clear(session)
 		clear(requestBytes)
 		if ctx.Err() != nil {
 			return fail("gatekeeper-decision-budget-exhausted")
 		}
 		return fail("retrieval-snapshot-invalid")
+	}
+	if store.SourceBytes() != capture.info.Size() {
+		_ = store.Close()
+		clear(requestBytes)
+		return fail("retrieval-snapshot-read-failed")
 	}
 	target := externalizeTarget(request.ActualRequest, aliases)
 	initial, err := json.Marshal(struct {
@@ -121,21 +118,19 @@ func buildRetrievalDecisionInput(request localDecisionRequest, aliases map[strin
 		VerificationScope: actualRequestVerification, Surface: target.Surface, Operation: target.Operation, TargetKind: target.TargetKind,
 		TargetID: target.TargetID, TargetAlias: target.TargetAlias, KeyFingerprint: target.KeyFingerprint, RemoteUser: target.RemoteUser, HostKeyFingerprint: target.HostKeyFingerprint}})
 	if err != nil {
-		clear(session)
+		_ = store.Close()
 		clear(requestBytes)
 		return fail("model-request-build-failed")
 	}
-	digest := sha256.Sum256(session)
-	source.TranscriptSnapshot = transcriptSnapshot{Source: "codex-session-jsonl", CaptureBoundary: "file-prefix-at-request-admission",
-		FileBytesAtOpen: capture.info.Size(), FileModifiedAtOpen: capture.info.ModTime().UTC(), ScannedBytes: int64(len(session)), ScannedEvents: store.Count(), ScannedContentSHA256: hex.EncodeToString(digest[:])}
-	if match := codexTaskIDPattern.FindStringSubmatch(request.TranscriptPath); len(match) == 2 {
-		source.TranscriptSnapshot.TaskID = match[1]
-	}
-	source.Retrieval = &retrievalSourceEvidence{SchemaVersion: 1, SnapshotID: store.ID(), SessionFile: retrievalSnapshotName, RequestFile: retrievalRequestName,
+	source.TranscriptSnapshot.ScannedBytes = store.SourceBytes()
+	source.TranscriptSnapshot.ScannedEvents = store.Count()
+	source.TranscriptSnapshot.ScannedContentSHA256 = store.SourceDigest()
+
+	source.Retrieval = &retrievalSourceEvidence{SchemaVersion: 2, StorageFormat: retrieval.IndexedFormat, SnapshotID: store.ID(), SessionFile: retrievalSnapshotName, RequestFile: retrievalRequestName,
 		ToolsSHA256: digestValue(retrieval.Tools()), InitialInput: append(json.RawMessage(nil), initial...), Selection: "model-selected exact original records; no prefetch, history summary or relevance ranking"}
 	metrics.InputBytes = len(initial)
 	source.SelectionMetrics = metrics
-	output.retrieval = &retrievalInput{store: store, initial: initial, session: session, request: requestBytes}
+	output.retrieval = &retrievalInput{store: store, initial: initial, deadline: request.decisionDeadline, request: requestBytes}
 	return output, metrics, source, nil
 }
 
@@ -147,9 +142,27 @@ func attachRetrievalInput(bundle *evidenceBundle, input *externalDecisionInput) 
 		return errors.New("evidence-bundle-unavailable")
 	}
 	r := input.retrieval
-	defer func() { clear(r.session); r.session = nil }()
-	if err := bundle.writeRetrievalFile(retrievalSnapshotName, r.session); err != nil {
+	ctx := context.Background()
+	cancel := func() {}
+	if !r.deadline.IsZero() {
+		ctx, cancel = context.WithDeadline(ctx, r.deadline)
+	}
+	defer cancel()
+	if err := r.store.Persist(ctx, filepath.Join(bundle.path, retrievalSnapshotName)); err != nil {
 		return errors.New("evidence-retrieval-source-write-failed")
+	}
+	bundle.store.mu.Lock()
+	manifest, err := readManifest(bundle.path)
+	if err == nil && manifest.Files[retrievalSnapshotName] == nil {
+		digest := r.store.SourceDigest()
+		manifest.Files[retrievalSnapshotName] = &digest
+		err = writeManifest(bundle.path, manifest)
+	} else if err == nil {
+		err = errors.New("retrieval evidence manifest conflict")
+	}
+	bundle.store.mu.Unlock()
+	if err != nil {
+		return err
 	}
 	if err := bundle.writeRetrievalFile(retrievalRequestName, r.request); err != nil {
 		return errors.New("evidence-retrieval-source-write-failed")
@@ -159,7 +172,7 @@ func attachRetrievalInput(bundle *evidenceBundle, input *externalDecisionInput) 
 }
 
 func (bundle *evidenceBundle) writeRetrievalFile(name string, body []byte) error {
-	if bundle == nil || bundle.store == nil || (name != retrievalSnapshotName && name != retrievalRequestName) || len(body) > maximumRetrievalSnapshotBytes {
+	if bundle == nil || bundle.store == nil || name != retrievalRequestName || len(body) > maximumModelRequestBytes {
 		return errors.New("invalid retrieval evidence source")
 	}
 	bundle.store.mu.Lock()

@@ -78,7 +78,13 @@ deployment confirmation. Its dogfooding limitations are explicit:
   guaranteed, and messages appended after admission are outside this snapshot.
   Tool/runtime records can now reach the model when it requests them, including
   injected text or incidental sensitive data in that history.
-- Primary retrieval has bounded time, rounds, source and message sizes. Exceeding
+- Primary retrieval has bounded time, rounds, query pages and message sizes.
+  R17 streams the admitted prefix to private disk and indexes record metadata;
+  transcript byte size alone no longer blocks model review. Search and paging
+  use bounded buffers, and concurrent requests have separate frozen sources.
+  Original snapshots remain durably stored; temporary derived files live until
+  both model variants finish. Total disk use and indexing time still grow with
+  history, and same-user files are not an independent authority. Exceeding
   these bounds or receiving malformed provider output retains PWA approval.
   Thinking-enabled observation cannot change authority; it is skipped when its
   separate capacity is full. Per-round evidence and replay expose retrieval

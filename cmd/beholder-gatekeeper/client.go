@@ -38,7 +38,7 @@ Return one final JSON object, without markdown, with decision, reason, and evide
 
 const (
 	gatekeeperVersion     = "e2-authoritative-dogfood-v33"
-	confirmedConfigSHA256 = "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07"
+	confirmedConfigSHA256 = "5ecf8e392eac3e2f8def3148fe1f97a335c17bbebfc6659cb9d11fdb5701d18b"
 	confirmedPolicySHA256 = "9dddf2ba3558c426f9d8ff034bf6ab6dc6d5ccc603e9e1d6c4b7cde74634732b"
 )
 
@@ -420,6 +420,7 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 			service.jobs.Add(1)
 			go func() {
 				defer service.jobs.Done()
+				defer clearExternalInput(&input)
 				defer clear(comparisonContent)
 				defer clearLocalDecisionRequest(&recordRequest)
 				defer func() { <-service.comparisonSemaphore }()
@@ -428,7 +429,6 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 				)
 				service.writeRecord(recordRequest, recordResponse, metrics, result.httpStatus, comparison)
 			}()
-			clearExternalInput(&input)
 			clearLocalDecisionRequest(&request)
 			return response
 		}

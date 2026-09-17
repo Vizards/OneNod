@@ -1237,9 +1237,7 @@ func clearExternalInput(input *externalDecisionInput) {
 		return
 	}
 	if input.retrieval != nil {
-		clear(input.retrieval.session)
-		input.retrieval.session = nil
-		// A running comparison retains the immutable store through its bundle.
+		_ = input.retrieval.store.Close()
 		input.retrieval = nil
 	}
 	input.HumanIntent.CurrentPrompt = ""

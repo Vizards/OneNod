@@ -8,8 +8,8 @@ func validateConfirmedConfig(config confirmedConfig) error {
 	if config.Revision.ID == "E2-AI0-R15" && !config.Retrieval.Enabled {
 		return validateCompactConfig(config)
 	}
-	if config.Revision.ID != "E2-AI0-R16" ||
-		config.Revision.SupersedesConfigSHA256 != "bc2efe4f48d937dc51200fd51c3e15b8adfb4c55ff98f89b904c3d614c8de896" ||
+	if config.Revision.ID != "E2-AI0-R17" ||
+		config.Revision.SupersedesConfigSHA256 != "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07" ||
 		config.Model.PrimaryID != "deepseek-flash" || config.Comparison.ModelID != "deepseek-flash" ||
 		config.Invocation.TimeoutMS != 30000 || config.Comparison.TimeoutMS != 180000 ||
 		config.Comparison.SaturationBehavior != "skip-observation" ||
