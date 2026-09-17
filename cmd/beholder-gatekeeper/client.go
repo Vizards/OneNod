@@ -65,7 +65,6 @@ type chatCompletionRequest struct {
 }
 
 type chatCompletionResponse struct {
-	Model   string `json:"model"`
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
@@ -961,13 +960,6 @@ func (service *gatekeeperService) callModelVariant(
 		result.reason = localFailureReason(result.errorCode)
 		return result
 	}
-	if completion.Model != service.config.Model.PrimaryID {
-		result.responseShape = "model-identity-mismatch"
-		result.errorCode = "model-identity-mismatch"
-		result.reason = localFailureReason(result.errorCode)
-		choice.Message.Content = ""
-		return result
-	}
 	decisionContent := []byte(choice.Message.Content)
 	choice.Message.Content = ""
 	decoder := json.NewDecoder(bytes.NewReader(decisionContent))
@@ -1387,8 +1379,6 @@ func localFailureReason(code string) string {
 		return "The Gatekeeper model returned no final decision content."
 	case "model-decision-invalid":
 		return "The Gatekeeper model response did not contain a valid decision and reason."
-	case "model-identity-mismatch":
-		return "The provider reported a model other than the confirmed Gatekeeper model."
 	default:
 		return "Gatekeeper could not produce a valid model decision (" + code + ")."
 	}

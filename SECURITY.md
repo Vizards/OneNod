@@ -83,6 +83,11 @@ deployment confirmation. Its dogfooding limitations are explicit:
   Thinking-enabled observation cannot change authority; it is skipped when its
   separate capacity is full. Per-round evidence and replay expose retrieval
   behavior but cannot prove that a model decision is correct.
+- The provider's response `model` field is audit metadata and does not decide
+  whether a result is accepted. It may differ from the configured request alias
+  or be absent. Model selection relies on the configured endpoint, request and
+  provider routing; a response label is not an independent identity attestation.
+  The original provider response remains in the private evidence bundle.
 - Final citations are diagnostic, not an independent authorization gate. Missing,
   malformed or unread references are recorded and surfaced by the evidence
   viewer without overriding an otherwise valid model decision. A returned page
