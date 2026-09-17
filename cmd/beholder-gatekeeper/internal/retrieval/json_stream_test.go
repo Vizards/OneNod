@@ -11,7 +11,7 @@ import (
 )
 
 func FuzzStreamingPayload(f *testing.F) {
-	for _, value := range []string{`{"text":"\u53d1\u7248","n":-0.12e+4}`, `[true,false,null,"汉🧪"]`, `{"x":"\ud800x\ud83e\uddea\u0000"}`, `{"a":1,"a":2}`, `0`, `1e`, `{"x":01}`, `"bad\q"`} {
+	for _, value := range []string{`{"escaped":"\u0022\u005c"}`, `{"text":"\u53d1\u7248","n":-0.12e+4}`, `[true,false,null,"汉🧪"]`, `{"x":"\ud800x\ud83e\uddea\u0000"}`, `{"a":1,"a":2}`, `0`, `1e`, `{"x":01}`, `"bad\q"`} {
 		f.Add(value)
 	}
 	f.Fuzz(func(t *testing.T, value string) {

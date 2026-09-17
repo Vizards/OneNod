@@ -396,8 +396,10 @@ func (p *jsonStream) quoted(capture bool) (string, error) {
 					r = utf8.RuneError
 				}
 				switch r {
-				case '"', '\\':
-					write([]byte{'\\', byte(r)})
+				case '"':
+					write([]byte{'\\', '"'})
+				case '\\':
+					write([]byte{'\\', '\\'})
 				case '\b':
 					write([]byte(`\b`))
 				case '\f':
