@@ -5,12 +5,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
 
 func TestProviderModelMetadataDoesNotGateDecisions(t *testing.T) {
+	viewer := filepath.Join(t.TempDir(), "beholder-evidence")
+	if output, err := exec.Command("go", "build", "-o", viewer, "./tools/evidence-viewer").CombinedOutput(); err != nil {
+		t.Fatalf("build evidence viewer: %v %s", err, output)
+	}
 	for _, retrieval := range []bool{false, true} {
 		profile := "compact"
 		if retrieval {
@@ -96,6 +101,11 @@ func TestProviderModelMetadataDoesNotGateDecisions(t *testing.T) {
 						_ = json.Unmarshal(metadata.value, &expected)
 						if present != (metadata.value != nil) || !reflect.DeepEqual(actual, expected) {
 							t.Fatalf("provider metadata was changed in evidence: %s, %s", variant.name, value)
+						}
+					}
+					if retrieval {
+						if output, err := exec.Command(viewer, "--root", service.evidence.root, "verify", request.RequestID).CombinedOutput(); err != nil {
+							t.Fatalf("evidence viewer rejected provider metadata: %v %s", err, output)
 						}
 					}
 				})
