@@ -46,7 +46,6 @@ type retrievalAssistantAudit struct {
 	ToolCalls []retrievalCallAudit `json:"tool_calls"`
 }
 type retrievalResponseAudit struct {
-	Model   string `json:"model"`
 	Choices []struct {
 		Message      json.RawMessage `json:"message"`
 		FinishReason string          `json:"finish_reason"`
@@ -109,7 +108,7 @@ func retrievalPolicyMatches(m manifest, body json.RawMessage) bool {
 }
 func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
 	var response retrievalResponseAudit
-	if json.Unmarshal(summary.Body, &response) != nil || response.Model != "deepseek-flash" || len(response.Choices) != 1 || response.Choices[0].FinishReason != "stop" {
+	if json.Unmarshal(summary.Body, &response) != nil || len(response.Choices) != 1 || response.Choices[0].FinishReason != "stop" {
 		return false
 	}
 	var message retrievalAssistantAudit
@@ -237,7 +236,7 @@ func inspectRetrievalRounds(bundle string, m manifest, store *retrieval.Store, i
 		}
 		last = resp.Body
 		var response retrievalResponseAudit
-		if json.Unmarshal(resp.Body, &response) != nil || response.Model != "deepseek-flash" || len(response.Choices) != 1 {
+		if json.Unmarshal(resp.Body, &response) != nil || len(response.Choices) != 1 {
 			if summary.ModelUsed {
 				fail("provider-response-invalid")
 			}

@@ -1665,8 +1665,6 @@ func TestGatekeeperClassifiesInvalidModelResponseWithoutPersistingIt(t *testing.
 		{"outer-json", `{`, "outer-json-invalid", "model-outer-json-invalid"},
 		{"choices-count", `{"model":"deepseek-v4-flash","choices":[]}`, "choices-count-invalid", "model-choices-count-invalid"},
 		{"empty-content", `{"model":"deepseek-v4-flash","choices":[{"finish_reason":"stop","message":{"reasoning_content":"analysis","content":""}}]}`, "message-content-empty", "model-message-content-empty"},
-		{"missing-model", `{"choices":[{"finish_reason":"stop","message":{"reasoning_content":"analysis","content":"{\"decision\":\"allow\",\"reason\":\"The request matches.\",\"scope_resolution\":\"task-consistent\",\"evidence_refs\":[\"core_verified_facts\"]}"}}]}`, "model-identity-mismatch", "model-identity-mismatch"},
-		{"wrong-model", `{"model":"gpt-5.6-luna","choices":[{"finish_reason":"stop","message":{"reasoning_content":"analysis","content":"{\"decision\":\"allow\",\"reason\":\"The request matches.\",\"scope_resolution\":\"task-consistent\",\"evidence_refs\":[\"core_verified_facts\"]}"}}]}`, "model-identity-mismatch", "model-identity-mismatch"},
 		{"decision-json", "{\"model\":\"deepseek-v4-flash\",\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"reasoning_content\":\"analysis\",\"content\":\"```json {\\\"decision\\\":\\\"allow\\\"}```\"}}]}", "decision-json-invalid", "model-decision-invalid"},
 		{"missing-reason", `{"model":"deepseek-v4-flash","choices":[{"finish_reason":"stop","message":{"content":"{\"decision\":\"allow\"}"}}]}`, "decision-json-invalid", "model-decision-invalid"},
 	}

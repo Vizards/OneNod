@@ -25,7 +25,6 @@ type retrievalToolCall struct {
 }
 
 type retrievalCompletion struct {
-	Model   string `json:"model"`
 	Choices []struct {
 		FinishReason string          `json:"finish_reason"`
 		Message      json.RawMessage `json:"message"`
@@ -219,10 +218,6 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 		var completion retrievalCompletion
 		if json.Unmarshal(finalBody, &completion) != nil {
 			fail("model-outer-json-invalid", "outer-json-invalid")
-			return
-		}
-		if completion.Model != service.config.Model.PrimaryID {
-			fail("model-identity-mismatch", "model-identity-mismatch")
 			return
 		}
 		if len(completion.Choices) != 1 {
