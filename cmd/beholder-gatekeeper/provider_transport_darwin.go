@@ -46,8 +46,8 @@ func (failure *systemCurlTransportError) Error() string {
 	return message
 }
 
-func useSystemCurlProviderTransport(endpoint string) bool {
-	return providercontract.UsesSystemCurl(endpoint)
+func useSystemCurlProviderTransport(endpoint, configuredEndpoint string) bool {
+	return providercontract.UsesConfiguredSystemCurl(endpoint, configuredEndpoint)
 }
 
 // systemCurlProviderRoundTrip uses Apple's platform-signed curl as the sole
@@ -58,11 +58,13 @@ func useSystemCurlProviderTransport(endpoint string) bool {
 func systemCurlProviderRoundTrip(
 	ctx context.Context,
 	request *http.Request,
+	configuredEndpoint string,
 	contentType string,
 	apiKey []byte,
 	body []byte,
 ) (*http.Response, error) {
-	if ctx == nil || request == nil || request.URL == nil || !providercontract.UsesSystemCurl(request.URL.String()) ||
+	if ctx == nil || request == nil || request.URL == nil ||
+		!providercontract.UsesConfiguredSystemCurl(request.URL.String(), configuredEndpoint) ||
 		contentType != "application/json" || len(apiKey) < 16 || len(apiKey) > maximumCredentialSize ||
 		bytes.IndexAny(apiKey, "\r\n\x00") >= 0 || len(body) == 0 || len(body) > maximumModelRequestBytes {
 		return nil, &systemCurlTransportError{Stage: "validation", ExitCode: -1}

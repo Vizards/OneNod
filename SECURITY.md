@@ -94,10 +94,15 @@ deployment confirmation. Its dogfooding limitations are explicit:
   or be absent. Model selection relies on the configured endpoint, request and
   provider routing; a response label is not an independent identity attestation.
   The original provider response remains in the private evidence bundle.
-- R18 pins the production model route to the official DeepSeek HTTPS origin and
-  obtains its dedicated key through OneNod into process memory. The former New
-  API intermediary is not a fallback; endpoint, credential reference and model
-  remain part of the compiled confirmation identity.
+- R19 pins the production model route to a human-selected HTTPS
+  OpenAI-compatible upstream and obtains its dedicated key through OneNod into
+  process memory. The provider endpoint and credential reference remain only in
+  the machine-local configuration; the binary accepts that exact configuration
+  through its compiled digest. The macOS system transport accepts only the
+  configured endpoint, without a separate public endpoint allowlist. There is
+  no automatic provider fallback. The selected upstream receives the task text
+  that the model retrieves, so changing it changes the provider-trust and data-
+  disclosure boundary and requires a new confirmed configuration.
 - Final citations are diagnostic, not an independent authorization gate. Missing,
   malformed or unread references are recorded and surfaced by the evidence
   viewer without overriding an otherwise valid model decision. A returned page

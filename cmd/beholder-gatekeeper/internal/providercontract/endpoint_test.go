@@ -19,3 +19,20 @@ func TestUsesSystemCurlMatchesCurrentAndHistoricalConfirmedEndpoints(t *testing.
 		}
 	}
 }
+
+func TestUsesConfiguredSystemCurlAcceptsOnlyExactConfiguredHTTPS(t *testing.T) {
+	configured := "https://provider.example.test/v1/chat/completions"
+	if !UsesConfiguredSystemCurl(configured, configured) {
+		t.Fatal("exact configured HTTPS endpoint did not select system curl")
+	}
+	for _, endpoint := range []string{
+		"http://provider.example.test/v1/chat/completions",
+		"https://other.example.test/v1/chat/completions",
+		"https://user@provider.example.test/v1/chat/completions",
+		"https://provider.example.test/v1/chat/completions?target=other",
+	} {
+		if UsesConfiguredSystemCurl(endpoint, configured) {
+			t.Fatalf("unconfigured endpoint selected system curl: %s", endpoint)
+		}
+	}
+}

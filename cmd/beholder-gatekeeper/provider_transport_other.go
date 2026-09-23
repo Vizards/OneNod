@@ -8,11 +8,12 @@ import (
 	"net/http"
 )
 
-func useSystemCurlProviderTransport(string) bool { return false }
+func useSystemCurlProviderTransport(string, string) bool { return false }
 
 func systemCurlProviderRoundTrip(
 	context.Context,
 	*http.Request,
+	string,
 	string,
 	[]byte,
 	[]byte,

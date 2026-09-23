@@ -46,15 +46,15 @@ func TestDeploymentMetadataRejectsCredentialOrURLAmbiguity(t *testing.T) {
 	}
 }
 
-func TestRetrievalDeploymentRejectsFormerIntermediary(t *testing.T) {
+func TestRetrievalDeploymentLeavesProviderIdentityToCompiledDigest(t *testing.T) {
 	config := validRetrievalTestConfig()
-	config.Provider.Name = "OneNod Beholder"
-	config.Provider.Route = "Vizards private New API dedicated group"
-	config.Provider.CallerOrigin = "https://former-new-api.example.invalid"
-	config.Provider.BaseURL = "https://former-new-api.example.invalid/v1"
-	config.Provider.UpstreamOrigin = "https://former-upstream.example.invalid"
-	if validateConfirmedConfig(config) == nil {
-		t.Fatal("former intermediary configuration accepted")
+	config.Provider.Name = "Alternative Provider"
+	config.Provider.Route = "Direct alternative route"
+	config.Provider.CallerOrigin = "https://alternative.example.invalid"
+	config.Provider.BaseURL = "https://alternative.example.invalid/v1"
+	config.Provider.UpstreamOrigin = "https://alternative.example.invalid"
+	if err := validateConfirmedConfig(config); err != nil {
+		t.Fatalf("provider identity should be bound by the compiled config digest: %v", err)
 	}
 }
 

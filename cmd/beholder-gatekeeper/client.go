@@ -37,8 +37,8 @@ Return one final JSON object, without markdown, with decision, reason, and evide
 {"decision":"allow|escalate","reason":"short human-readable explanation","evidence_refs":["input path"]}`
 
 const (
-	gatekeeperVersion     = "e2-authoritative-dogfood-v33"
-	confirmedConfigSHA256 = "f446c2beef24295b0c74c6a611bbe726ae8f654316b363cf19f0052f4eccc606"
+	gatekeeperVersion     = "e2-authoritative-dogfood-v34"
+	confirmedConfigSHA256 = "414175058e6f5bb20acc81ed0691cd388969012a8efa7626bf9c00debc001892"
 	confirmedPolicySHA256 = "9dddf2ba3558c426f9d8ff034bf6ab6dc6d5ccc603e9e1d6c4b7cde74634732b"
 )
 
@@ -889,10 +889,11 @@ func (service *gatekeeperService) callModelVariant(
 	result.modelCalled = true
 	result.responseShape = "request-sent"
 	var httpResponse *http.Response
-	if useSystemCurlProviderTransport(service.endpoint) {
+	configuredEndpoint := strings.TrimSuffix(service.config.Provider.BaseURL, "/") + "/chat/completions"
+	if useSystemCurlProviderTransport(service.endpoint, configuredEndpoint) {
 		result.modelTransport = "system-curl"
 		httpResponse, err = systemCurlProviderRoundTrip(
-			ctx, httpRequest, service.config.Invocation.ContentType, service.apiKey, body,
+			ctx, httpRequest, configuredEndpoint, service.config.Invocation.ContentType, service.apiKey, body,
 		)
 	} else {
 		result.modelTransport = "go-http"
