@@ -6,7 +6,7 @@ deadline, nonce consumption, model authority, the
 fallback diagnostic sent to the Gateway, or the human approval path. No new
 wire fields, deployment confirmation, or diagnostic enablement flag is needed.
 Installed runtimes acquire this behavior only through a verified Release.
-The v33 retrieval profile separately expands the model and Core RPC budgets;
+The v34 retrieval profile separately expands the model and Core RPC budgets;
 that change leaves the two-second binding extension deadline unchanged.
 
 ## Where records live

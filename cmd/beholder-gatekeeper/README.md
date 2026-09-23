@@ -1,4 +1,4 @@
-# Beholder v33 runtime candidate
+# Beholder v34 runtime candidate
 
 This module contains the experimental Beholder approval integration shipped
 inside the authenticated native OneNod archive. Its presence does not enable
@@ -14,18 +14,20 @@ host call-to-spawn event. Shared helpers, unrelated same-task candidates and
 same-user session manipulation remain documented limitations. Process/task
 conflicts and request replay still prevent authority.
 
-The R18 production profile connects directly to the official DeepSeek API and
-uses `deepseek-flash`. Its credential is requested from the human-selected
-`DeepSeek Official API Keys` item through OneNod and remains process-memory-only.
-The former private New API intermediary and its dedicated client token are not
-part of the production route. The first request contains
-only the pending operation and target, with no history, selected human goal or
-generated progress summary. Six read-only tools expose the original request
-and task snapshot: `read_request`, `query_context`, `search_context`, `read_call`,
-`read_record` and `read_next`. Queries default to newest user/assistant messages;
-explicit roles and kinds expose host messages and runtime records. Search hits
-include original payloads. Call IDs are matched exactly without guessing aliases
-or treating a still-running result as completion.
+The R19 production profile connects directly to a human-selected
+OpenAI-compatible upstream and uses `deepseek-flash`. Its credential is
+requested through OneNod and remains process-memory-only. Private routing and
+credential references exist only in the fingerprinted machine-local
+configuration. That configuration selects the sole HTTPS endpoint; the macOS
+system-curl transport does not maintain a separate provider or endpoint
+allowlist. The first request contains only the pending operation and target,
+with no history, selected human goal or generated progress summary. Six
+read-only tools expose the original request and task snapshot: `read_request`,
+`query_context`, `search_context`, `read_call`, `read_record` and `read_next`.
+Queries default to newest user/assistant messages; explicit roles and kinds
+expose host messages and runtime records. Search hits include original payloads.
+Call IDs are matched exactly without guessing aliases or treating a
+still-running result as completion.
 
 Each admission captures an immutable file prefix, including its original line
 numbers. Query cursors bind both the source digest and the request identity.
@@ -36,7 +38,7 @@ retained as opaque runtime records with a parse diagnostic. The model selects
 what to read and when to stop. Native tool results and the complete preceding
 assistant message, including reasoning content, are returned in the next round.
 
-R18 retains R17's file-backed retrieval behavior: it freezes the admitted
+R19 retains R18's file-backed retrieval behavior: it freezes the admitted
 prefix to private disk, retains line/role/call/turn
 metadata in memory, and reads pages and literal-search chunks from files. It
 never loads a complete transcript or oversized record into memory. Compact
@@ -99,7 +101,7 @@ matches text representations; image pixels are not interpreted by the current
 text-only approval model. Core prompt recovery uses the same shared fixtures.
 
 Compact-input R15 helpers remain for offline regression fixtures. They cannot
-load as the v33 production profile, and a retrieval-configured model call cannot
+load as the v34 production profile, and a retrieval-configured model call cannot
 silently fall back to the compact request path. Historical compact benchmarks
 do not measure this retrieval profile; the new tests exercise its native loop,
 parallel reads, snapshot isolation, failure fallback and evidence replay.

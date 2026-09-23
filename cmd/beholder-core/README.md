@@ -1,6 +1,6 @@
 # Beholder Core
 
-This experimental v33 service binds Hook observations and actual requester
+This experimental v34 service binds Hook observations and actual requester
 processes, assembles task evidence, and issues exact-request authority only
 after a valid primary Gatekeeper decision. Kernel process inspection requires
 macOS. Tests use disposable sockets, files and authority keys.

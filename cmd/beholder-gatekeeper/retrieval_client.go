@@ -163,9 +163,10 @@ func (service *gatekeeperService) callRetrievalModel(content []byte, bundle *evi
 		result.modelCalled = true
 		result.modelRounds = round
 		var response *http.Response
-		if useSystemCurlProviderTransport(service.endpoint) {
+		configuredEndpoint := strings.TrimSuffix(service.config.Provider.BaseURL, "/") + "/chat/completions"
+		if useSystemCurlProviderTransport(service.endpoint, configuredEndpoint) {
 			result.modelTransport = "system-curl"
-			response, err = systemCurlProviderRoundTrip(ctx, request, service.config.Invocation.ContentType, service.apiKey, body)
+			response, err = systemCurlProviderRoundTrip(ctx, request, configuredEndpoint, service.config.Invocation.ContentType, service.apiKey, body)
 		} else {
 			result.modelTransport = "go-http"
 			request.Header.Set("Authorization", "Bearer "+string(service.apiKey))

@@ -8,14 +8,9 @@ func validateConfirmedConfig(config confirmedConfig) error {
 	if config.Revision.ID == "E2-AI0-R15" && !config.Retrieval.Enabled {
 		return validateCompactConfig(config)
 	}
-	if config.Revision.ID != "E2-AI0-R18" ||
-		config.Revision.SupersedesConfigSHA256 != "5ecf8e392eac3e2f8def3148fe1f97a335c17bbebfc6659cb9d11fdb5701d18b" ||
+	if config.Revision.ID != "E2-AI0-R19" ||
+		config.Revision.SupersedesConfigSHA256 != "f446c2beef24295b0c74c6a611bbe726ae8f654316b363cf19f0052f4eccc606" ||
 		config.Revision.ContextTreatmentExpanded ||
-		config.Provider.Name != "DeepSeek Official" ||
-		config.Provider.Route != "Direct official DeepSeek API" ||
-		config.Provider.CallerOrigin != "https://api.deepseek.com" ||
-		config.Provider.BaseURL != "https://api.deepseek.com/v1" ||
-		config.Provider.UpstreamOrigin != "https://api.deepseek.com" ||
 		!validDeploymentMetadata(config) ||
 		len(config.Model.DisabledModels) != 0 ||
 		config.Model.PrimaryID != "deepseek-flash" || config.Comparison.ModelID != "deepseek-flash" ||

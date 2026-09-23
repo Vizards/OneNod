@@ -394,10 +394,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v14" ||
 				manifestValue.GatekeeperVersion == "e2-auditable-dogfood-v15" ||
 				dualShadowVersion(manifestValue.GatekeeperVersion)) && modelResponse.ModelCalled {
-				expectedTransport := "go-http"
-				if providercontract.UsesSystemCurl(modelRequest.Endpoint) {
-					expectedTransport = "system-curl"
-				}
+				expectedTransport := expectedProviderTransport(manifestValue.GatekeeperVersion, modelRequest.Endpoint)
 				if modelResponse.ModelTransport != expectedTransport {
 					result.Errors = append(result.Errors, "model-transport-identity-mismatch")
 				}
@@ -462,10 +459,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				result.Warnings = append(result.Warnings, "comparison-model-call-failed-closed")
 			}
 			if comparisonResponse.ModelCalled {
-				expectedTransport := "go-http"
-				if providercontract.UsesSystemCurl(comparisonRequest.Endpoint) {
-					expectedTransport = "system-curl"
-				}
+				expectedTransport := expectedProviderTransport(manifestValue.GatekeeperVersion, comparisonRequest.Endpoint)
 				if comparisonResponse.ModelTransport != expectedTransport {
 					result.Errors = append(result.Errors, "comparison-model-transport-identity-mismatch")
 				}
@@ -716,7 +710,7 @@ func policyHashMatches(value manifest, requestBody json.RawMessage) bool {
 
 func providerDecisionMatches(response modelResponseAuditRecord, gatekeeperVersion string, responseRedacted bool) bool {
 	if retrievalVersion(gatekeeperVersion) {
-		return retrievalDecisionMatches(response)
+		return retrievalDecisionMatches(response, gatekeeperVersion)
 	}
 	var provider struct {
 		Choices []struct {
@@ -777,6 +771,19 @@ func providerDecisionMatches(response modelResponseAuditRecord, gatekeeperVersio
 		return false
 	}
 	return true
+}
+
+func expectedProviderTransport(gatekeeperVersion, endpoint string) string {
+	if gatekeeperVersion == "e2-authoritative-dogfood-v34" {
+		if providercontract.UsesConfiguredSystemCurl(endpoint, endpoint) {
+			return "system-curl"
+		}
+		return "go-http"
+	}
+	if providercontract.UsesSystemCurl(endpoint) {
+		return "system-curl"
+	}
+	return "go-http"
 }
 
 func validProviderScopeResolution(value, gatekeeperVersion string) bool {

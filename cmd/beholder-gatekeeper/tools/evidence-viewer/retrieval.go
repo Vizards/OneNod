@@ -68,7 +68,9 @@ type retrievalToolAudit struct {
 
 var retrievalRoundPattern = regexp.MustCompile(`^round-thinking-(disabled|enabled)-(00[1-9]|01[0-9]|02[0-4])-(request|response|tools)\.json$`)
 
-func retrievalVersion(version string) bool { return version == "e2-authoritative-dogfood-v33" }
+func retrievalVersion(version string) bool {
+	return version == "e2-authoritative-dogfood-v33" || version == "e2-authoritative-dogfood-v34"
+}
 func validRetrievalStage(name string, base []string) bool {
 	return slices.Contains(base, name) || name == "07-session-snapshot.jsonl" || name == "08-retrieval-request.json" || retrievalRoundPattern.MatchString(name)
 }
@@ -108,7 +110,7 @@ func retrievalPolicyMatches(m manifest, body json.RawMessage) bool {
 	}
 	return hashBytes(append([]byte(strings.TrimSuffix(system.Content, "\n")+"\n"), compactJSON(req.Tools)...)) == m.PolicySHA256
 }
-func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
+func retrievalDecisionMatches(summary modelResponseAuditRecord, gatekeeperVersion string) bool {
 	var response retrievalResponseAudit
 	if json.Unmarshal(summary.Body, &response) != nil || len(response.Choices) != 1 || response.Choices[0].FinishReason != "stop" {
 		return false
@@ -135,7 +137,7 @@ func retrievalDecisionMatches(summary modelResponseAuditRecord) bool {
 	}
 	scope := ""
 	var candidate string
-	if json.Unmarshal(decision.ScopeResolution, &candidate) == nil && validProviderScopeResolution(candidate, "e2-authoritative-dogfood-v33") {
+	if json.Unmarshal(decision.ScopeResolution, &candidate) == nil && validProviderScopeResolution(candidate, gatekeeperVersion) {
 		scope = candidate
 	}
 	return decision.Decision == summary.Decision && decision.Reason == summary.Reason && summary.ScopeResolution == scope && equalStrings(normalized, summary.EvidenceRefs)

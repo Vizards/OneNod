@@ -20,15 +20,15 @@ import (
 
 func validRetrievalTestConfig() confirmedConfig {
 	c := validTestConfig()
-	c.Revision.ID = "E2-AI0-R18"
-	c.Revision.SupersedesConfigSHA256 = "5ecf8e392eac3e2f8def3148fe1f97a335c17bbebfc6659cb9d11fdb5701d18b"
+	c.Revision.ID = "E2-AI0-R19"
+	c.Revision.SupersedesConfigSHA256 = "f446c2beef24295b0c74c6a611bbe726ae8f654316b363cf19f0052f4eccc606"
 	c.Revision.ContextTreatmentExpanded = false
-	c.Provider.Name = "DeepSeek Official"
-	c.Provider.Route = "Direct official DeepSeek API"
-	c.Provider.CallerOrigin = "https://api.deepseek.com"
-	c.Provider.BaseURL = "https://api.deepseek.com/v1"
-	c.Provider.UpstreamOrigin = "https://api.deepseek.com"
-	c.Authentication.OneNodReference = "op://Agent/deepseek-official-api-keys/onenod-beholder"
+	c.Provider.Name = "Fixture Provider"
+	c.Provider.Route = "Direct fixture API"
+	c.Provider.CallerOrigin = "https://provider.example.invalid"
+	c.Provider.BaseURL = "https://provider.example.invalid/v1"
+	c.Provider.UpstreamOrigin = "https://provider.example.invalid"
+	c.Authentication.OneNodReference = "op://Agent/fixture-provider/api_key"
 	c.Model.DisabledModels = nil
 	c.Model.PrimaryID, c.Comparison.ModelID = "deepseek-flash", "deepseek-flash"
 	c.Invocation.TimeoutMS, c.Comparison.TimeoutMS = 30000, 180000

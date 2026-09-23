@@ -4,11 +4,20 @@ package providercontract
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/url"
 )
 
-// UsesSystemCurl recognizes endpoints whose evidence was produced by the
-// reviewed platform transport. Historical recognition is retained for audits;
-// the live deployment config separately restricts which endpoint may be used.
+// UsesConfiguredSystemCurl binds the platform transport to the endpoint from
+// the already fingerprint-verified deployment configuration. It deliberately
+// has no provider or endpoint allowlist.
+func UsesConfiguredSystemCurl(endpoint, configuredEndpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && endpoint == configuredEndpoint && parsed.Scheme == "https" &&
+		parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+// UsesSystemCurl recognizes historical endpoints whose evidence was produced
+// by the platform transport. Live traffic uses UsesConfiguredSystemCurl.
 func UsesSystemCurl(endpoint string) bool {
 	sum := sha256.Sum256([]byte(endpoint))
 	return usesSystemCurlHash(hex.EncodeToString(sum[:]))
