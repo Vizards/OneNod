@@ -23,7 +23,7 @@ func loadProductionConfig(path, expectedSHA256 string) (confirmedConfig, string,
 	if err != nil {
 		return config, digest, err
 	}
-	if config.Revision.ID != "E2-AI0-R17" || !config.Retrieval.Enabled {
+	if config.Revision.ID != "E2-AI0-R18" || !config.Retrieval.Enabled {
 		return confirmedConfig{}, "", errors.New("production requires the retrieval deployment revision")
 	}
 	return config, digest, nil

@@ -20,8 +20,16 @@ import (
 
 func validRetrievalTestConfig() confirmedConfig {
 	c := validTestConfig()
-	c.Revision.ID = "E2-AI0-R17"
-	c.Revision.SupersedesConfigSHA256 = "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07"
+	c.Revision.ID = "E2-AI0-R18"
+	c.Revision.SupersedesConfigSHA256 = "5ecf8e392eac3e2f8def3148fe1f97a335c17bbebfc6659cb9d11fdb5701d18b"
+	c.Revision.ContextTreatmentExpanded = false
+	c.Provider.Name = "DeepSeek Official"
+	c.Provider.Route = "Direct official DeepSeek API"
+	c.Provider.CallerOrigin = "https://api.deepseek.com"
+	c.Provider.BaseURL = "https://api.deepseek.com/v1"
+	c.Provider.UpstreamOrigin = "https://api.deepseek.com"
+	c.Authentication.OneNodReference = "op://Agent/dcsm775vmpu2b2eu7fyka47gcu/dhygg425a3cbh5bfishvmb7vda"
+	c.Model.DisabledModels = nil
 	c.Model.PrimaryID, c.Comparison.ModelID = "deepseek-flash", "deepseek-flash"
 	c.Invocation.TimeoutMS, c.Comparison.TimeoutMS = 30000, 180000
 	c.Comparison.SaturationBehavior = "skip-observation"

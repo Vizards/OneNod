@@ -8,8 +8,16 @@ func validateConfirmedConfig(config confirmedConfig) error {
 	if config.Revision.ID == "E2-AI0-R15" && !config.Retrieval.Enabled {
 		return validateCompactConfig(config)
 	}
-	if config.Revision.ID != "E2-AI0-R17" ||
-		config.Revision.SupersedesConfigSHA256 != "7656e43e661bcf6a6bf3b1cf1e943cd12d7433bc9f20b92a8b4c5a5c67137c07" ||
+	if config.Revision.ID != "E2-AI0-R18" ||
+		config.Revision.SupersedesConfigSHA256 != "5ecf8e392eac3e2f8def3148fe1f97a335c17bbebfc6659cb9d11fdb5701d18b" ||
+		config.Revision.ContextTreatmentExpanded ||
+		config.Provider.Name != "DeepSeek Official" ||
+		config.Provider.Route != "Direct official DeepSeek API" ||
+		config.Provider.CallerOrigin != "https://api.deepseek.com" ||
+		config.Provider.BaseURL != "https://api.deepseek.com/v1" ||
+		config.Provider.UpstreamOrigin != "https://api.deepseek.com" ||
+		config.Authentication.OneNodReference != "op://Agent/dcsm775vmpu2b2eu7fyka47gcu/dhygg425a3cbh5bfishvmb7vda" ||
+		len(config.Model.DisabledModels) != 0 ||
 		config.Model.PrimaryID != "deepseek-flash" || config.Comparison.ModelID != "deepseek-flash" ||
 		config.Invocation.TimeoutMS != 30000 || config.Comparison.TimeoutMS != 180000 ||
 		config.Comparison.SaturationBehavior != "skip-observation" ||
@@ -31,6 +39,14 @@ func validateConfirmedConfig(config confirmedConfig) error {
 	// replay; loadProductionConfig only accepts the new pinned revision.
 	config.Revision.ID = "E2-AI0-R15"
 	config.Revision.SupersedesConfigSHA256 = "29b16bfafb4a17c25dfd1b1ecd5a117f4b4696e4c3734da1f9ff9724bc92f542"
+	config.Revision.ContextTreatmentExpanded = true
+	config.Provider.Name = "OneNod Beholder"
+	config.Provider.Route = "Fixture provider route"
+	config.Provider.CallerOrigin = "https://provider.example.invalid"
+	config.Provider.BaseURL = "https://provider.example.invalid/v1"
+	config.Provider.UpstreamOrigin = "https://upstream.example.invalid"
+	config.Authentication.OneNodReference = "op://Agent/fixture-model/api_key"
+	config.Model.DisabledModels = []string{"gpt-5.6-luna"}
 	config.Model.PrimaryID, config.Comparison.ModelID = "deepseek-v4-flash", "deepseek-v4-flash"
 	config.Invocation.TimeoutMS, config.Comparison.TimeoutMS = 10000, 600000
 	config.Messages.ModelInputSchemaVersion = externalDecisionInputSchemaVersion

@@ -14,7 +14,11 @@ host call-to-spawn event. Shared helpers, unrelated same-task candidates and
 same-user session manipulation remain documented limitations. Process/task
 conflicts and request replay still prevent authority.
 
-The R17 production profile uses `deepseek-flash`. Its first request contains
+The R18 production profile connects directly to the official DeepSeek API and
+uses `deepseek-flash`. Its credential is requested from the human-selected
+`DeepSeek Official API Keys` item through OneNod and remains process-memory-only.
+The former private New API intermediary and its dedicated client token are not
+part of the production route. The first request contains
 only the pending operation and target, with no history, selected human goal or
 generated progress summary. Six read-only tools expose the original request
 and task snapshot: `read_request`, `query_context`, `search_context`, `read_call`,
@@ -32,7 +36,8 @@ retained as opaque runtime records with a parse diagnostic. The model selects
 what to read and when to stop. Native tool results and the complete preceding
 assistant message, including reasoning content, are returned in the next round.
 
-R17 freezes the admitted prefix to private disk, retains line/role/call/turn
+R18 retains R17's file-backed retrieval behavior: it freezes the admitted
+prefix to private disk, retains line/role/call/turn
 metadata in memory, and reads pages and literal-search chunks from files. It
 never loads a complete transcript or oversized record into memory. Compact
 payload JSON normalizes string escapes while preserving object member order;

@@ -45,3 +45,24 @@ func TestDeploymentMetadataRejectsCredentialOrURLAmbiguity(t *testing.T) {
 		}
 	}
 }
+
+func TestRetrievalDeploymentRejectsFormerIntermediary(t *testing.T) {
+	for _, mutate := range []func(*confirmedConfig){
+		func(c *confirmedConfig) {
+			c.Provider.Name = "OneNod Beholder"
+			c.Provider.Route = "Vizards private New API dedicated group"
+			c.Provider.CallerOrigin = "https://llm.home.vizards.cc"
+			c.Provider.BaseURL = "https://llm.home.vizards.cc/v1"
+			c.Provider.UpstreamOrigin = "https://mediocre-new-api.midway.run"
+		},
+		func(c *confirmedConfig) {
+			c.Authentication.OneNodReference = "op://Agent/spcrd3e77e2tnstc75caq7cniq/api_key"
+		},
+	} {
+		config := validRetrievalTestConfig()
+		mutate(&config)
+		if validateConfirmedConfig(config) == nil {
+			t.Fatal("former intermediary configuration accepted")
+		}
+	}
+}
