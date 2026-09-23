@@ -45,3 +45,23 @@ func TestDeploymentMetadataRejectsCredentialOrURLAmbiguity(t *testing.T) {
 		}
 	}
 }
+
+func TestRetrievalDeploymentRejectsFormerIntermediary(t *testing.T) {
+	config := validRetrievalTestConfig()
+	config.Provider.Name = "OneNod Beholder"
+	config.Provider.Route = "Vizards private New API dedicated group"
+	config.Provider.CallerOrigin = "https://former-new-api.example.invalid"
+	config.Provider.BaseURL = "https://former-new-api.example.invalid/v1"
+	config.Provider.UpstreamOrigin = "https://former-upstream.example.invalid"
+	if validateConfirmedConfig(config) == nil {
+		t.Fatal("former intermediary configuration accepted")
+	}
+}
+
+func TestRetrievalDeploymentLeavesCredentialIdentityToCompiledDigest(t *testing.T) {
+	config := validRetrievalTestConfig()
+	config.Authentication.OneNodReference = "op://Agent/another-machine-local-item/api-key"
+	if err := validateConfirmedConfig(config); err != nil {
+		t.Fatalf("machine-local credential reference should be bound by the compiled config digest: %v", err)
+	}
+}

@@ -51,7 +51,7 @@ func useSystemCurlProviderTransport(endpoint string) bool {
 }
 
 // systemCurlProviderRoundTrip uses Apple's platform-signed curl as the sole
-// HTTPS transport for the private-LAN provider origin. macOS NECP denies
+// HTTPS transport for the confirmed provider origin. macOS NECP denies
 // anonymous LaunchAgent binaries before SYN while allowing the platform
 // network client. The API key enters curl through an anonymous descriptor; it
 // is never placed in argv, the environment, or a filesystem object.
