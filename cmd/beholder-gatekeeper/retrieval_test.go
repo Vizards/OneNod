@@ -28,7 +28,7 @@ func validRetrievalTestConfig() confirmedConfig {
 	c.Provider.CallerOrigin = "https://api.deepseek.com"
 	c.Provider.BaseURL = "https://api.deepseek.com/v1"
 	c.Provider.UpstreamOrigin = "https://api.deepseek.com"
-	c.Authentication.OneNodReference = "op://Agent/dcsm775vmpu2b2eu7fyka47gcu/dhygg425a3cbh5bfishvmb7vda"
+	c.Authentication.OneNodReference = "op://Agent/deepseek-official-api-keys/onenod-beholder"
 	c.Model.DisabledModels = nil
 	c.Model.PrimaryID, c.Comparison.ModelID = "deepseek-flash", "deepseek-flash"
 	c.Invocation.TimeoutMS, c.Comparison.TimeoutMS = 30000, 180000

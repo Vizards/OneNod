@@ -16,7 +16,7 @@ func validateConfirmedConfig(config confirmedConfig) error {
 		config.Provider.CallerOrigin != "https://api.deepseek.com" ||
 		config.Provider.BaseURL != "https://api.deepseek.com/v1" ||
 		config.Provider.UpstreamOrigin != "https://api.deepseek.com" ||
-		config.Authentication.OneNodReference != "op://Agent/dcsm775vmpu2b2eu7fyka47gcu/dhygg425a3cbh5bfishvmb7vda" ||
+		!validDeploymentMetadata(config) ||
 		len(config.Model.DisabledModels) != 0 ||
 		config.Model.PrimaryID != "deepseek-flash" || config.Comparison.ModelID != "deepseek-flash" ||
 		config.Invocation.TimeoutMS != 30000 || config.Comparison.TimeoutMS != 180000 ||
