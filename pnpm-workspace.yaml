@@ -18,7 +18,7 @@ catalog:
   tailwindcss: 4.3.2
   tsx: 4.23.1
   typescript: 7.0.2
-  vite: 8.1.4
+  vite: 8.1.6
   wrangler: 4.116.0
 
 injectWorkspacePackages: true
