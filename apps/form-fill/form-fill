@@ -1,0 +1,218 @@
+#!/usr/bin/python3 -I
+"""Agent command and Chrome Native Messaging host. No credential is returned to the CLI."""
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import resource
+import select
+import socket
+import struct
+import subprocess
+import sys
+import uuid
+
+ROOT = Path.home() / "Library/Application Support"
+RUN = ROOT / "OneNod Form Fill/run"
+MAY = Path.home() / ".onenod/bin/may"
+HOST = "cc.onenod.form_fill"
+EXT = Path(__file__).resolve().parent / "extension"
+ORIGIN = "chrome-extension://ocgoeomjiojdaaofooefkpgihpdiedjb/"
+BROWSERS = {"chrome": "Google/Chrome", "testing": "Google/Chrome for Testing"}
+HEADER = struct.Struct("=I")
+
+
+def emit(stream, obj):
+    payload = json.dumps(obj, separators=(",", ":")).encode()
+    if len(payload) > 1024 * 1024:
+        raise ValueError("message_too_large")
+    stream.write(HEADER.pack(len(payload)) + payload)
+    stream.flush()
+
+
+def receive(stream):
+    header = stream.read(HEADER.size)
+    if len(header) != HEADER.size:
+        raise EOFError
+    size, = HEADER.unpack(header)
+    if size > 1024 * 1024:
+        raise ValueError("message_too_large")
+    payload = stream.read(size)
+    if len(payload) != size:
+        raise EOFError
+    return json.loads(payload)
+
+
+def browser(message):
+    emit(sys.stdout.buffer, message)
+    return receive(sys.stdin.buffer)
+
+
+def read_field(ref):
+    # CLI progress and diagnostics stay outside both the Chrome and agent channels.
+    result = subprocess.run([str(MAY), "read", "--no-newline", ref],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    if result.returncode:
+        reason = "onenod_read_failed"
+        for marker in ("denied", "revoked", "locked", "expired", "timeout"):
+            if marker.encode() in result.stderr.lower():
+                reason = "onenod_" + marker
+                break
+        raise ValueError(reason)
+    return result.stdout.decode("utf-8")
+
+
+def transact(conn, transport, req):
+    action = req["op"]
+    if action == "locate":
+        return browser(req)
+    if action == "verify":
+        return browser(req)
+    if action != "fill":
+        return {"status": "bad_request"}
+    pairs = req["fields"]
+    if not pairs or not all(isinstance(ref, str) and ref.startswith("op://Agent/")
+                            for _, ref in pairs):
+        return {"status": "invalid_reference"}
+    job = str(uuid.uuid4())
+    ready = browser({"op": "prepare", "id": job, "tab": req["tab"], "url": req["url"],
+                     "frame": req.get("frame"), "fields": [p[0] for p in pairs],
+                     "submit": req.get("submit")})
+    if ready.get("status") != "ready":
+        return ready
+    values = []
+    try:
+        for index, (_, ref) in enumerate(pairs, 1):
+            emit(transport, {"progress": "requesting_field", "index": index})
+            values.append(read_field(ref))
+        # A caller that left during approval no longer has a live fill operation.
+        if select.select([conn], [], [], 0)[0] and not conn.recv(1, socket.MSG_PEEK):
+            return {"status": "caller_disconnected"}
+        result = browser({"op": "apply", "id": job, "values": values})
+        return {"status": result["status"], "tab": req["tab"]}
+    finally:
+        values.clear()
+
+
+def native():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.umask(0o077)
+    RUN.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = RUN / (str(os.getpid()) + ".sock")
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(path))
+        server.listen()
+        try:
+            while True:
+                ready, _, _ = select.select([sys.stdin.buffer, server], [], [])
+                if sys.stdin.buffer in ready:
+                    return  # Chrome disconnected. Requests are initiated via the local socket.
+                conn, _ = server.accept()
+                with conn, conn.makefile("rwb") as stream:
+                    try:
+                        req = receive(stream)
+                        result = transact(conn, stream, req)
+                    except ValueError as exc:
+                        safe = str(exc)
+                        if safe not in {"message_too_large","onenod_denied","onenod_revoked",
+                                        "onenod_locked","onenod_expired","onenod_timeout","onenod_read_failed"}:
+                            safe = "invalid_request"
+                        result = {"status": safe}
+                    except (EOFError, OSError, KeyError, TypeError):
+                        result = {"status": "connection_or_request_failed"}
+                    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                        emit(stream, result)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def call(path, obj):
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.connect(str(path))
+        with conn.makefile("rwb") as stream:
+            emit(stream, obj)
+            while True:
+                result = receive(stream)
+                if "progress" not in result:
+                    return result
+                print(json.dumps(result), flush=True)
+
+
+def install(browser_name, user_data_dir):
+    manifest = json.loads((EXT / "manifest.json").read_text())
+    import base64
+    digest = hashlib.sha256(base64.b64decode(manifest["key"])).hexdigest()
+    extension_id = "".join(chr(97 + int(x, 16)) for x in digest[:32])
+    if ORIGIN != "chrome-extension://" + extension_id + "/":
+        raise ValueError("extension_identity_mismatch")
+    base = Path(user_data_dir).expanduser().resolve() if user_data_dir else ROOT / BROWSERS[browser_name]
+    folder = base / "NativeMessagingHosts"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (HOST + ".json")
+    data = json.dumps({"name": HOST, "description": "Approved OneNod form fill",
+                       "path": str(Path(__file__).resolve()), "type": "stdio",
+                       "allowed_origins": [ORIGIN]}, indent=2) + "\n"
+    if path.exists() and path.read_text() != data:
+        raise ValueError("host_registration_already_exists")
+    path.write_text(data)
+    return {"status": "host_registered", "browser": browser_name}
+
+
+def cli():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="action", required=True)
+    installer = sub.add_parser("install-host")
+    installer.add_argument("--browser", choices=BROWSERS, default="chrome")
+    installer.add_argument("--user-data-dir", help="Use the same custom data directory as the test browser")
+    for name in ("fill", "probe", "verify"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("--url", required=True)
+        cmd.add_argument("--tab", type=int)
+        cmd.add_argument("--session", type=int, help="Native host PID to select a browser/profile")
+        if name == "fill":
+            cmd.add_argument("--field", nargs=2, metavar=("CSS", "OP_REFERENCE"), action="append", required=True)
+            cmd.add_argument("--frame-url", help="Exact URL of the iframe containing the fields")
+            cmd.add_argument("--submit", metavar="CSS", help="Click this control after filling")
+        if name == "verify":
+            cmd.add_argument("--text", help="Check visible page text and return only a boolean status")
+    args = parser.parse_args()
+    if args.action == "install-host":
+        return install(args.browser, args.user_data_dir)
+    matches = []
+    sessions = 0
+    for path in sorted(RUN.glob("*.sock")):
+        if args.session is not None and path.stem != str(args.session):
+            continue
+        try:
+            answer = call(path, {"op": "locate", "url": args.url, "tab": args.tab})
+        except (FileNotFoundError, ConnectionRefusedError):
+            continue
+        sessions += 1
+        matches.extend((path, tab) for tab in answer.get("tabs", []))
+    if not matches:
+        return {"status": "no_matching_tab" if sessions else "no_extension_connected"}
+    if args.action == "probe" or len(matches) != 1:
+        return {"status": "matches" if args.action == "probe" else "ambiguous_target",
+                "targets": [{"session": int(path.stem), "tab": tab} for path, tab in matches]}
+    path, tab = matches[0]
+    if args.action == "verify":
+        return call(path, {"op": "verify", "tab": tab, "url": args.url, "text": args.text})
+    return call(path, {"op": "fill", "tab": tab, "url": args.url, "fields": args.field,
+                       "frame": args.frame_url, "submit": args.submit})
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].startswith("chrome-extension://"):
+        if sys.argv[1] != ORIGIN:
+            sys.exit(1)
+        native()
+    else:
+        try:
+            outcome = cli()
+        except (Exception, KeyboardInterrupt) as err:
+            outcome = {"status": "command_failed", "kind": type(err).__name__}
+        print(json.dumps(outcome), flush=True)
+        sys.exit(0 if outcome["status"] in {"host_registered","matches","verified","filled","submit_dispatched"} else 1)
