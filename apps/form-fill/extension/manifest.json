@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "OneNod Form Fill",
+  "version": "0.1.0",
+  "description": "Fill agent-selected web fields from approved OneNod references.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6iMcU3Gx+Hj4CRHKCUYiKy9KceDW1B62cDTtqFx7NpTu4Jt3wfjU0vdn2AbdCbM//dJeW91LDR6Gn9hTMJ5gmM3b+4zTfOIJYWOiNXkIqB0vwackGi8jb3oOiC/F6ge8anikNL0KU+oAaLgxxbljGD0NBLSXQaUpXQxHZeWqdGCclt20pITDvyiUBTJZfUDPPOm2GQLIDlS0wDy5S9sPVcCroUFJGl6u/bWleK1nzxSF+CBIL13iyd9GCOMbjuIDOQ2QoibEqahOrDEHAm46CfKFVe4K9ay3S1aHUN3JMbgW3+4/5FLhy6nMu4Vj5CG3OmGFpo+eKCF4I0H7dPcKkQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "action": {
+    "default_title": "Reconnect OneNod Form Fill"
+  }
+}
