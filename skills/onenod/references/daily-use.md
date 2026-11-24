@@ -8,6 +8,8 @@ operation proves the private Executor path.
 
 - Use `may catalog search` to locate item and field metadata without reading a
   value.
+- For a website login or form in Chrome on macOS, pass field references to
+  [OneNod Form Fill](chrome-form-fill.md).
 - For one field, prefer `may read op://Agent/<item>/<field>`.
 - Use `may secret read` only when stable IDs or an expected item version are
   needed.

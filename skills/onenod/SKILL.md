@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Install, update, troubleshoot, or operate OneNod for Gateway deployment, Mac/PWA enrollment, approved 1Password reads and item changes, SSH/Git signing, shell plugins, quota fallback, and explicit credential migration. Excludes source-only development.
+description: Install, update, troubleshoot, or operate OneNod for Gateway deployment, Mac/PWA enrollment, approved 1Password reads and item changes, website login and form filling in Chrome, SSH/Git signing, shell plugins, quota fallback, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod
@@ -17,6 +17,7 @@ Load the applicable reference, then only the leaves it selects:
 
 | Task | Reference |
 | --- | --- |
+| Sign in to a website or fill a Chrome form with Agent vault fields on a Mac | [Chrome form filling](references/chrome-form-fill.md) |
 | Credential reads, item changes, SSH/Git signing, normal request failures | [Daily use](references/daily-use.md) |
 | Enable or troubleshoot Shell Plugin command routing | [Shell plugins](references/shell-plugins.md) |
 | First Gateway, Mac installation/enrollment, PWA, optional integrations | [Setup](references/setup.md) |
