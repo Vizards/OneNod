@@ -306,6 +306,7 @@ Usage:
   may dev verify-release --directory <dist/release> [--artifact <basename>]...
   may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
   may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
+  may operator beholder <enable|status|rollback>
   may operator revoke-cloudflare
 
 The install and update commands consume manifest- and provenance-verified artifacts from the

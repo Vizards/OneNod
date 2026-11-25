@@ -58,6 +58,12 @@ func readOperatorDeploymentReceipt() (*operatorDeploymentReceipt, error) {
 	if _, err := parseGatewayOrigin(receipt.Origin); err != nil || receipt.RPID != strings.TrimPrefix(receipt.Origin, "https://") {
 		return nil, errors.New("operator deployment receipt has an invalid immutable Origin")
 	}
+	if receipt.Beholder != nil && (!workerNamePattern.MatchString(receipt.Beholder.Worker) ||
+		len(receipt.Beholder.Worker) > 63 || receipt.Beholder.Worker == receipt.GatewayWorker ||
+		receipt.Beholder.Worker == receipt.ExecutorWorker || !uuidPattern.MatchString(receipt.Beholder.VersionID) ||
+		!validBeholderProviderURL(receipt.Beholder.ProviderURL) || !validBeholderModel(receipt.Beholder.Model)) {
+		return nil, errors.New("operator Beholder receipt is invalid")
+	}
 	return &receipt, nil
 }
 

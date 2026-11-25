@@ -458,7 +458,7 @@ func stageVerifiedDeploymentBundle(
 	); err != nil {
 		return nil, err
 	}
-	if err := extractDeploymentBundleArchive(archiveSnapshot, root); err != nil {
+	if err := extractDeploymentBundleArchive(archiveSnapshot, root, authenticatedDescriptor); err != nil {
 		return nil, err
 	}
 	bundleRoot := filepath.Join(root, "onenod-deployment")
@@ -534,6 +534,11 @@ func validateStagedDeploymentBundle(
 		descriptor.Executor.Plugin != "executor/plugin.wasm" {
 		return errors.New("deployment bundle descriptor does not match the verified release contract")
 	}
+	if descriptor.Beholder != nil && (descriptor.Beholder.Config != "beholder/wrangler.jsonc" ||
+		descriptor.Beholder.Entrypoint != "beholder/worker.mjs" ||
+		descriptor.Beholder.Policy != "beholder/policy.txt") {
+		return errors.New("Beholder deployment bundle descriptor is invalid")
+	}
 	expectedTokens := []string{
 		"__ACCOUNT_ID__", "__ACCOUNT_SUBDOMAIN__", "__EXECUTOR_NAME__", "__GATEWAY_NAME__",
 		"__OP_ACCOUNT__", "__OP_VAULT_ID__", "__ORIGIN__", "__RELEASE_VERSION__",
@@ -569,7 +574,7 @@ func validateStagedDeploymentBundle(
 	return nil
 }
 
-func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string) error {
+func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, descriptors ...deploymentBundleDescriptor) error {
 	if len(archiveSnapshot) == 0 || int64(len(archiveSnapshot)) > maxReleaseArtifactBytes {
 		return errors.New("authenticated deployment artifact snapshot is empty or oversized")
 	}
@@ -585,6 +590,14 @@ func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string) 
 	}
 	defer root.Close()
 	required := deploymentBundleRequiredFiles()
+	if len(descriptors) > 1 {
+		return errors.New("deployment descriptor is ambiguous")
+	}
+	if len(descriptors) == 1 && descriptors[0].Beholder != nil {
+		required["onenod-deployment/beholder/wrangler.jsonc"] = false
+		required["onenod-deployment/beholder/worker.mjs"] = false
+		required["onenod-deployment/beholder/policy.txt"] = false
+	}
 	seen := map[string]struct{}{}
 	var totalBytes int64
 	entryCount := 0
@@ -729,6 +742,11 @@ func renderDeploymentConfigs(
 			return errors.New("deployment Wrangler template contains an unresolved token")
 		}
 		if err := writeAtomicUserConfig(path, []byte(rendered), 0o600); err != nil {
+			return err
+		}
+	}
+	if material.Beholder != nil {
+		if err := renderBeholderDeploymentConfig(bundle, material); err != nil {
 			return err
 		}
 	}

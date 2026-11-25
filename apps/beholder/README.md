@@ -18,14 +18,19 @@ an incomplete trace and retain human approval.
 base64url `BEHOLDER_TRACE_KEY` must be supplied as secrets to a disposable local
 environment. Do not put credentials or personal endpoints in the checkout.
 
-Production installation is not yet wired into the verified deployment artifact
-or `may operator update`. A production rollout also needs a human-confirmed
-provider and secret setup, a versioned private Worker and Gateway binding,
-upgrade/rollback reconciliation, and an attended root-controlled local context
-service. That installer must confirm and create the fixed root-owned
+The verified deployment artifact includes the Worker and its policy. After the
+Gateway, Executor, PWA and operator Mac have reached the same Release, an
+attended operator can run `may operator beholder enable` to review the provider
+and model, enter its key directly in Wrangler, and bind a private Worker. The
+operation records its remote state; `may operator beholder status` reports that
+state and `may operator beholder rollback` restores the Gateway version from
+before the initial binding without deleting the Worker or its data. Subsequent
+`may operator update` operations retain the binding and update the Worker along
+with the other components. Unknown remote outcomes require reconciliation.
+
+The Mac also needs an attended root-controlled local context service. Its
+installation must confirm and create the fixed root-owned
 `/Library/Application Support/Beholder/config/worker-context.json`, including
 the exact trusted `may` path and digest, user home, and Gateway origin.
 Gatekeeper does not accept those authority choices from user-controlled flags,
-and starts its requester helper without inherited proxy or loader settings. Do
-not deploy this development configuration as a substitute for that reviewed
-release path.
+and starts its requester helper without inherited proxy or loader settings.

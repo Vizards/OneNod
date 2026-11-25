@@ -20,7 +20,6 @@ const expectedVersion = strictVersion(manifest["."], "release-please manifest");
 const releaseTrainTargetVersion = releaseTrainTarget(contract);
 const versionedPackages = [
   "package.json",
-  "apps/beholder/package.json",
   "apps/gateway/package.json",
   "apps/executor/package.json",
   "packages/protocol/package.json",

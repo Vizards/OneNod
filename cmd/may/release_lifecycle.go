@@ -289,6 +289,12 @@ type runtimeVersion struct {
 
 type remoteRuntimeVersionResponse struct {
 	Components struct {
+		Beholder *struct {
+			Available    bool   `json:"available"`
+			Channel      string `json:"channel"`
+			Version      string `json:"version"`
+			SourceCommit string `json:"source_commit"`
+		} `json:"beholder,omitempty"`
 		Executor struct {
 			Channel string `json:"channel"`
 			Version string `json:"version"`
@@ -309,6 +315,11 @@ type remoteRuntimeVersionResponse struct {
 }
 
 type deploymentBundleDescriptor struct {
+	Beholder *struct {
+		Config     string `json:"config"`
+		Entrypoint string `json:"entrypoint"`
+		Policy     string `json:"policy"`
+	} `json:"beholder,omitempty"`
 	Executor struct {
 		Config     string `json:"config"`
 		Entrypoint string `json:"entrypoint"`

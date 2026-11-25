@@ -255,7 +255,7 @@ func verifyReleaseArtifactInstallability(
 		); err != nil {
 			return err
 		}
-		if err := extractDeploymentBundleArchive(snapshot, destination); err != nil {
+		if err := extractDeploymentBundleArchive(snapshot, destination, descriptor); err != nil {
 			return err
 		}
 		return validateStagedDeploymentBundle(
@@ -416,6 +416,10 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 		report.Plan = append(report.Plan, "reconcile this Mac from the verified release")
 		return report, nil
 	}
+	if warning := beholderCorePinWarning(receipt); warning != "" {
+		report.Warnings = append(report.Warnings, warning)
+		report.Plan = append(report.Plan, "repair the Beholder Core and Agent release binding in an attended local administrator session")
+	}
 	for name, digest := range receipt.Artifacts {
 		for _, revoked := range manifest.RevokedArtifactDigests {
 			if digest == revoked {
@@ -467,7 +471,11 @@ func buildUpdateCheckReport(release *verifiedRelease, deps dependencies) (update
 	remoteCurrent := remote.GatewayVersion == manifest.ReleaseVersion &&
 		remote.ExecutorVersion == manifest.ReleaseVersion && remote.PwaVersion == manifest.ReleaseVersion
 	if localCurrent && remoteCurrent {
-		report.Status = "up_to_date"
+		if len(report.Plan) > 0 {
+			report.Status = "needs_attention"
+		} else {
+			report.Status = "up_to_date"
+		}
 		return report, nil
 	}
 	if report.Status == "" || report.Status == "check_incomplete" {
