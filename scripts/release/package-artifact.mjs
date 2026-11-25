@@ -203,11 +203,6 @@ async function stageDeploymentArtifact(temporaryRoot, values) {
     join(root, "executor/third-party/onepassword-sdk-go/SOURCE.json"),
   );
   await writeJSON(join(root, "deployment.json"), {
-    beholder: {
-      config: "beholder/wrangler.jsonc",
-      entrypoint: "beholder/worker.mjs",
-      policy: "beholder/policy.txt",
-    },
     executor: {
       config: "executor/wrangler.jsonc",
       entrypoint: "executor/worker.mjs",

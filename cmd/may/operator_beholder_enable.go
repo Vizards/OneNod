@@ -129,7 +129,7 @@ func enableOperatorBeholder(deps dependencies) error {
 		return err
 	}
 	defer os.RemoveAll(bundle.Stage)
-	if bundle.Descriptor.Beholder == nil {
+	if !bundle.Beholder {
 		return errors.New("the verified Release does not include Beholder")
 	}
 	tools, err := checkBinaryOperatorTools(release.Manifest, false)

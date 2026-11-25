@@ -255,7 +255,7 @@ func verifyReleaseArtifactInstallability(
 		); err != nil {
 			return err
 		}
-		if err := extractDeploymentBundleArchive(snapshot, destination, descriptor); err != nil {
+		if err := extractDeploymentBundleArchive(snapshot, destination); err != nil {
 			return err
 		}
 		return validateStagedDeploymentBundle(

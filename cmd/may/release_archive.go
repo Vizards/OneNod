@@ -458,7 +458,7 @@ func stageVerifiedDeploymentBundle(
 	); err != nil {
 		return nil, err
 	}
-	if err := extractDeploymentBundleArchive(archiveSnapshot, root, authenticatedDescriptor); err != nil {
+	if err := extractDeploymentBundleArchive(archiveSnapshot, root); err != nil {
 		return nil, err
 	}
 	bundleRoot := filepath.Join(root, "onenod-deployment")
@@ -469,7 +469,7 @@ func stageVerifiedDeploymentBundle(
 	}
 	cleanup = false
 	return &stagedDeploymentBundle{
-		Artifact: artifact, Descriptor: authenticatedDescriptor, Root: bundleRoot, Stage: stage,
+		Artifact: artifact, Beholder: hasBeholderBundle(bundleRoot), Descriptor: authenticatedDescriptor, Root: bundleRoot, Stage: stage,
 	}, nil
 }
 
@@ -534,11 +534,6 @@ func validateStagedDeploymentBundle(
 		descriptor.Executor.Plugin != "executor/plugin.wasm" {
 		return errors.New("deployment bundle descriptor does not match the verified release contract")
 	}
-	if descriptor.Beholder != nil && (descriptor.Beholder.Config != "beholder/wrangler.jsonc" ||
-		descriptor.Beholder.Entrypoint != "beholder/worker.mjs" ||
-		descriptor.Beholder.Policy != "beholder/policy.txt") {
-		return errors.New("Beholder deployment bundle descriptor is invalid")
-	}
 	expectedTokens := []string{
 		"__ACCOUNT_ID__", "__ACCOUNT_SUBDOMAIN__", "__EXECUTOR_NAME__", "__GATEWAY_NAME__",
 		"__OP_ACCOUNT__", "__OP_VAULT_ID__", "__ORIGIN__", "__RELEASE_VERSION__",
@@ -574,7 +569,7 @@ func validateStagedDeploymentBundle(
 	return nil
 }
 
-func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, descriptors ...deploymentBundleDescriptor) error {
+func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string) error {
 	if len(archiveSnapshot) == 0 || int64(len(archiveSnapshot)) > maxReleaseArtifactBytes {
 		return errors.New("authenticated deployment artifact snapshot is empty or oversized")
 	}
@@ -590,13 +585,10 @@ func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, 
 	}
 	defer root.Close()
 	required := deploymentBundleRequiredFiles()
-	if len(descriptors) > 1 {
-		return errors.New("deployment descriptor is ambiguous")
-	}
-	if len(descriptors) == 1 && descriptors[0].Beholder != nil {
-		required["onenod-deployment/beholder/wrangler.jsonc"] = false
-		required["onenod-deployment/beholder/worker.mjs"] = false
-		required["onenod-deployment/beholder/policy.txt"] = false
+	optionalBeholder := map[string]bool{
+		"onenod-deployment/beholder/wrangler.jsonc": false,
+		"onenod-deployment/beholder/worker.mjs":     false,
+		"onenod-deployment/beholder/policy.txt":     false,
 	}
 	seen := map[string]struct{}{}
 	var totalBytes int64
@@ -633,12 +625,13 @@ func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, 
 		}
 		totalBytes += header.Size
 		_, exact := required[clean]
+		_, optional := optionalBeholder[clean]
 		asset := strings.HasPrefix(clean, "onenod-deployment/gateway/assets/")
 		if _, duplicate := seen[clean]; duplicate {
 			return errors.New("verified deployment archive contains duplicate files")
 		}
 		seen[clean] = struct{}{}
-		if !exact && !asset {
+		if !exact && !optional && !asset {
 			continue
 		}
 		if header.Size == 0 {
@@ -646,6 +639,9 @@ func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, 
 		}
 		if exact {
 			required[clean] = true
+		}
+		if optional {
+			optionalBeholder[clean] = true
 		}
 		if err := root.MkdirAll(filepath.Dir(relative), 0o700); err != nil {
 			return errors.New("create deployment extraction directory failed")
@@ -666,11 +662,25 @@ func extractDeploymentBundleArchive(archiveSnapshot []byte, destination string, 
 			return fmt.Errorf("verified deployment archive omitted %q", path)
 		}
 	}
+	beholderCount := 0
+	for _, found := range optionalBeholder {
+		if found {
+			beholderCount++
+		}
+	}
+	if beholderCount != 0 && beholderCount != len(optionalBeholder) {
+		return errors.New("verified deployment archive contains an incomplete Beholder Worker")
+	}
 	assetsRoot := filepath.Join(destination, "onenod-deployment", "gateway", "assets")
 	if info, err := os.Stat(assetsRoot); err != nil || !info.IsDir() {
 		return errors.New("verified deployment archive contains no Gateway assets")
 	}
 	return nil
+}
+
+func hasBeholderBundle(root string) bool {
+	info, err := os.Lstat(filepath.Join(root, "beholder", "wrangler.jsonc"))
+	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 && info.Size() > 0
 }
 
 func deploymentBundleRequiredFiles() map[string]bool {

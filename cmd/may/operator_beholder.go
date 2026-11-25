@@ -139,14 +139,14 @@ func validBeholderModel(value string) bool {
 }
 
 func bundleBeholderConfig(bundle *stagedDeploymentBundle) string {
-	if bundle == nil || bundle.Descriptor.Beholder == nil {
+	if bundle == nil || !bundle.Beholder {
 		return ""
 	}
-	return filepath.Join(bundle.Root, filepath.FromSlash(bundle.Descriptor.Beholder.Config))
+	return filepath.Join(bundle.Root, "beholder", "wrangler.jsonc")
 }
 
 func renderBeholderDeploymentConfig(bundle *stagedDeploymentBundle, material *productionInitializationMaterial) error {
-	if bundle == nil || bundle.Descriptor.Beholder == nil || material == nil || material.Beholder == nil {
+	if bundle == nil || !bundle.Beholder || material == nil || material.Beholder == nil {
 		return errors.New("verified release does not include the configured Beholder Worker")
 	}
 	selected := material.Beholder

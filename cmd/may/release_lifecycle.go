@@ -315,11 +315,6 @@ type remoteRuntimeVersionResponse struct {
 }
 
 type deploymentBundleDescriptor struct {
-	Beholder *struct {
-		Config     string `json:"config"`
-		Entrypoint string `json:"entrypoint"`
-		Policy     string `json:"policy"`
-	} `json:"beholder,omitempty"`
 	Executor struct {
 		Config     string `json:"config"`
 		Entrypoint string `json:"entrypoint"`
@@ -390,6 +385,7 @@ type verifiedLocalTransportDescriptor struct {
 
 type stagedDeploymentBundle struct {
 	Artifact   releaseArtifact
+	Beholder   bool
 	Descriptor deploymentBundleDescriptor
 	Root       string
 	Stage      string

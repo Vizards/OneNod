@@ -137,7 +137,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	defer os.RemoveAll(bundle.Stage)
-	if receipt.Beholder != nil && bundle.Descriptor.Beholder == nil {
+	if receipt.Beholder != nil && !bundle.Beholder {
 		return errors.New("verified Release does not include the configured Beholder Worker; refusing to remove its Gateway binding")
 	}
 	tools, err := checkBinaryOperatorTools(release.Manifest, false)
