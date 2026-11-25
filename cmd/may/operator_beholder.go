@@ -249,7 +249,7 @@ func inspectBeholderServiceBinding(wrangler, profile, config, gateway, version, 
 		}
 		matches++
 		if expectedWorker == "" || binding.Type != "service" || binding.Service != expectedWorker ||
-			binding.Environment != "" || binding.Entrypoint != "" {
+			(binding.Environment != "" && binding.Environment != "production") || binding.Entrypoint != "" {
 			return errors.New("Gateway Beholder binding does not match the confirmed Worker")
 		}
 	}
