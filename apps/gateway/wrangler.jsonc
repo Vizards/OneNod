@@ -28,6 +28,10 @@
     {
       "binding": "EXECUTOR_SERVICE",
       "service": "onenod-executor"
+    },
+    {
+      "binding": "BEHOLDER_SERVICE",
+      "service": "onenod-beholder"
     }
   ],
   "durable_objects": {

@@ -1,0 +1,18 @@
+{
+  "name": "__BEHOLDER_NAME__",
+  "main": "./worker.mjs",
+  "account_id": "__ACCOUNT_ID__",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }],
+  "vars": {
+    "BEHOLDER_PROVIDER_URL": "__BEHOLDER_PROVIDER_URL__",
+    "BEHOLDER_MODEL": "__BEHOLDER_MODEL__"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "DECISIONS", "class_name": "BeholderDecision" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BeholderDecision"] }],
+  "observability": { "enabled": false }
+}

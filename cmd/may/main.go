@@ -99,6 +99,17 @@ func main() {
 		}
 		return
 	}
+	if binaryName == "may" && len(os.Args) == 4 && os.Args[1] == "__beholder-worker-step" {
+		config, prepared, prepareErr := prepareRequesterInvocation(cliConfig{origin: os.Args[2]}, deps)
+		if prepareErr == nil {
+			prepareErr = runInternalBeholderWorkerStep(config, prepared, os.Args[3])
+		}
+		if prepareErr != nil {
+			fmt.Fprintf(os.Stderr, "may: %v\n", prepareErr)
+			os.Exit(1)
+		}
+		return
+	}
 	flushPendingBeholderOutcomes(deps)
 	switch binaryName {
 	case "may":
@@ -295,6 +306,7 @@ Usage:
   may dev verify-release --directory <dist/release> [--artifact <basename>]...
   may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
   may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
+  may operator beholder <enable|status|rollback>
   may operator revoke-cloudflare
 
 The install and update commands consume manifest- and provenance-verified artifacts from the

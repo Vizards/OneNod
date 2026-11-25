@@ -56,6 +56,7 @@ type productionInitializationMaterial struct {
 	ReleaseStage                   string
 	RPID                           string
 	VAPID                          vapidCredential
+	Beholder                       *operatorBeholderReceipt
 }
 
 type onePasswordProvisioning struct {

@@ -195,9 +195,10 @@ func (span *transportSpan) record(state, result string, accepted *bool) {
 }
 
 type transportFailure struct {
-	message string
-	class   string
-	cause   error
+	message        string
+	class          string
+	cause          error
+	diagnosticCode string
 }
 
 func (failure *transportFailure) Error() string { return failure.message }

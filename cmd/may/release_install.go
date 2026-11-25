@@ -114,7 +114,15 @@ func runLocalUpdate(args []string, deps dependencies) error {
 			return errors.New("Keychain helper update was not approved; no local components were changed")
 		}
 	}
-	return installVerifiedRelease(ctx, release, receipt.Origin, deps, includeHelper)
+	if err := installVerifiedRelease(ctx, release, receipt.Origin, deps, includeHelper); err != nil {
+		return err
+	}
+	if updated, found, err := readLocalInstallReceipt(); err == nil && found {
+		if warning := beholderCorePinWarning(updated); warning != "" {
+			fmt.Fprintln(deps.stderr, "WARNING:", warning)
+		}
+	}
+	return nil
 }
 
 func buildKeychainHelperUpdatePlan(

@@ -1,4 +1,4 @@
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { startAuthentication, startRegistration } from "../utils/passkey";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 

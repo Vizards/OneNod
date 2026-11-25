@@ -245,7 +245,11 @@ func consumeBeholderAgentBindingObserved(deps dependencies, nonce []byte, diagno
 			class = "malformed-response"
 		}
 		span.finishResult(class, &response.Accepted)
-		return "", &transportFailure{message: "Beholder Agent binding was rejected", class: class}
+		failure := &transportFailure{message: "Beholder Agent binding was rejected", class: class}
+		if response.ErrorCode != nil && beholderDiagnosticCode(*response.ErrorCode) {
+			failure.diagnosticCode = *response.ErrorCode
+		}
+		return "", failure
 	}
 	span.finishResult("ok", &response.Accepted)
 	return response.Binding, nil

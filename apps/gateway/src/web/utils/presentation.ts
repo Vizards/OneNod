@@ -129,7 +129,7 @@ export function isPast(value: string, now = Date.now()): boolean {
 }
 
 export function toErrorMessage(error: unknown): string {
-  if (error instanceof DOMException && error.name === "NotAllowedError") {
+  if (error instanceof Error && error.name === "NotAllowedError") {
     return "Passkey verification was cancelled or timed out, or this passkey is unavailable for the current site.";
   }
   if (error instanceof Error) return error.message;

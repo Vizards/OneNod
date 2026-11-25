@@ -31,12 +31,17 @@ await rm(resolve(repositoryRoot, "apps/executor/dist"), {
   force: true,
   recursive: true,
 });
+await rm(resolve(repositoryRoot, "apps/beholder/dist"), {
+  force: true,
+  recursive: true,
+});
 
 run("pnpm", ["--filter", "@onenod/protocol", "build"], releaseEnvironment);
 run("pnpm", ["--filter", "@onenod/gateway", "build:web"], releaseEnvironment);
 runWrangler("gateway", releaseEnvironment);
 run("pnpm", ["--filter", "@onenod/executor", "build:core"], releaseEnvironment);
 runWrangler("executor", releaseEnvironment);
+runWrangler("beholder", releaseEnvironment);
 run(
   "node",
   ["apps/executor/scripts/audit-artifact.mjs"],
@@ -52,6 +57,11 @@ await assertBuildMetadata(
   resolve(repositoryRoot, "apps/executor/dist/worker/index.js"),
   options,
   "Executor Worker",
+);
+await assertBuildMetadata(
+  resolve(repositoryRoot, "apps/beholder/dist/worker/index.js"),
+  options,
+  "Beholder Worker",
 );
 const webAssets = await findJavaScriptAssets(
   resolve(repositoryRoot, "apps/gateway/dist/web/assets"),

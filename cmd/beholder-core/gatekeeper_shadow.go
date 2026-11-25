@@ -29,18 +29,19 @@ type shadowGatekeeperClient struct {
 }
 
 type gatekeeperLocalRequest struct {
-	SchemaVersion    int                   `json:"schema_version"`
-	RequestID        string                `json:"request_id"`
-	Mode             string                `json:"mode"`
-	Prompt           []byte                `json:"prompt"`
-	ToolName         string                `json:"tool_name"`
-	ToolInput        json.RawMessage       `json:"tool_input,omitempty"`
-	TranscriptPath   string                `json:"transcript_path"`
-	CWD              string                `json:"cwd"`
-	Evidence         json.RawMessage       `json:"evidence"`
-	ActualRequest    gatekeeperLocalTarget `json:"actual_request"`
-	CoreBinarySHA256 string                `json:"core_binary_sha256,omitempty"`
-	HumanOutcome     *humanOutcome         `json:"human_outcome,omitempty"`
+	SchemaVersion     int                   `json:"schema_version"`
+	RequestID         string                `json:"request_id"`
+	Mode              string                `json:"mode"`
+	Prompt            []byte                `json:"prompt"`
+	ToolName          string                `json:"tool_name"`
+	ToolInput         json.RawMessage       `json:"tool_input,omitempty"`
+	TranscriptPath    string                `json:"transcript_path"`
+	CWD               string                `json:"cwd"`
+	Evidence          json.RawMessage       `json:"evidence"`
+	ActualRequest     gatekeeperLocalTarget `json:"actual_request"`
+	RequesterDeviceID string                `json:"requester_device_id,omitempty"`
+	CoreBinarySHA256  string                `json:"core_binary_sha256,omitempty"`
+	HumanOutcome      *humanOutcome         `json:"human_outcome,omitempty"`
 }
 
 type gatekeeperLocalTarget struct {
@@ -435,10 +436,11 @@ func (broker *broker) runGatekeeperWithEvidence(
 	}
 	decision, err := broker.gatekeeper.decide(gatekeeperLocalRequest{
 		SchemaVersion: gatekeeperWireSchemaVersion, RequestID: requestID, Mode: "authoritative",
-		Prompt:         append([]byte(nil), response.decisionContext.Prompt...),
-		ToolName:       response.Envelope.Host.ToolName,
-		ToolInput:      append(json.RawMessage(nil), response.decisionContext.ToolInput...),
-		TranscriptPath: response.decisionTranscriptPath, CWD: response.decisionCWD,
+		RequesterDeviceID: requesterDeviceID,
+		Prompt:            append([]byte(nil), response.decisionContext.Prompt...),
+		ToolName:          response.Envelope.Host.ToolName,
+		ToolInput:         append(json.RawMessage(nil), response.decisionContext.ToolInput...),
+		TranscriptPath:    response.decisionTranscriptPath, CWD: response.decisionCWD,
 		Evidence: evidence, ActualRequest: localGatekeeperTarget(target),
 	})
 	clear(evidence)

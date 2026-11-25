@@ -45,7 +45,7 @@ func main() {
 	var benchPeerUID int
 	var executed bool
 	var aliases aliasFlags
-	flag.StringVar(&mode, "mode", "", "serve, bench-serve, counterexample-plan, counterexample-bench, probe-read, identity, verify-config, or finalize")
+	flag.StringVar(&mode, "mode", "", "serve, serve-worker, bench-serve, counterexample-plan, counterexample-bench, probe-read, identity, verify-config, or finalize")
 	flag.StringVar(&configPath, "config", "", "absolute human-confirmed E2-AI0 JSON path")
 	flag.StringVar(&configSHA256, "config-sha256", "", "exact confirmed config SHA-256")
 	flag.StringVar(&socketPath, "socket", "", "absolute private Gatekeeper Unix socket")
@@ -78,6 +78,18 @@ func main() {
 			fatal("bench peer UID is invalid for production serve mode")
 		}
 		runServe(configPath, configSHA256, socketPath, mayPath, recordPath, evidenceRoot, aliases, 0)
+	case "serve-worker":
+		forbiddenFlag := false
+		flag.Visit(func(value *flag.Flag) {
+			switch value.Name {
+			case "may", "config", "config-sha256", "target-alias":
+				forbiddenFlag = true
+			}
+		})
+		if benchPeerUID != -1 || forbiddenFlag {
+			fatal("Worker authority configuration cannot be supplied through flags")
+		}
+		runWorkerServe(socketPath, recordPath, evidenceRoot, aliases)
 	case "bench-serve":
 		benchRoot := defaultUserPath("Library", "Caches", "Beholder", "e2", "bench-v5")
 		if benchPeerUID <= 0 || benchPeerUID != os.Getuid() || !pathWithinBase(benchRoot, socketPath) ||

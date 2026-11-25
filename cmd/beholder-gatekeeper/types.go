@@ -152,19 +152,20 @@ type confirmedConfig struct {
 // copied into the external model request. Telemetry mode contains only the
 // already privacy-safe evidence and target and never calls the model.
 type localDecisionRequest struct {
-	decisionDeadline time.Time
-	SchemaVersion    int             `json:"schema_version"`
-	RequestID        string          `json:"request_id"`
-	Mode             string          `json:"mode"`
-	Prompt           []byte          `json:"prompt"`
-	ToolName         string          `json:"tool_name"`
-	ToolInput        json.RawMessage `json:"tool_input,omitempty"`
-	TranscriptPath   string          `json:"transcript_path"`
-	CWD              string          `json:"cwd"`
-	Evidence         json.RawMessage `json:"evidence"`
-	ActualRequest    operationTarget `json:"actual_request"`
-	CoreBinarySHA256 string          `json:"core_binary_sha256,omitempty"`
-	HumanOutcome     *humanOutcome   `json:"human_outcome,omitempty"`
+	decisionDeadline  time.Time
+	SchemaVersion     int             `json:"schema_version"`
+	RequestID         string          `json:"request_id"`
+	Mode              string          `json:"mode"`
+	Prompt            []byte          `json:"prompt"`
+	ToolName          string          `json:"tool_name"`
+	ToolInput         json.RawMessage `json:"tool_input,omitempty"`
+	TranscriptPath    string          `json:"transcript_path"`
+	CWD               string          `json:"cwd"`
+	Evidence          json.RawMessage `json:"evidence"`
+	ActualRequest     operationTarget `json:"actual_request"`
+	RequesterDeviceID string          `json:"requester_device_id,omitempty"`
+	CoreBinarySHA256  string          `json:"core_binary_sha256,omitempty"`
+	HumanOutcome      *humanOutcome   `json:"human_outcome,omitempty"`
 }
 
 type operationTarget struct {

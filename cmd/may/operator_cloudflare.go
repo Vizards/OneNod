@@ -243,6 +243,28 @@ func waitForRemoteRuntimeVersion(
 	})
 }
 
+func waitForBeholderRuntimeVersion(
+	ctx context.Context, client *http.Client, origin, version, sourceCommit string,
+	timeout, pollInterval time.Duration,
+) error {
+	if timeout <= 0 || pollInterval <= 0 || !validProductVersion(version) || !commitPattern.MatchString(sourceCommit) {
+		return errors.New("invalid Beholder runtime version wait")
+	}
+	return waitForOperatorCondition(ctx, timeout, pollInterval, func(probeContext context.Context) (bool, error) {
+		var response remoteRuntimeVersionResponse
+		if err := readOperatorGatewayJSON(probeContext, client, origin, "/api/version", &response); err != nil {
+			return false, err
+		}
+		remote, complete := parseRemoteRuntimeVersion(response)
+		value := response.Components.Beholder
+		if !complete || remote.GatewayVersion != version || value == nil || !value.Available ||
+			value.Version != version || value.SourceCommit != sourceCommit || value.Channel != string(releaseChannelForVersion(version)) {
+			return false, errors.New("Gateway could not verify the exact Beholder Worker release")
+		}
+		return true, nil
+	})
+}
+
 func waitForRemoteInitialization(
 	ctx context.Context,
 	client *http.Client,

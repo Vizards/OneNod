@@ -289,6 +289,12 @@ type runtimeVersion struct {
 
 type remoteRuntimeVersionResponse struct {
 	Components struct {
+		Beholder *struct {
+			Available    bool   `json:"available"`
+			Channel      string `json:"channel"`
+			Version      string `json:"version"`
+			SourceCommit string `json:"source_commit"`
+		} `json:"beholder,omitempty"`
 		Executor struct {
 			Channel string `json:"channel"`
 			Version string `json:"version"`
@@ -379,6 +385,7 @@ type verifiedLocalTransportDescriptor struct {
 
 type stagedDeploymentBundle struct {
 	Artifact   releaseArtifact
+	Beholder   bool
 	Descriptor deploymentBundleDescriptor
 	Root       string
 	Stage      string

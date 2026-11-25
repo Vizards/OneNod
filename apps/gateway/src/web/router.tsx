@@ -11,6 +11,7 @@ import { NotFoundPage } from "./components/common";
 import { ManagementPage } from "./management/management-page";
 import { parseManagementSection } from "./management/management-section";
 import { RequestsPage } from "./requests/requests-page";
+import { BeholderReviewPage } from "./requests/beholder-review-page";
 import { RootLayout } from "./shell/root-layout";
 
 const rootRoute = createRootRoute({
@@ -38,6 +39,12 @@ const activityRoute = createRoute({
   component: ActivityPage,
 });
 
+const beholderReviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/requests/$requestId/review",
+  component: BeholderReviewPage,
+});
+
 const authorizationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/authorizations",
@@ -56,6 +63,7 @@ const managementRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   requestsRoute,
+  beholderReviewRoute,
   activityRoute,
   authorizationsRoute,
   managementRoute,

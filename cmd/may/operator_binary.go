@@ -31,7 +31,7 @@ const (
 	bootstrapPollInterval         = 2 * time.Second
 	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
 	operatorUpdateReexecIdentity  = "ONENOD_UPDATE_REEXEC_IDENTITY"
-	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator revoke-cloudflare"
+	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator beholder <enable|status|rollback> | may operator revoke-cloudflare"
 )
 
 var workerVersionIDPattern = regexp.MustCompile(`(?i)Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
@@ -40,26 +40,34 @@ var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 var wranglerProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type operatorDeploymentReceipt struct {
-	AccountID                string `json:"account_id"`
-	AccountSubdomain         string `json:"account_subdomain"`
-	Channel                  string `json:"channel"`
-	CloudflareProfile        string `json:"cloudflare_profile"`
-	CloudflareProfileRevoked bool   `json:"cloudflare_profile_revoked"`
-	DeploymentArtifact       string `json:"deployment_artifact"`
-	DeploymentArtifactSHA    string `json:"deployment_artifact_sha256"`
-	ExecutorVersionID        string `json:"executor_version_id"`
-	ExecutorWorker           string `json:"executor_worker"`
-	GatewayVersionID         string `json:"gateway_version_id"`
-	GatewayWorker            string `json:"gateway_worker"`
-	OnePasswordAccount       string `json:"onepassword_account"`
-	OnePasswordVaultID       string `json:"onepassword_vault_id"`
-	Origin                   string `json:"origin"`
-	RPID                     string `json:"rp_id"`
-	ReleaseVersion           string `json:"release_version"`
-	SchemaVersion            int    `json:"schema_version"`
-	SourceCommit             string `json:"source_commit"`
-	UpdatedAt                string `json:"updated_at"`
-	VAPIDPublicKey           string `json:"vapid_public_key"`
+	AccountID                string                   `json:"account_id"`
+	AccountSubdomain         string                   `json:"account_subdomain"`
+	Channel                  string                   `json:"channel"`
+	CloudflareProfile        string                   `json:"cloudflare_profile"`
+	CloudflareProfileRevoked bool                     `json:"cloudflare_profile_revoked"`
+	DeploymentArtifact       string                   `json:"deployment_artifact"`
+	DeploymentArtifactSHA    string                   `json:"deployment_artifact_sha256"`
+	ExecutorVersionID        string                   `json:"executor_version_id"`
+	ExecutorWorker           string                   `json:"executor_worker"`
+	GatewayVersionID         string                   `json:"gateway_version_id"`
+	GatewayWorker            string                   `json:"gateway_worker"`
+	OnePasswordAccount       string                   `json:"onepassword_account"`
+	OnePasswordVaultID       string                   `json:"onepassword_vault_id"`
+	Origin                   string                   `json:"origin"`
+	RPID                     string                   `json:"rp_id"`
+	ReleaseVersion           string                   `json:"release_version"`
+	SchemaVersion            int                      `json:"schema_version"`
+	SourceCommit             string                   `json:"source_commit"`
+	UpdatedAt                string                   `json:"updated_at"`
+	VAPIDPublicKey           string                   `json:"vapid_public_key"`
+	Beholder                 *operatorBeholderReceipt `json:"beholder,omitempty"`
+}
+
+type operatorBeholderReceipt struct {
+	Worker      string `json:"worker"`
+	VersionID   string `json:"version_id"`
+	ProviderURL string `json:"provider_url"`
+	Model       string `json:"model"`
 }
 
 type operatorUpdateTransaction struct {
@@ -78,6 +86,8 @@ type operatorUpdateTransaction struct {
 	ReleaseTo             string `json:"release_to"`
 	SchemaVersion         int    `json:"schema_version"`
 	UpdatedAt             string `json:"updated_at"`
+	BeholderBefore        string `json:"beholder_before,omitempty"`
+	BeholderAfter         string `json:"beholder_after,omitempty"`
 }
 
 type activeWranglerAccount struct {
