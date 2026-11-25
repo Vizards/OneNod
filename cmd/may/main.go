@@ -99,6 +99,17 @@ func main() {
 		}
 		return
 	}
+	if binaryName == "may" && len(os.Args) == 4 && os.Args[1] == "__beholder-worker-step" {
+		config, prepared, prepareErr := prepareRequesterInvocation(cliConfig{origin: os.Args[2]}, deps)
+		if prepareErr == nil {
+			prepareErr = runInternalBeholderWorkerStep(config, prepared, os.Args[3])
+		}
+		if prepareErr != nil {
+			fmt.Fprintf(os.Stderr, "may: %v\n", prepareErr)
+			os.Exit(1)
+		}
+		return
+	}
 	flushPendingBeholderOutcomes(deps)
 	switch binaryName {
 	case "may":

@@ -152,17 +152,19 @@ type evidenceStore struct {
 	indexPath         string
 	outcomeEventsPath string
 	bundles           map[string]string
+	collectorVersion  string
 }
 
 type evidenceBundle struct {
-	retrieval   *retrievalInput
-	store       *evidenceStore
-	evidenceID  string
-	path        string
-	capturedAt  time.Time
-	surface     string
-	operation   string
-	targetAlias string
+	retrieval         *retrievalInput
+	store             *evidenceStore
+	evidenceID        string
+	path              string
+	capturedAt        time.Time
+	surface           string
+	operation         string
+	targetAlias       string
+	workerRequesterID string
 }
 
 type evidencePresence struct {
@@ -208,7 +210,7 @@ func newEvidenceStore(root string) (*evidenceStore, error) {
 	store := &evidenceStore{
 		root: root, indexPath: filepath.Join(root, "index.jsonl"),
 		outcomeEventsPath: filepath.Join(root, evidenceOutcomeEventsName),
-		bundles:           map[string]string{},
+		bundles:           map[string]string{}, collectorVersion: gatekeeperVersion,
 	}
 	if err := store.recoverInterruptedBundles(); err != nil {
 		return nil, err
@@ -328,7 +330,7 @@ func (store *evidenceStore) reserve(
 	manifest := evidenceManifest{
 		SchemaVersion: evidenceManifestSchemaVersion, RecordType: "beholder_decision_evidence_manifest",
 		EvidenceID: evidenceID, State: "reserved", CreatedAt: capturedAt,
-		GatekeeperVersion: gatekeeperVersion, PolicySHA256: policySHA256,
+		GatekeeperVersion: store.collectorVersion, PolicySHA256: policySHA256,
 		ConfigSHA256: configSHA256, CoreBinarySHA256: coreBinarySHA256,
 		OneNodBinarySHA256:     onenodBinarySHA256,
 		GatekeeperBinarySHA256: gatekeeperBinarySHA256,

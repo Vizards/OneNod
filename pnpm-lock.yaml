@@ -84,6 +84,18 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  apps/beholder:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260730.1
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.116.0(@cloudflare/workers-types@5.20260730.1)
+
   apps/executor:
     dependencies:
       '@extism/extism':

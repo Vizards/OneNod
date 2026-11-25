@@ -121,6 +121,10 @@ func (proxy *beholderClientProxy) serve() {
 			if validBeholderDiagnostic(proxy.diagnostic) {
 				value := *proxy.diagnostic
 				value.Stage, value.Code = "binding", "binding-extension-rejected"
+				var failure *transportFailure
+				if errors.As(err, &failure) && beholderDiagnosticCode(failure.diagnosticCode) {
+					value.Code = failure.diagnosticCode
+				}
 				diagnostic = &value
 			}
 			upstream, observation, err = proxy.connectWithDiagnostic(diagnostic)
@@ -189,6 +193,12 @@ func classifyBeholderExtensionResponse(response []byte, err error, message strin
 			return nil
 		case 5, 28: // SSH_AGENT_FAILURE and SSH_AGENT_EXTENSION_FAILURE.
 			return &transportFailure{message: message, class: "rejected"}
+		}
+	}
+	if len(response) >= 5 && response[0] == 28 {
+		length := int(binary.BigEndian.Uint32(response[1:5]))
+		if length == len(response)-5 && beholderDiagnosticCode(string(response[5:])) {
+			return &transportFailure{message: message, class: "rejected", diagnosticCode: string(response[5:])}
 		}
 	}
 	return &transportFailure{message: message, class: "malformed-response"}

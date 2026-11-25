@@ -13,6 +13,11 @@
       "extra-files": [
         {
           "type": "json",
+          "path": "apps/beholder/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
           "path": "apps/gateway/package.json",
           "jsonpath": "$.version"
         },

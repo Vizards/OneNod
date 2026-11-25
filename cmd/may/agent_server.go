@@ -368,6 +368,10 @@ func (connection *approvalAgentConnection) Extension(
 		binding, err := consumeBeholderAgentBindingObserved(connection.agent.deps, nonce, connection.state.beholderDiagnostic, connection.observation)
 		clear(nonce)
 		if err != nil {
+			var failure *transportFailure
+			if errors.As(err, &failure) && beholderDiagnosticCode(failure.diagnosticCode) {
+				return appendBeholderAgentString([]byte{28}, []byte(failure.diagnosticCode)), nil
+			}
 			return nil, err
 		}
 		connection.state.beholderBinding = binding

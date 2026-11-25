@@ -69,8 +69,10 @@ type retrievalToolAudit struct {
 var retrievalRoundPattern = regexp.MustCompile(`^round-thinking-(disabled|enabled)-(00[1-9]|01[0-9]|02[0-4])-(request|response|tools)\.json$`)
 
 func retrievalVersion(version string) bool {
-	return version == "e2-authoritative-dogfood-v33" || version == "e2-authoritative-dogfood-v34"
+	return version == "e2-authoritative-dogfood-v33" || version == "e2-authoritative-dogfood-v34" || workerContextVersion(version)
 }
+
+func workerContextVersion(version string) bool { return version == "beholder-worker-context-v1" }
 func validRetrievalStage(name string, base []string) bool {
 	return slices.Contains(base, name) || name == "07-session-snapshot.jsonl" || name == "08-retrieval-request.json" || retrievalRoundPattern.MatchString(name)
 }
@@ -227,6 +229,11 @@ func inspectRetrieval(bundle string, m manifest, source sourceAuditRecord, prima
 	normalized, _ := json.Marshal(original.Request)
 	if !jsonSemanticallyEqual(normalized, retrievedBytes) {
 		fail("request-origin-mismatch")
+	}
+	if workerContextVersion(m.GatekeeperVersion) {
+		// Provider messages and tool rounds are encrypted in the Worker, so a
+		// local snapshot audit cannot independently verify those remote events.
+		return
 	}
 	for _, pair := range []struct {
 		request modelRequestAuditRecord

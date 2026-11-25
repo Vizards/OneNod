@@ -48,6 +48,30 @@ a local trace with a OneNod request. They are optional display metadata, never
 authorization evidence. A diagnostic cannot create a Core binding, substitute
 for its signature, or change the Gateway's human approval requirements.
 
+The separate Beholder Worker implementation changes the model and data boundary.
+In its Worker mode, the Mac takes a frozen local context snapshot and serves
+only the read-only pages requested by the model; model calls run in the Worker.
+The Gateway authenticates the requester's signed digest and length before
+accepting context, verifies the exact received bytes, and reaches the Worker
+through a private service binding. The Worker, its provider configuration,
+secrets, and anyone who can deploy it become trusted for model decisions and
+the task context delivered to the model. The provider also receives that
+context. An attended deployment must confirm this expanded trust and disclosure
+boundary before the mode is enabled. The local context service accepts its
+Gateway origin and exact `may` executable identity only from a fixed root-owned
+configuration; user-controlled command arguments cannot select them.
+
+Worker review events, including requested context, provider responses and any
+reasoning the provider supplies, are encrypted with a deployment secret in
+Durable Object storage. A seven-day alarm is scheduled for deletion. A signed-in
+human with access to the corresponding OneNod request can read its review;
+viewing does not require a second Passkey ceremony. Loss or rotation of the
+trace key makes existing traces unreadable, and provider-internal reasoning that
+was not returned cannot be shown. Storage, response, round and time limits may
+leave an incomplete review and cause the request to require human approval.
+The existing local-provider mode remains a separate configuration; adding the
+Worker source does not by itself enable or deploy Worker mode.
+
 The optional Beholder runtime is distributed inside the authenticated native archive;
 the ordinary requester update does not install or enable its root service.
 Enabling it requires a separate attended installation and a root-controlled

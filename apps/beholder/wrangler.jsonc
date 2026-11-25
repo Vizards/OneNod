@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onenod-beholder",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }],
+  "vars": {
+    "BEHOLDER_PROVIDER_URL": "CONFIGURE_IN_TARGET",
+    "BEHOLDER_MODEL": "CONFIGURE_IN_TARGET"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "DECISIONS", "class_name": "BeholderDecision" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BeholderDecision"] }],
+  "observability": { "enabled": false }
+}

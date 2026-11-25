@@ -227,6 +227,10 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 	result.State = manifestValue.State
 	result.GatekeeperVersion = manifestValue.GatekeeperVersion
 	isRetrieval := retrievalVersion(manifestValue.GatekeeperVersion)
+	isWorker := workerContextVersion(manifestValue.GatekeeperVersion)
+	if isWorker {
+		result.Warnings = append(result.Warnings, "worker-model-trace-not-in-local-evidence")
+	}
 	redactedStages := declaredRedactionStages(bundle, evidenceID, manifestValue)
 	strictTargetBinding := strictAuditableVersion(manifestValue.GatekeeperVersion)
 	if strictTargetBinding && manifestValue.CreatedAt.IsZero() {
@@ -359,10 +363,10 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				modelRequest.BodySHA256, modelRequest.Body, redactedStages["02-model-request.json"]); err != nil {
 				result.Errors = append(result.Errors, "model-request-"+err.Error())
 			}
-			if modelRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, modelRequest.Body, manifestValue.GatekeeperVersion) {
+			if !isWorker && modelRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, modelRequest.Body, manifestValue.GatekeeperVersion) {
 				result.Errors = append(result.Errors, "selected-model-input-mismatch")
 			}
-			if modelRequest.RequestSent && !policyHashMatches(manifestValue, modelRequest.Body) {
+			if !isWorker && modelRequest.RequestSent && !policyHashMatches(manifestValue, modelRequest.Body) {
 				result.Errors = append(result.Errors, "system-policy-hash-mismatch")
 			}
 		}
@@ -383,7 +387,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				modelResponse.BodySHA256, modelResponse.Body, redactedStages["03-model-response.json"]); err != nil {
 				result.Errors = append(result.Errors, "model-response-"+err.Error())
 			}
-			if modelResponse.ModelUsed && !providerDecisionMatches(modelResponse, manifestValue.GatekeeperVersion,
+			if !isWorker && modelResponse.ModelUsed && !providerDecisionMatches(modelResponse, manifestValue.GatekeeperVersion,
 				redactedStages["03-model-response.json"]) {
 				result.Errors = append(result.Errors, "provider-decision-summary-mismatch")
 			}
@@ -424,13 +428,13 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				comparisonRequest.BodySHA256, comparisonRequest.Body, redactedStages[comparisonRequestName]); err != nil {
 				result.Errors = append(result.Errors, "comparison-model-request-"+err.Error())
 			}
-			if comparisonRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, comparisonRequest.Body, manifestValue.GatekeeperVersion) {
+			if !isWorker && comparisonRequest.RequestSent && !modelInputMatches(source.SelectedModelInput, comparisonRequest.Body, manifestValue.GatekeeperVersion) {
 				result.Errors = append(result.Errors, "comparison-selected-model-input-mismatch")
 			}
-			if comparisonRequest.RequestSent && !policyHashMatches(manifestValue, comparisonRequest.Body) {
+			if !isWorker && comparisonRequest.RequestSent && !policyHashMatches(manifestValue, comparisonRequest.Body) {
 				result.Errors = append(result.Errors, "comparison-system-policy-hash-mismatch")
 			}
-			if modelRequest.RequestSent && comparisonRequest.RequestSent &&
+			if !isWorker && modelRequest.RequestSent && comparisonRequest.RequestSent &&
 				!pairedRequestBodiesMatch(modelRequest.Body, comparisonRequest.Body) {
 				result.Errors = append(result.Errors, "paired-model-request-mismatch")
 			}
@@ -451,7 +455,7 @@ func inspectBundle(root, evidenceID string, allIndex []indexRecord) bundleInspec
 				comparisonResponse.BodySHA256, comparisonResponse.Body, redactedStages[comparisonResponseName]); err != nil {
 				result.Errors = append(result.Errors, "comparison-model-response-"+err.Error())
 			}
-			if comparisonResponse.ModelUsed && !providerDecisionMatches(comparisonResponse, manifestValue.GatekeeperVersion,
+			if !isWorker && comparisonResponse.ModelUsed && !providerDecisionMatches(comparisonResponse, manifestValue.GatekeeperVersion,
 				redactedStages[comparisonResponseName]) {
 				result.Errors = append(result.Errors, "comparison-provider-decision-summary-mismatch")
 			}
@@ -774,6 +778,9 @@ func providerDecisionMatches(response modelResponseAuditRecord, gatekeeperVersio
 }
 
 func expectedProviderTransport(gatekeeperVersion, endpoint string) string {
+	if workerContextVersion(gatekeeperVersion) {
+		return "worker"
+	}
 	if gatekeeperVersion == "e2-authoritative-dogfood-v34" {
 		if providercontract.UsesConfiguredSystemCurl(endpoint, endpoint) {
 			return "system-curl"

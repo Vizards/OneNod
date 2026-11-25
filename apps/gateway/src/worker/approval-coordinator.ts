@@ -18,6 +18,7 @@ import {
 import { ApprovalRequestStore } from "./approval-request-store.js";
 import { ApprovalRequestAdmission } from "./approval-request-admission.js";
 import { ApprovalReview } from "./approval-review.js";
+import { BeholderReview } from "./beholder-review.js";
 import { ApprovalExecutor } from "./approval-executor.js";
 import { ApprovalExecution } from "./approval-execution.js";
 import { ApprovalNotifications } from "./approval-notifications.js";
@@ -47,6 +48,7 @@ export class ApprovalCoordinator extends DurableObject<Env> {
   private readonly requestStore: ApprovalRequestStore;
   private readonly requestAdmission: ApprovalRequestAdmission;
   private readonly review: ApprovalReview;
+  private readonly beholderReview: BeholderReview;
   private readonly requester: RequesterAccess;
   private gatewayKeySentinelState!: GatewayKeySentinelState;
   private approvalReservationsGlobal = 0;
@@ -111,6 +113,9 @@ export class ApprovalCoordinator extends DurableObject<Env> {
         decisionOptions: (kind, targetId, decision) =>
           this.review.decisionOptions(kind, targetId, decision),
       },
+    );
+    this.beholderReview = new BeholderReview(
+      env, this.human, this.requester, this.requestStore,
     );
     this.requestAdmission = new ApprovalRequestAdmission(
       ctx,
@@ -536,6 +541,14 @@ export class ApprovalCoordinator extends DurableObject<Env> {
     if (request.method === "POST" && path === "/v1/requests") {
       return this.requestAdmission.createApprovalRequest(request, path);
     }
+    const beholderDecision = path.match(
+      /^\/v1\/beholder\/decisions\/([a-zA-Z0-9._:-]{8,96})\/(primary|comparison)\/(start|step)$/u,
+    );
+    if (request.method === "POST" && beholderDecision) {
+      return this.beholderReview.submit(
+        request, path, beholderDecision[1]!, beholderDecision[2]!, beholderDecision[3]!,
+      );
+    }
     const requesterStatus = path.match(
       /^\/v1\/requests\/([^/]+)\/status$/u,
     );
@@ -563,6 +576,14 @@ export class ApprovalCoordinator extends DurableObject<Env> {
       return this.review.humanRequestDetail(
         request,
         decodeURIComponent(humanRequest[1]!),
+      );
+    }
+    const humanBeholderTrace = path.match(
+      /^\/v1\/human\/requests\/([^/]+)\/beholder\/(primary|comparison)$/u,
+    );
+    if (request.method === "GET" && humanBeholderTrace) {
+      return this.beholderReview.trace(
+        request, decodeURIComponent(humanBeholderTrace[1]!), humanBeholderTrace[2]!,
       );
     }
     const approvalOptions = path.match(
