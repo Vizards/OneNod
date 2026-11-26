@@ -50,6 +50,9 @@ func readOperatorDeploymentReceipt() (*operatorDeploymentReceipt, error) {
 		!onePasswordVaultIDPattern.MatchString(receipt.OnePasswordVaultID) {
 		return nil, errors.New("operator deployment receipt is invalid")
 	}
+	if receipt.ExecutorLocation != "" && receipt.ExecutorLocation != "us" {
+		return nil, errors.New("operator deployment receipt has an invalid Executor location")
+	}
 	channel, err := normalizedReceiptChannel(receipt.Channel, receipt.ReleaseVersion)
 	if err != nil {
 		return nil, errors.New("operator deployment receipt has an invalid release channel")

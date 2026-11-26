@@ -307,7 +307,7 @@ Usage:
   may [--origin URL] agent <serve|status|refresh>
   may dev verify-release --directory <dist/release> [--artifact <basename>]...
   may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
-  may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]
+  may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--executor-location us --acknowledge-executor-journal-boundary]
   may operator beholder <enable|status|rollback>
   may operator revoke-cloudflare
 
@@ -412,7 +412,7 @@ var commandHelp = map[string]string{
 	"operator":                         operatorUsage,
 	"operator init":                    "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
 	"operator revoke-cloudflare":       "usage: may operator revoke-cloudflare",
-	"operator update":                  "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]",
+	"operator update":                  operatorUpdateUsage,
 	"plugin":                           shellPluginUsage,
 	"plugin credential":                shellPluginCredentialUsage,
 	"plugin disable":                   shellPluginDisableUsage,

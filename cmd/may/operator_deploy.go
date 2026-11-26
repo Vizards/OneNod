@@ -394,6 +394,45 @@ func inspectWorkerVersionSecretBindingsOnce(
 	return false, nil
 }
 
+func inspectExecutorLocation(wrangler, profile, config, worker, versionID, expected string) error {
+	if expected != "" && expected != "us" {
+		return errors.New("unsupported Executor location")
+	}
+	output, err := runWranglerCapture(wrangler, profile, filepath.Dir(config), []string{
+		"versions", "view", versionID, "--config", config, "--name", worker, "--json",
+	}, nil, workerVersionInspectTimeout)
+	defer zeroBytes(output)
+	if err != nil {
+		return errors.New("inspect Executor version configuration failed")
+	}
+	var view struct {
+		ID        string `json:"id"`
+		Resources struct {
+			Bindings []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"bindings"`
+		} `json:"resources"`
+	}
+	if json.Unmarshal(output, &view) != nil || view.ID != versionID || view.Resources.Bindings == nil {
+		return errors.New("Executor version metadata is invalid")
+	}
+	matches := 0
+	for _, binding := range view.Resources.Bindings {
+		if binding.Name == "EXECUTOR_LOCATION" {
+			matches++
+			if expected == "" || binding.Type != "plain_text" || binding.Text != expected {
+				return errors.New("Executor location binding does not match the deployment plan")
+			}
+		}
+	}
+	if (expected == "" && matches != 0) || (expected != "" && matches != 1) {
+		return errors.New("Executor location binding is missing or duplicated")
+	}
+	return nil
+}
+
 func readExactDeploymentVersion(wrangler, profile, config, worker string) (string, error) {
 	version, absent, err := readWorkerDeploymentState(wrangler, profile, config, worker)
 	if err != nil {

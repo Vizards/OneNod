@@ -26,6 +26,18 @@ secrets, Passkey approval, a dedicated Cloudflare account, reviewed artifacts,
 and production deployment authority unavailable to Agents. Anyone able to
 deploy the Gateway or Executor is part of the trusted computing base.
 
+### Executor location changes
+
+The optional US Executor location creates a new, independent Durable Object;
+it does not move or copy the original object's write journal. Before selecting
+it, the operator must stop remote item mutations and reconcile pending,
+executing, and unknown writes. The old journal remains on the original object,
+but its write identities are not replay fences on the new object. Once new
+writes have occurred, returning to the original object requires reconciling
+both journals. The operator receipt records the chosen location for later
+updates; an ordinary update must not silently change it. The updater does not
+automatically roll back across this journal boundary if a migration fails.
+
 ### Optional manual local fallback
 
 After configuring the local 1Password integration, a person can explicitly

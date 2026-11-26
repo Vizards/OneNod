@@ -43,6 +43,7 @@ type productionInitializationMaterial struct {
 	BootstrapToken                 string
 	ExecutorAuthToken              string
 	ExecutorName                   string
+	ExecutorLocation               string
 	GatewayMasterKey               string
 	GatewayName                    string
 	InitializationID               string

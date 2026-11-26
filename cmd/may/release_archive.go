@@ -751,6 +751,27 @@ func renderDeploymentConfigs(
 		if unknownToken.MatchString(rendered) {
 			return errors.New("deployment Wrangler template contains an unresolved token")
 		}
+		if relative == bundle.Descriptor.Executor.Config && material.ExecutorLocation != "" {
+			if material.ExecutorLocation != "us" {
+				return errors.New("unsupported Executor location")
+			}
+			var config map[string]json.RawMessage
+			var vars map[string]json.RawMessage
+			if json.Unmarshal([]byte(rendered), &config) != nil ||
+				json.Unmarshal(config["vars"], &vars) != nil || vars == nil {
+				return errors.New("Executor deployment variables are invalid")
+			}
+			if _, exists := vars["EXECUTOR_LOCATION"]; exists {
+				return errors.New("Executor deployment template unexpectedly selects a location")
+			}
+			vars["EXECUTOR_LOCATION"], _ = json.Marshal(material.ExecutorLocation)
+			config["vars"], _ = json.Marshal(vars)
+			encoded, err := json.MarshalIndent(config, "", "  ")
+			if err != nil {
+				return errors.New("encode Executor deployment location failed")
+			}
+			rendered = string(encoded) + "\n"
+		}
 		if err := writeAtomicUserConfig(path, []byte(rendered), 0o600); err != nil {
 			return err
 		}
