@@ -28,6 +28,9 @@ func runOperator(args []string, deps dependencies) error {
 	if len(args) >= 1 && args[0] == "update" {
 		return runBinaryOperatorUpdate(args[1:], deps)
 	}
+	if len(args) >= 1 && args[0] == "beholder" {
+		return runOperatorBeholder(args[1:], deps)
+	}
 	if len(args) >= 1 && args[0] == "revoke-cloudflare" {
 		return runOperatorRevokeCloudflare(args[1:], deps)
 	}

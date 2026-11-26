@@ -111,6 +111,38 @@ result, and then offers default-yes revocation of this Mac's Cloudflare
 authority. If Wrangler returns an unknown result, let the CLI reconcile the
 recorded transaction before any retry.
 
+### Optional Beholder Worker
+
+After the Gateway, Executor, PWA and this Mac are on the same verified Release,
+the human can run `may operator beholder enable` in a local terminal. The plan
+shows the account, private Worker, Gateway, Release, provider endpoint and model.
+The human confirms that task context may be sent to the selected provider and
+enters the provider key directly in Wrangler's hidden prompt. A separate
+32-byte trace encryption key is generated locally. The Agent must not enter the
+provider key or answer this deployment confirmation.
+
+`may operator beholder status` reads the non-secret transaction status. If the
+initial enable was interrupted, do not repeat secret writes or raw Wrangler
+commands. In the attended terminal, `may operator beholder rollback` checks the
+recorded Gateway versions and restores the prior binding state when the observed
+traffic is known. It keeps the private Worker, its secrets and durable data; it
+does not roll back a later Release or a Durable Object migration. An unknown
+version or out-of-band change requires manual investigation.
+
+Once enabled, `may operator update` also uploads and promotes the Beholder
+Worker, preserves its provider and trace keys, checks the Gateway service
+binding and verifies the exact Worker Release through the Gateway. Recovery
+only resumes a recorded promotion sequence after checking the authoritative
+traffic. Automatic rollback remains subject to the signed Release manifest.
+
+On each requester Mac, the optional Beholder Core and context service are a
+separate root-controlled installation. Updating OneNod alone does not install
+those services or update their exact Agent pin. `may update check` warns when
+the Core pin differs from this Mac's installed Agent. After every local Agent
+version change, complete the attended Core/context-service installation from
+the exact verified Release before relying on automatic approvals. Until then,
+affected requests fall back to human approval.
+
 ### Explicit dogfooding exception
 
 This exception applies only when the human explicitly says the current OneNod

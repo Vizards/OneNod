@@ -1,11 +1,9 @@
-import { BeholderDiagnosticDisclosure } from "../components/beholder-diagnostic.js";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import type { RequestDetail, RequestSummary } from "@onenod/protocol";
+import { BeholderReviewLink } from "../components/beholder-diagnostic.js";
+import { useInfiniteQuery } from "@tanstack/react-query";
+import type { RequestSummary } from "@onenod/protocol";
 
-import { getRequest, getRequests } from "../api";
+import { getRequests } from "../api";
 import {
-  Fact,
   InlineError,
   PageHeading,
   RequestListSkeleton,
@@ -78,7 +76,6 @@ export function ActivityPage() {
   );
 }
 function ActivityCard({ request }: { request: RequestSummary }) {
-  const [expanded, setExpanded] = useState(false);
   const status = effectiveStatus(request);
 
   return (
@@ -107,66 +104,9 @@ function ActivityCard({ request }: { request: RequestSummary }) {
           {formatDateTime(request.createdAt)}
         </time>
       </div>
-      <details
-        onToggle={(event) => setExpanded(event.currentTarget.open)}
-        className="border-t border-subtle"
-      >
-        <summary className="cursor-pointer select-none px-5 py-3 text-sm text-secondary">
-          Technical details
-        </summary>
-        {expanded ? <ActivityTechnicalDetails request={request} /> : null}
-      </details>
-    </li>
-  );
-}
-
-function ActivityTechnicalDetails({ request }: { request: RequestSummary }) {
-  const detail = useQuery({
-    queryKey: ["request", request.requestId],
-    queryFn: () => getRequest(request.requestId),
-  });
-  useSessionExpiryRecovery(detail.error);
-
-  if (detail.isPending) {
-    return (
-      <p className="border-t border-subtle px-5 py-4 text-sm text-secondary">
-        Loading diagnostic evidence…
-      </p>
-    );
-  }
-  if (detail.isError) {
-    return (
-      <div className="border-t border-subtle p-5">
-        <InlineError
-          title="Unable to load diagnostic evidence"
-          message={toErrorMessage(detail.error)}
-          onRetry={() => void detail.refetch()}
-        />
+      <div className="border-t border-subtle px-5 pb-2">
+        <BeholderReviewLink request={request} showReason={false} />
       </div>
-    );
-  }
-
-  return <ActivityFacts request={detail.data} />;
-}
-
-function ActivityFacts({ request }: { request: RequestDetail }) {
-  return (
-    <>
-      <div className="px-5"><BeholderDiagnosticDisclosure diagnostic={request.client.beholderDiagnostic} /></div>
-      <dl className="divide-y divide-subtle border-t border-subtle">
-        <Fact label="Request ID" value={request.requestId} mono />
-        <Fact label="Created" value={formatDateTime(request.createdAt)} />
-        <Fact label="Expires" value={formatDateTime(request.expiresAt)} />
-        <Fact label="Item version" value={String(request.verifiedVersion)} mono />
-        <Fact label="Client observation" value={request.client.source} />
-        {request.verifiedFacts.map((fact) => (
-          <Fact
-            key={`${fact.label}:${fact.value}`}
-            label={fact.label}
-            value={fact.value}
-          />
-        ))}
-      </dl>
-    </>
+    </li>
   );
 }

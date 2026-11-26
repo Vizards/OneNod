@@ -294,6 +294,37 @@ export async function getRequest(requestId: string): Promise<RequestDetail> {
   return normalizeRequestDetail(response);
 }
 
+export interface BeholderTrace {
+  evidence_id: string;
+  variant: "primary" | "comparison";
+  requested_model: string;
+  phase: "processing" | "waiting" | "finished";
+  created_at: string;
+  expires_at: string;
+  events: Array<{ kind: string; value: unknown }>;
+}
+
+export async function getBeholderTrace(
+  requestId: string,
+  variant: "primary" | "comparison",
+): Promise<BeholderTrace | null> {
+  try {
+    const value = await fetchJson<unknown>(
+      `/v1/human/requests/${encodeURIComponent(requestId)}/beholder/${variant}`,
+    );
+    if (!isRecord(value) || value.variant !== variant ||
+        (value.phase !== "processing" && value.phase !== "waiting" && value.phase !== "finished") ||
+        typeof value.evidence_id !== "string" || typeof value.requested_model !== "string" || typeof value.created_at !== "string" ||
+        typeof value.expires_at !== "string" || !Array.isArray(value.events)) {
+      throw new Error("The model review could not be read.");
+    }
+    return value as unknown as BeholderTrace;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 export function beginApprovalDecision(
   requestId: string,
   decision: ApprovalDecision,

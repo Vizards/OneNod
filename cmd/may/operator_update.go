@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -75,6 +76,18 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if reexecuted {
 		return nil
 	}
+	unlock, err := acquireOperatorDeploymentLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	lockedReceipt, err := readOperatorDeploymentReceipt()
+	if err != nil || !reflect.DeepEqual(receipt, lockedReceipt) {
+		return errors.New("operator deployment changed while preparing the update; inspect it and retry")
+	}
+	if err := ensureNoPendingBeholderTransaction(receipt); err != nil {
+		return err
+	}
 	if _, err := validateInstalledLocalUpdateHandoff(
 		receipt.Origin, release.Manifest.ReleaseVersion, release.Manifest.Source.Commit,
 	); err != nil {
@@ -124,6 +137,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	defer os.RemoveAll(bundle.Stage)
+	if receipt.Beholder != nil && !bundle.Beholder {
+		return errors.New("verified Release does not include the configured Beholder Worker; refusing to remove its Gateway binding")
+	}
 	tools, err := checkBinaryOperatorTools(release.Manifest, false)
 	if err != nil {
 		return err
@@ -162,6 +178,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		ExecutorName: receipt.ExecutorWorker, GatewayName: receipt.GatewayWorker,
 		OnePasswordAccount: receipt.OnePasswordAccount, AgentVaultID: receipt.OnePasswordVaultID,
 		Origin: receipt.Origin, RPID: receipt.RPID, VAPID: vapidCredential{PublicKey: receipt.VAPIDPublicKey},
+		Beholder: receipt.Beholder,
 	}
 	if err := renderDeploymentConfigs(bundle, release.Manifest, material); err != nil {
 		return err
@@ -174,11 +191,36 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	if err != nil {
 		return err
 	}
+	expectedBeholderWorker := ""
+	if receipt.Beholder != nil {
+		expectedBeholderWorker = receipt.Beholder.Worker
+	}
+	if err := inspectBeholderServiceBinding(tools.Wrangler, profile, bundleGatewayConfig(bundle),
+		receipt.GatewayWorker, gatewayBefore, expectedBeholderWorker); err != nil {
+		return fmt.Errorf("Gateway Beholder binding differs from the deployment receipt: %w", err)
+	}
+	beholderCurrent := ""
+	if receipt.Beholder != nil {
+		beholderCurrent, err = readExactDeploymentVersion(tools.Wrangler, profile, bundleBeholderConfig(bundle), receipt.Beholder.Worker)
+		if err != nil {
+			return errors.New("cannot inspect Beholder Worker traffic")
+		}
+	}
+	baselineExecutor, baselineGateway := executorBefore, gatewayBefore
+	if receipt.Beholder != nil {
+		baselineExecutor, baselineGateway = receipt.ExecutorVersionID, receipt.GatewayVersionID
+	}
 	transaction, transactionPath, resuming, err := recoverOrCreateOperatorUpdateTransaction(
-		receipt, release, bundle.Artifact, executorBefore, gatewayBefore,
+		receipt, release, bundle.Artifact, baselineExecutor, baselineGateway,
 	)
 	if err != nil {
 		return err
+	}
+	if receipt.Beholder != nil {
+		if err := validateBeholderUpdateTraffic(transaction, resuming, beholderCurrent, executorBefore, gatewayBefore); err != nil {
+			return err
+		}
+		executorBefore, gatewayBefore = baselineExecutor, baselineGateway
 	}
 	if !resuming {
 		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
@@ -202,6 +244,18 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 				return fmt.Errorf("cannot reconcile the recorded Gateway version before resuming: %w", err)
 			}
 		}
+		if receipt.Beholder != nil && transaction.BeholderAfter != "" {
+			if err := inspectWorkerVersionBindings(
+				tools.Wrangler, profile, filepath.Dir(bundleBeholderConfig(bundle)), bundleBeholderConfig(bundle),
+				receipt.Beholder.Worker, transaction.BeholderAfter,
+				[]string{"BEHOLDER_PROVIDER_KEY", "BEHOLDER_TRACE_KEY"},
+			); err != nil {
+				return fmt.Errorf("cannot reconcile the recorded Beholder version before resuming: %w", err)
+			}
+			if err := inspectBeholderWorkerConfiguration(tools.Wrangler, profile, bundleBeholderConfig(bundle), transaction.BeholderAfter, receipt.Beholder); err != nil {
+				return fmt.Errorf("cannot reconcile the recorded Beholder configuration before resuming: %w", err)
+			}
+		}
 	}
 	fmt.Fprintln(console.stdout, "\nOneNod operator update plan")
 	fmt.Fprintf(console.stdout, "  Cloudflare account: %s (%s)\n", account.Name, account.ID)
@@ -210,8 +264,15 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	fmt.Fprintf(console.stdout, "  Channel: %s -> %s (artifact channel %s)\n",
 		currentChannel, channel, release.Manifest.Channel)
 	fmt.Fprintf(console.stdout, "  Executor baseline: %s\n  Gateway baseline: %s\n", executorBefore, gatewayBefore)
+	if receipt.Beholder != nil {
+		fmt.Fprintf(console.stdout, "  Beholder: %s, baseline %s (private; existing provider and trace key retained)\n", receipt.Beholder.Worker, receipt.Beholder.VersionID)
+	}
 	fmt.Fprintf(console.stdout, "  Bundle: %s (%s)\n", bundle.Artifact.Name, bundle.Artifact.SHA256)
-	fmt.Fprintf(console.stdout, "  Promotion order: %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+	if receipt.Beholder != nil {
+		fmt.Fprintf(console.stdout, "  Promotion order: Beholder -> %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+	} else {
+		fmt.Fprintf(console.stdout, "  Promotion order: %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+	}
 	if resuming {
 		fmt.Fprintf(console.stdout, "  Resume transaction: %s (%s)\n", transaction.ID, transaction.Phase)
 		fmt.Fprintf(console.stdout, "  Reuse verified Executor version: %s\n", transaction.ExecutorAfter)
@@ -270,6 +331,9 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	receipt.DeploymentArtifactSHA = bundle.Artifact.SHA256
 	receipt.ExecutorVersionID = executorAfter
 	receipt.GatewayVersionID = gatewayAfter
+	if receipt.Beholder != nil {
+		receipt.Beholder.VersionID = transaction.BeholderAfter
+	}
 	receipt.CloudflareProfile = profile
 	receipt.CloudflareProfileRevoked = profileRevoked
 	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -382,6 +446,9 @@ func newOperatorUpdateTransaction(
 		ReleaseFrom: receipt.ReleaseVersion, ReleaseTo: release.Manifest.ReleaseVersion,
 		SchemaVersion: operatorTransactionSchema, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	if receipt.Beholder != nil {
+		transaction.BeholderBefore = receipt.Beholder.VersionID
+	}
 	return transaction, filepath.Join(directory, id+".json"), nil
 }
 
@@ -417,20 +484,36 @@ func recoverOrCreateOperatorUpdateTransaction(
 		if err := readStrictPrivateJSON(path, &transaction); err != nil {
 			return nil, "", false, fmt.Errorf("read operator update transaction %s failed", entry.Name())
 		}
+		if receipt.Beholder != nil && transaction.AccountID == receipt.AccountID &&
+			transaction.ReleaseFrom == receipt.ReleaseVersion && transaction.Outcome == "remote_needs_attention" &&
+			(transaction.ReleaseTo != release.Manifest.ReleaseVersion || transaction.DeploymentArtifact != artifact.Name ||
+				transaction.DeploymentArtifactSHA != artifact.SHA256) {
+			return nil, "", false, errors.New("another incomplete operator update requires reconciliation before selecting a different Release")
+		}
 		if transaction.AccountID != receipt.AccountID ||
 			transaction.ReleaseFrom != receipt.ReleaseVersion ||
 			transaction.ReleaseTo != release.Manifest.ReleaseVersion ||
 			transaction.DeploymentArtifact != artifact.Name ||
 			transaction.DeploymentArtifactSHA != artifact.SHA256 ||
-			transaction.Outcome != "remote_needs_attention" {
+			(transaction.Outcome != "remote_needs_attention" &&
+				!(receipt.Beholder != nil && (transaction.Outcome == "remote_complete" || transaction.Outcome == "deployment_authority_retained"))) {
 			continue
 		}
 		if transaction.SchemaVersion != operatorTransactionSchema ||
 			!uuidPattern.MatchString(transaction.ID) || entry.Name() != transaction.ID+".json" {
 			return nil, "", false, errors.New("recoverable operator update transaction identity is invalid")
 		}
-		if transaction.Phase != "executor_upload_unknown" &&
-			transaction.Phase != "gateway_upload_unknown" {
+		if receipt.Beholder != nil && (transaction.Phase == "beholder_deploy_unknown" || transaction.Phase == "beholder_deployed" ||
+			transaction.Phase == "executor_deploy_unknown" || transaction.Phase == "executor_deployed" ||
+			transaction.Phase == "gateway_deploy_unknown" || transaction.Phase == "gateway_deployed" ||
+			transaction.Phase == "remote_verified" || transaction.Phase == "cloudflare_revoked") {
+			if !uuidPattern.MatchString(transaction.ExecutorAfter) || !uuidPattern.MatchString(transaction.BeholderAfter) ||
+				!uuidPattern.MatchString(transaction.GatewayAfter) {
+				return nil, "", false, errors.New("recoverable operator update transaction has invalid uploaded versions")
+			}
+		} else if transaction.Phase != "executor_upload_unknown" && !(receipt.Beholder != nil && transaction.Phase == "executor_uploaded") && transaction.Phase != "beholder_upload_unknown" &&
+			transaction.Phase != "beholder_uploaded" && transaction.Phase != "gateway_upload_unknown" &&
+			transaction.Phase != "gateway_uploaded" {
 			return nil, "", false, fmt.Errorf(
 				"operator update transaction %s requires manual reconciliation at phase %s",
 				transaction.ID, transaction.Phase,
@@ -442,8 +525,21 @@ func recoverOrCreateOperatorUpdateTransaction(
 				transaction.ID,
 			)
 		}
+		if (receipt.Beholder == nil && (transaction.BeholderBefore != "" || transaction.BeholderAfter != "")) ||
+			(receipt.Beholder != nil && transaction.BeholderBefore != receipt.Beholder.VersionID) {
+			return nil, "", false, errors.New("recoverable Beholder baseline differs from the deployment receipt")
+		}
 		if !uuidPattern.MatchString(transaction.ExecutorAfter) ||
-			(transaction.Phase == "executor_upload_unknown" && transaction.GatewayAfter != "") ||
+			((transaction.Phase == "executor_upload_unknown" || transaction.Phase == "executor_uploaded") && transaction.GatewayAfter != "") ||
+			((transaction.Phase == "executor_upload_unknown" || transaction.Phase == "executor_uploaded") && transaction.BeholderAfter != "") ||
+			(transaction.Phase == "beholder_upload_unknown" && (receipt.Beholder == nil ||
+				!uuidPattern.MatchString(transaction.BeholderAfter) || transaction.GatewayAfter != "")) ||
+			(transaction.Phase == "beholder_uploaded" && (receipt.Beholder == nil ||
+				!uuidPattern.MatchString(transaction.BeholderAfter) || transaction.GatewayAfter != "")) ||
+			((transaction.Phase == "gateway_upload_unknown" || transaction.Phase == "gateway_uploaded") &&
+				receipt.Beholder != nil && (!uuidPattern.MatchString(transaction.BeholderAfter) || !uuidPattern.MatchString(transaction.GatewayAfter))) ||
+			(transaction.Phase == "gateway_uploaded" && (receipt.Beholder == nil || !uuidPattern.MatchString(transaction.GatewayAfter))) ||
+			(transaction.BeholderAfter != "" && !uuidPattern.MatchString(transaction.BeholderAfter)) ||
 			(transaction.GatewayAfter != "" && !uuidPattern.MatchString(transaction.GatewayAfter)) {
 			return nil, "", false, errors.New("recoverable operator update transaction has invalid uploaded versions")
 		}
@@ -463,6 +559,34 @@ func recoverOrCreateOperatorUpdateTransaction(
 	return transaction, path, false, createErr
 }
 
+// Only a prefix of the recorded promotion sequence is resumable. Unknown IDs,
+// unrelated traffic, partial splits, and out-of-order promotions fail closed.
+func validateBeholderUpdateTraffic(transaction *operatorUpdateTransaction, resuming bool, beholder, executor, gateway string) error {
+	if transaction == nil {
+		return errors.New("missing Beholder update transaction")
+	}
+	if !resuming {
+		if beholder != transaction.BeholderBefore || executor != transaction.ExecutorBefore || gateway != transaction.GatewayBefore {
+			return errors.New("Cloudflare traffic differs from the deployment receipt; reconcile before updating")
+		}
+		return nil
+	}
+	before := beholder == transaction.BeholderBefore && executor == transaction.ExecutorBefore && gateway == transaction.GatewayBefore
+	if before {
+		return nil
+	}
+	if !uuidPattern.MatchString(transaction.BeholderAfter) || !uuidPattern.MatchString(transaction.ExecutorAfter) || !uuidPattern.MatchString(transaction.GatewayAfter) {
+		return errors.New("Cloudflare traffic changed without all recorded target versions")
+	}
+	if beholder == transaction.BeholderAfter &&
+		((executor == transaction.ExecutorBefore && gateway == transaction.GatewayBefore) ||
+			(executor == transaction.ExecutorAfter && gateway == transaction.GatewayBefore) ||
+			(executor == transaction.ExecutorAfter && gateway == transaction.GatewayAfter)) {
+		return nil
+	}
+	return errors.New("Cloudflare traffic is not a recorded prefix of the Beholder update; reconcile it manually")
+}
+
 func deployVerifiedUpdate(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -480,9 +604,18 @@ func deployVerifiedUpdate(
 	gatewayConfig := bundleGatewayConfig(bundle)
 	knownExecutor := ""
 	knownGateway := ""
+	knownBeholder := ""
 	if resuming {
 		knownExecutor = transaction.ExecutorAfter
 		knownGateway = transaction.GatewayAfter
+		knownBeholder = transaction.BeholderAfter
+	}
+	if receipt.Beholder != nil && knownExecutor == "" {
+		transaction.Outcome, transaction.Phase = "remote_needs_attention", "executor_upload_unknown"
+		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+			return "", "", errors.New("cannot persist Executor upload intent")
+		}
 	}
 	executorAfter, err := uploadOrReuseWorkerVersion(
 		wrangler, profile, filepath.Dir(executorConfig), executorConfig,
@@ -505,9 +638,58 @@ func deployVerifiedUpdate(
 		return "", "", err
 	}
 	transaction.ExecutorAfter = executorAfter
-	transaction.Phase = "executor_uploaded"
+	if knownExecutor == "" {
+		transaction.Phase = "executor_uploaded"
+	}
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAtomicPrivateJSON(transactionPath, transaction)
+	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil && receipt.Beholder != nil {
+		return "", "", errors.New("cannot persist uploaded Executor version; reconciliation is required")
+	}
+	if receipt.Beholder != nil {
+		beholderConfig := bundleBeholderConfig(bundle)
+		if knownBeholder == "" {
+			transaction.Outcome, transaction.Phase = "remote_needs_attention", "beholder_upload_unknown"
+			transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+				return "", "", errors.New("cannot persist Beholder upload intent")
+			}
+		}
+		beholderAfter, err := uploadOrReuseWorkerVersion(
+			wrangler, profile, filepath.Dir(beholderConfig), beholderConfig,
+			receipt.Beholder.Worker, knownBeholder,
+			"OneNod "+release.Manifest.ReleaseVersion+" beholder", console,
+			[]string{"BEHOLDER_PROVIDER_KEY", "BEHOLDER_TRACE_KEY"},
+		)
+		if err != nil {
+			if uuidPattern.MatchString(beholderAfter) {
+				transaction.BeholderAfter = beholderAfter
+			}
+			if knownBeholder == "" {
+				markOperatorUpdateNeedsAttention(transaction, transactionPath, "beholder_upload_unknown")
+			}
+			return "", "", err
+		}
+		if err := inspectBeholderWorkerConfiguration(wrangler, profile, beholderConfig, beholderAfter, receipt.Beholder); err != nil {
+			transaction.BeholderAfter = beholderAfter
+			markOperatorUpdateNeedsAttention(transaction, transactionPath, "beholder_upload_unknown")
+			return "", "", err
+		}
+		transaction.BeholderAfter = beholderAfter
+		if knownBeholder == "" {
+			transaction.Phase = "beholder_uploaded"
+		}
+		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+			return "", "", errors.New("cannot persist uploaded Beholder version; reconciliation is required")
+		}
+	}
+	if receipt.Beholder != nil && knownGateway == "" {
+		transaction.Outcome, transaction.Phase = "remote_needs_attention", "gateway_upload_unknown"
+		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+			return "", "", errors.New("cannot persist Gateway upload intent")
+		}
+	}
 	gatewayAfter, err := uploadOrReuseWorkerVersion(
 		wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
 		receipt.GatewayWorker, knownGateway,
@@ -528,14 +710,48 @@ func deployVerifiedUpdate(
 		markOperatorUpdateNeedsAttention(transaction, transactionPath, "gateway_upload_unknown")
 		return "", "", err
 	}
+	if receipt.Beholder != nil {
+		if err := inspectBeholderServiceBinding(wrangler, profile, gatewayConfig, receipt.GatewayWorker,
+			gatewayAfter, receipt.Beholder.Worker); err != nil {
+			transaction.GatewayAfter = gatewayAfter
+			markOperatorUpdateNeedsAttention(transaction, transactionPath, "gateway_upload_unknown")
+			return "", "", err
+		}
+	}
 	transaction.GatewayAfter = gatewayAfter
-	transaction.Phase = "gateway_uploaded"
+	if knownGateway == "" {
+		transaction.Phase = "gateway_uploaded"
+	}
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAtomicPrivateJSON(transactionPath, transaction)
-	if err := deployWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
-		receipt.ExecutorWorker, executorAfter, "OneNod executor update", console); err != nil {
+	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil && receipt.Beholder != nil {
+		return "", "", errors.New("cannot persist uploaded Gateway version; reconciliation is required")
+	}
+	if receipt.Beholder != nil {
+		beholderConfig := bundleBeholderConfig(bundle)
+		if err := deployRecordedUpdateVersion(wrangler, profile, beholderConfig, receipt.Beholder.Worker,
+			transaction.BeholderBefore, transaction.BeholderAfter, "beholder", console, transaction, transactionPath); err != nil {
+			return "", "", err
+		}
+		transaction.Phase = "beholder_deployed"
+		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+			return "", "", errors.New("cannot persist deployed Beholder version; reconciliation is required")
+		}
+	}
+	var executorDeployErr error
+	if receipt.Beholder != nil {
+		executorDeployErr = deployRecordedUpdateVersion(wrangler, profile, executorConfig, receipt.ExecutorWorker,
+			executorBefore, executorAfter, "executor", console, transaction, transactionPath)
+	} else {
+		executorDeployErr = deployWorkerVersion(wrangler, profile, filepath.Dir(executorConfig), executorConfig,
+			receipt.ExecutorWorker, executorAfter, "OneNod executor update", console)
+	}
+	if err := executorDeployErr; err != nil {
 		var observed *observedDeploymentError
 		if errors.As(err, &observed) && observed.ObservedVersion == executorBefore {
+			if receipt.Beholder != nil {
+				return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, err)
+			}
 			transaction.Outcome = "remote_failed_no_change"
 			transaction.Phase = "executor_deploy_failed"
 			transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -547,9 +763,18 @@ func deployVerifiedUpdate(
 	}
 	transaction.Phase = "executor_deployed"
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAtomicPrivateJSON(transactionPath, transaction)
-	if err := deployWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
-		receipt.GatewayWorker, gatewayAfter, "OneNod gateway update", console); err != nil {
+	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil && receipt.Beholder != nil {
+		return "", "", errors.New("cannot persist deployed Executor version; reconciliation is required")
+	}
+	var gatewayDeployErr error
+	if receipt.Beholder != nil {
+		gatewayDeployErr = deployRecordedUpdateVersion(wrangler, profile, gatewayConfig, receipt.GatewayWorker,
+			gatewayBefore, gatewayAfter, "gateway", console, transaction, transactionPath)
+	} else {
+		gatewayDeployErr = deployWorkerVersion(wrangler, profile, filepath.Dir(gatewayConfig), gatewayConfig,
+			receipt.GatewayWorker, gatewayAfter, "OneNod gateway update", console)
+	}
+	if err := gatewayDeployErr; err != nil {
 		var observed *observedDeploymentError
 		if !errors.As(err, &observed) || observed.ObservedVersion != gatewayBefore {
 			markOperatorUpdateNeedsAttention(transaction, transactionPath, "gateway_deploy_unknown")
@@ -559,10 +784,17 @@ func deployVerifiedUpdate(
 	}
 	transaction.Phase = "gateway_deployed"
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAtomicPrivateJSON(transactionPath, transaction)
+	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil && receipt.Beholder != nil {
+		return "", "", errors.New("cannot persist deployed Gateway version; reconciliation is required")
+	}
 	actualExecutor, executorErr := readExactDeploymentVersion(wrangler, profile, executorConfig, receipt.ExecutorWorker)
 	actualGateway, gatewayErr := readExactDeploymentVersion(wrangler, profile, gatewayConfig, receipt.GatewayWorker)
-	if executorErr != nil || gatewayErr != nil || actualExecutor != executorAfter || actualGateway != gatewayAfter {
+	beholderVerified := true
+	if receipt.Beholder != nil {
+		actual, err := readExactDeploymentVersion(wrangler, profile, bundleBeholderConfig(bundle), receipt.Beholder.Worker)
+		beholderVerified = err == nil && actual == transaction.BeholderAfter
+	}
+	if executorErr != nil || gatewayErr != nil || actualExecutor != executorAfter || actualGateway != gatewayAfter || !beholderVerified {
 		verifyErr := errors.New("authoritative Cloudflare traffic verification failed")
 		return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
 	}
@@ -578,7 +810,35 @@ func deployVerifiedUpdate(
 		verifyErr := fmt.Errorf("public runtime version did not converge: %w", err)
 		return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
 	}
+	if receipt.Beholder != nil {
+		if err := waitForBeholderRuntimeVersion(ctx, httpClient, receipt.Origin, release.Manifest.ReleaseVersion,
+			release.Manifest.Source.Commit, updateConvergenceTimeout, updateConvergencePollInterval); err != nil {
+			verifyErr := fmt.Errorf("Beholder runtime version did not converge: %w", err)
+			return "", "", rollbackOperatorUpdate(wrangler, profile, bundle, receipt, executorBefore, gatewayBefore, release, console, transaction, transactionPath, verifyErr)
+		}
+	}
 	return executorAfter, gatewayAfter, nil
+}
+
+func deployRecordedUpdateVersion(wrangler, profile, config, worker, before, after, label string,
+	console *operatorConsole, transaction *operatorUpdateTransaction, transactionPath string) error {
+	actual, err := readExactDeploymentVersion(wrangler, profile, config, worker)
+	if err != nil {
+		return err
+	}
+	if actual == after {
+		fmt.Fprintf(console.stdout, "Confirmed %s version %s is already serving 100%%; not deploying it again.\n", worker, after)
+		return nil
+	}
+	if actual != before {
+		return errors.New("Worker traffic changed outside the recorded update; manual reconciliation is required")
+	}
+	transaction.Outcome, transaction.Phase = "remote_needs_attention", label+"_deploy_unknown"
+	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := writeAtomicPrivateJSON(transactionPath, transaction); err != nil {
+		return errors.New("cannot persist Worker deployment intent")
+	}
+	return deployWorkerVersion(wrangler, profile, filepath.Dir(config), config, worker, after, "OneNod "+label+" update", console)
 }
 
 func uploadOrReuseWorkerVersion(
@@ -648,8 +908,17 @@ func rollbackOperatorUpdate(
 		receipt.ExecutorWorker, executorBefore, "OneNod automatic executor rollback", console)
 	actualGateway, verifyGatewayErr := readExactDeploymentVersion(wrangler, profile, gatewayConfig, receipt.GatewayWorker)
 	actualExecutor, verifyExecutorErr := readExactDeploymentVersion(wrangler, profile, executorConfig, receipt.ExecutorWorker)
+	var beholderErr, verifyBeholderErr error
+	var actualBeholder string
+	if receipt.Beholder != nil {
+		beholderConfig := bundleBeholderConfig(bundle)
+		beholderErr = deployWorkerVersion(wrangler, profile, filepath.Dir(beholderConfig), beholderConfig,
+			receipt.Beholder.Worker, transaction.BeholderBefore, "OneNod automatic beholder rollback", console)
+		actualBeholder, verifyBeholderErr = readExactDeploymentVersion(wrangler, profile, beholderConfig, receipt.Beholder.Worker)
+	}
 	if gatewayErr != nil || executorErr != nil || verifyGatewayErr != nil || verifyExecutorErr != nil ||
-		actualGateway != gatewayBefore || actualExecutor != executorBefore {
+		actualGateway != gatewayBefore || actualExecutor != executorBefore || beholderErr != nil || verifyBeholderErr != nil ||
+		(receipt.Beholder != nil && actualBeholder != transaction.BeholderBefore) {
 		transaction.Outcome = "remote_needs_attention"
 		transaction.Phase = "rollback_failed"
 		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -660,5 +929,5 @@ func rollbackOperatorUpdate(
 	transaction.Phase = "rolled_back"
 	transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	_ = writeAtomicPrivateJSON(transactionPath, transaction)
-	return fmt.Errorf("remote update failed; Gateway and Executor were rolled back to their exact prior versions: %w", cause)
+	return fmt.Errorf("remote update failed; configured Workers were rolled back to their exact prior versions: %w", cause)
 }

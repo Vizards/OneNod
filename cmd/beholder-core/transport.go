@@ -646,8 +646,34 @@ func (coordinator *transportCoordinator) validAgentPeer(peer processChain, expec
 			result = "ok"
 		}
 		identity.finishResult(result, nil)
-		return matches &&
-			coordinator.broker.processRef(peer.Nodes[0]) == coordinator.agentInstanceRef
+		if !matches {
+			return false
+		}
+		peerRef := coordinator.broker.processRef(peer.Nodes[0])
+		if peerRef == coordinator.agentInstanceRef {
+			return true
+		}
+		// The Agent is allowed to restart, but the new process must be the
+		// exact pinned executable and the current server of the configured
+		// upstream socket. A same-user process executing may is not enough.
+		connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: coordinator.upstreamPath, Net: "unix"})
+		if err != nil {
+			return false
+		}
+		pid, err := unixPeerPID(connection)
+		_ = connection.Close()
+		if err != nil {
+			return false
+		}
+		active, err := captureProcessChain(pid)
+		if err != nil || len(active.Nodes) == 0 || active.Nodes[0].UID != coordinator.agentUID ||
+			active.Nodes[0].RealUID != coordinator.agentUID ||
+			!coordinator.agentIdentity.matches(active.Nodes[0].Path) ||
+			coordinator.broker.processRef(active.Nodes[0]) != peerRef {
+			return false
+		}
+		coordinator.agentInstanceRef = peerRef
+		return true
 	}
 	base := strings.ToLower(filepath.Base(peer.Nodes[0].Path))
 	return base == "may" || strings.HasPrefix(base, "may-") ||

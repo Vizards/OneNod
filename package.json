@@ -8,7 +8,7 @@
     "node": ">=22.12.0 <23"
   },
   "scripts": {
-    "build": "pnpm build:protocol && pnpm --filter @onenod/gateway build && pnpm --filter @onenod/executor build",
+    "build": "pnpm build:protocol && pnpm --filter @onenod/gateway build && pnpm --filter @onenod/executor build && pnpm --filter @onenod/beholder build",
     "build:protocol": "pnpm --filter @onenod/protocol build",
     "check": "pnpm lint && pnpm docs:check && pnpm typecheck && pnpm test && pnpm build",
     "dev:executor": "pnpm --filter @onenod/executor exec wrangler dev",
@@ -20,7 +20,7 @@
     "release:alpha": "node scripts/release/request-candidate.mjs alpha",
     "release:beta": "node scripts/release/request-candidate.mjs beta",
     "test": "pnpm build:protocol && pnpm --filter @onenod/protocol test && pnpm --filter @onenod/gateway test && pnpm --filter @onenod/executor test",
-    "typecheck": "pnpm build:protocol && pnpm --filter @onenod/gateway typecheck && pnpm --filter @onenod/executor typecheck"
+    "typecheck": "pnpm build:protocol && pnpm --filter @onenod/gateway typecheck && pnpm --filter @onenod/executor typecheck && pnpm --filter @onenod/beholder typecheck"
   },
   "devDependencies": {
     "marked": "18.0.12",

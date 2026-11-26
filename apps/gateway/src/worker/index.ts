@@ -15,7 +15,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === VERSION_PATH) {
-      return json(releaseMetadataResponse());
+      return json(releaseMetadataResponse(await beholderReleaseMetadata(env)));
     }
 
     if (url.pathname.startsWith("/v1/")) {
@@ -41,10 +41,36 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-function releaseMetadataResponse() {
+async function beholderReleaseMetadata(env: Env): Promise<{
+  available: boolean; channel?: string; version?: string; source_commit?: string;
+} | undefined> {
+  if (!env.BEHOLDER_SERVICE) return undefined;
+  try {
+    const response = await env.BEHOLDER_SERVICE.fetch("https://beholder.internal/internal/version", {
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!response.ok) return { available: false };
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { available: false };
+    const value = body as Record<string, unknown>;
+    if (value.service !== "onenod-beholder" || typeof value.release_channel !== "string" ||
+        typeof value.release_version !== "string" || typeof value.source_commit !== "string" ||
+        value.release_channel.length > 32 || value.release_version.length > 64 || value.source_commit.length > 64) {
+      return { available: false };
+    }
+    return { available: true, channel: value.release_channel, version: value.release_version, source_commit: value.source_commit };
+  } catch {
+    return { available: false };
+  }
+}
+
+function releaseMetadataResponse(beholder?: {
+  available: boolean; channel?: string; version?: string; source_commit?: string;
+}) {
   const releaseVersion = GATEWAY_RELEASE_METADATA.releaseVersion;
   return {
     components: {
+      ...(beholder ? { beholder } : {}),
       executor: {
         accepted_gateway_protocol: {
           max: GATEWAY_RELEASE_METADATA.executorProtocolMax,

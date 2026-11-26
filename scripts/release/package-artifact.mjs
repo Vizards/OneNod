@@ -173,6 +173,10 @@ async function stageDeploymentArtifact(temporaryRoot, values) {
     resolve(repositoryRoot, "apps/executor/dist/worker"),
     join(root, "executor"),
   );
+  await stageBeholderWorker(
+    resolve(repositoryRoot, "apps/beholder/dist/worker"),
+    join(root, "beholder"),
+  );
   await copyRequiredFile(
     resolve(import.meta.dirname, "templates/gateway.wrangler.jsonc"),
     join(root, "gateway/wrangler.jsonc"),
@@ -180,6 +184,10 @@ async function stageDeploymentArtifact(temporaryRoot, values) {
   await copyRequiredFile(
     resolve(import.meta.dirname, "templates/executor.wrangler.jsonc"),
     join(root, "executor/wrangler.jsonc"),
+  );
+  await copyRequiredFile(
+    resolve(import.meta.dirname, "templates/beholder.wrangler.jsonc"),
+    join(root, "beholder/wrangler.jsonc"),
   );
   await copyRequiredFile(resolve(repositoryRoot, "LICENSE"), join(root, "LICENSE"));
   await stageThirdPartyInventory(root, values);
@@ -329,6 +337,23 @@ async function stageExecutorWorker(source, destination) {
     join(source, wasmFiles[0].name),
     join(destination, "plugin.wasm"),
   );
+}
+
+async function stageBeholderWorker(source, destination) {
+  const entries = await readdir(source, { withFileTypes: true }).catch(() => null);
+  if (entries === null) fail(`required release directory is unavailable: ${source}`);
+  const policies = entries.filter((entry) => entry.isFile() && entry.name.endsWith("-retrieval-policy.txt"));
+  if (policies.length !== 1) fail("Beholder release build must contain exactly one retrieval policy");
+  const workerPath = join(source, "index.js");
+  await assertRegularFile(workerPath, "Beholder Worker bundle");
+  const worker = await readFile(workerPath, "utf8");
+  const originalImport = `./${policies[0].name}`;
+  if (worker.split(originalImport).length - 1 !== 1) fail("Beholder Worker must import its policy exactly once");
+  await mkdir(destination, { recursive: true, mode: 0o755 });
+  await writeFile(join(destination, "worker.mjs"), worker.replace(originalImport, "./policy.txt"), {
+    encoding: "utf8", flag: "wx", mode: 0o644,
+  });
+  await copyRequiredFile(join(source, policies[0].name), join(destination, "policy.txt"));
 }
 
 async function writeJSON(path, value) {

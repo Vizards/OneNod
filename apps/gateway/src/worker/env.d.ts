@@ -8,6 +8,7 @@ declare global {
     BOOTSTRAP_TOKEN?: string;
     BEHOLDER_AUTHORITY_KEYS?: string;
     BEHOLDER_AUTHORITY_MODE?: string;
+    BEHOLDER_SERVICE?: Fetcher;
     EXECUTOR_AUTH_TOKEN?: string;
     EXECUTOR_SERVICE?: Fetcher;
     GATEWAY_MASTER_KEY?: string;

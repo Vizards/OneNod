@@ -108,6 +108,10 @@ type gatekeeperService struct {
 	binarySHA256        string
 	policySHA256        string
 	buildInput          decisionInputBuilder
+	workerMayPath       string
+	workerMaySHA256     string
+	workerMayHome       string
+	workerGatewayOrigin string
 }
 
 type modelCallResult struct {
@@ -350,6 +354,12 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 		clearLocalDecisionRequest(&request)
 		return response
 	}
+	if service.workerMayPath != "" && (request.Mode != "authoritative" || !safeWorkerDeviceID(request.RequesterDeviceID)) {
+		response.Reason = "The Worker review could not bind this request to its requester."
+		response.ErrorCode = stringPointer("worker-requester-unavailable")
+		clearLocalDecisionRequest(&request)
+		return response
+	}
 	request.decisionDeadline = started.Add(time.Duration(service.config.Invocation.TimeoutMS) * time.Millisecond)
 	if request.Mode == "shadow-submit" {
 		return service.submitShadowDecision(request, started, response)
@@ -380,6 +390,9 @@ func (service *gatekeeperService) decide(request localDecisionRequest) localDeci
 	bundle, bundleErr := service.beginEvidenceBundleWithError(request, &source, metrics, nil)
 	if err == nil && bundleErr == nil {
 		bundleErr = attachRetrievalInput(bundle, &input)
+		if bundleErr == nil && service.workerMayPath != "" {
+			bundle.workerRequesterID = request.RequesterDeviceID
+		}
 	}
 	if err != nil || bundleErr != nil {
 		code := "evidence-bundle-unavailable"
@@ -789,6 +802,9 @@ func (service *gatekeeperService) callModelVariant(
 	variant modelCallVariant,
 	deadlines ...time.Time,
 ) (result modelCallResult) {
+	if service.workerMayPath != "" {
+		return service.callWorkerRetrievalModel(content, bundle, evidenceID, variant, deadlines...)
+	}
 	if service.config.Retrieval.Enabled || (bundle != nil && bundle.retrieval != nil) {
 		return service.callRetrievalModel(content, bundle, evidenceID, variant, deadlines...)
 	}

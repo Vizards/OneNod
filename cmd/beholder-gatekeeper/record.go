@@ -169,6 +169,15 @@ func (service *gatekeeperService) writeRecord(
 			record.Comparison.EvidenceRefs = []string{}
 		}
 	}
+	if service.workerMayPath != "" {
+		record.GatekeeperVersion = workerGatekeeperVersion
+		record.Reason = "Decision recorded by the Beholder Worker."
+		record.RawModelResponseStored = false
+		record.RawReasoningContentStored = false
+		if record.Comparison != nil {
+			record.Comparison.Reason = "Comparison recorded by the Beholder Worker."
+		}
+	}
 	if record.EvidenceRefs == nil {
 		record.EvidenceRefs = []string{}
 	}
