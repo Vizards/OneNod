@@ -126,6 +126,17 @@ func requestSshSignature(
 	if err != nil {
 		return sshSignConsumeResponse{}, err
 	}
+	manual, err := manualLocalFallbackForRequester(config.origin, credential)
+	if err != nil {
+		return sshSignConsumeResponse{}, err
+	}
+	if manual {
+		outcome.useLocalFallback()
+		fmt.Fprintln(deps.stderr, "Manual local fallback is enabled; requesting this signature from the local 1Password SSH Agent.")
+		localCtx, cancel := context.WithTimeout(ctx, localFallbackOperationLimit)
+		defer cancel()
+		return signWithConfiguredLocalSSHAgent(localCtx, deps, identity, algorithm, data)
+	}
 	client, err := newAPIClient(config.origin, credential, deps.httpClient)
 	if err != nil {
 		return sshSignConsumeResponse{}, err

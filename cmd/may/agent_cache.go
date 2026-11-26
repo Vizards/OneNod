@@ -76,7 +76,17 @@ func refreshSSHIdentityCacheAt(
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sshIdentityRefreshRequestTimeout)
+	timeout := sshIdentityRefreshRequestTimeout
+	if allowLocalFallback {
+		manual, err := manualLocalFallbackForRequester(config.origin, credential)
+		if err != nil {
+			return nil, err
+		}
+		if manual {
+			timeout = localFallbackOperationLimit
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	var response catalogSearchResponse
 	if allowLocalFallback {
@@ -117,6 +127,13 @@ func newSSHIdentityLoader(
 		defer mutex.Unlock()
 		identities, err := readSSHIdentityCache(cachePath)
 		if errors.Is(err, os.ErrNotExist) {
+			manual, modeErr := manualLocalFallbackEnabled()
+			if modeErr != nil {
+				return nil, modeErr
+			}
+			if manual {
+				return nil, errors.New("SSH identity cache is unavailable; run `may agent refresh` to load it from local 1Password")
+			}
 			return refreshSSHIdentityCacheAt(cachePath, config, deps, false)
 		}
 		return identities, err

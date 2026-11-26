@@ -22,6 +22,8 @@ const (
 	maxLocalSSHResults     = 64
 )
 
+var errLocalFallbackItemStale = errors.New("local Agent Vault item version does not match the approved request")
+
 type localFallbackVault struct {
 	ID    string
 	Title string
@@ -50,21 +52,35 @@ func searchCatalogWithLocalFallback(
 	query string,
 	deps dependencies,
 ) (catalogSearchResponse, error) {
+	manual, err := manualLocalFallbackForRequester(client.origin.String(), client.credential)
+	if err != nil {
+		return catalogSearchResponse{}, err
+	}
+	if manual {
+		fmt.Fprintln(deps.stderr, "Manual local fallback is enabled; reading the local 1Password Agent Vault catalog.")
+		localCtx, cancel := context.WithTimeout(ctx, localFallbackOperationLimit)
+		defer cancel()
+		return searchLocalCatalog(localCtx, deps, query)
+	}
 	response, err := searchCatalog(ctx, client, query)
 	if err == nil || !isGatewayErrorCode(err, "onepassword_rate_limited") {
 		return response, err
 	}
 	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
-	backend, config, localErr := openConfiguredLocalFallback(ctx, deps)
-	if localErr != nil {
-		return catalogSearchResponse{}, localFallbackUnavailable(err, localErr)
-	}
-	response, localErr = backend.SearchCatalog(ctx, config.VaultID, query)
+	response, localErr := searchLocalCatalog(ctx, deps, query)
 	if localErr != nil {
 		return catalogSearchResponse{}, localFallbackUnavailable(err, localErr)
 	}
 	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded.")
 	return response, nil
+}
+
+func searchLocalCatalog(ctx context.Context, deps dependencies, query string) (catalogSearchResponse, error) {
+	backend, config, err := openConfiguredLocalFallback(ctx, deps)
+	if err != nil {
+		return catalogSearchResponse{}, err
+	}
+	return backend.SearchCatalog(ctx, config.VaultID, query)
 }
 
 func readCatalogItemWithLocalFallback(
@@ -73,20 +89,41 @@ func readCatalogItemWithLocalFallback(
 	itemID string,
 	deps dependencies,
 ) (catalogItemResult, error) {
+	manual, err := manualLocalFallbackForRequester(client.origin.String(), client.credential)
+	if err != nil {
+		return catalogItemResult{}, err
+	}
+	if manual {
+		fmt.Fprintln(deps.stderr, "Manual local fallback is enabled; reading local 1Password item metadata.")
+		localCtx, cancel := context.WithTimeout(ctx, localFallbackOperationLimit)
+		defer cancel()
+		return readLocalCatalogItem(localCtx, deps, itemID)
+	}
 	item, err := readCatalogItem(ctx, client, itemID)
 	if err == nil || !isGatewayErrorCode(err, "onepassword_rate_limited") {
 		return item, err
 	}
 	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
-	backend, config, localErr := openConfiguredLocalFallback(ctx, deps)
-	if localErr != nil {
-		return catalogItemResult{}, localFallbackUnavailable(err, localErr)
-	}
-	item, localErr = backend.ReadCatalogItem(ctx, config.VaultID, itemID)
+	item, localErr := readLocalCatalogItem(ctx, deps, itemID)
 	if localErr != nil {
 		return catalogItemResult{}, localFallbackUnavailable(err, localErr)
 	}
 	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded.")
+	return item, nil
+}
+
+func readLocalCatalogItem(ctx context.Context, deps dependencies, itemID string) (catalogItemResult, error) {
+	backend, config, err := openConfiguredLocalFallback(ctx, deps)
+	if err != nil {
+		return catalogItemResult{}, err
+	}
+	item, err := backend.ReadCatalogItem(ctx, config.VaultID, itemID)
+	if err != nil {
+		return catalogItemResult{}, err
+	}
+	if item.ItemID != itemID || item.Version <= 0 {
+		return catalogItemResult{}, errors.New("local 1Password returned invalid targeted item metadata")
+	}
 	return item, nil
 }
 
@@ -102,22 +139,20 @@ func readSecretWithLocalFallback(
 		return "", remoteErr
 	}
 	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
-	backend, config, err := openConfiguredLocalFallback(ctx, deps)
-	if err != nil {
-		return "", localFallbackUnavailable(remoteErr, err)
-	}
-	value, err := backend.ReadSecret(
-		ctx,
-		config.VaultID,
-		itemID,
-		fieldID,
-		expectedVersion,
-	)
+	value, err := readLocalSecret(ctx, deps, itemID, fieldID, expectedVersion)
 	if err != nil {
 		return "", localFallbackUnavailable(remoteErr, err)
 	}
 	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded. If the remote request had already entered execution, Gateway Activity may still show its Service Account quota failure.")
 	return value, nil
+}
+
+func readLocalSecret(ctx context.Context, deps dependencies, itemID, fieldID string, expectedVersion int64) (string, error) {
+	backend, config, err := openConfiguredLocalFallback(ctx, deps)
+	if err != nil {
+		return "", err
+	}
+	return backend.ReadSecret(ctx, config.VaultID, itemID, fieldID, expectedVersion)
 }
 
 func readCredentialWithLocalFallback(
@@ -132,22 +167,20 @@ func readCredentialWithLocalFallback(
 		return nil, remoteErr
 	}
 	fmt.Fprintln(deps.stderr, "The remote 1Password Service Account quota is exhausted; requesting local 1Password approval on this Mac.")
-	backend, config, err := openConfiguredLocalFallback(ctx, deps)
-	if err != nil {
-		return nil, localFallbackUnavailable(remoteErr, err)
-	}
-	values, err := backend.ReadCredential(
-		ctx,
-		config.VaultID,
-		itemID,
-		fieldIDs,
-		expectedVersion,
-	)
+	values, err := readLocalCredential(ctx, deps, itemID, fieldIDs, expectedVersion)
 	if err != nil {
 		return nil, localFallbackUnavailable(remoteErr, err)
 	}
 	fmt.Fprintln(deps.stderr, "Local 1Password fallback succeeded. If the remote request had already entered execution, Gateway Activity may still show its Service Account quota failure.")
 	return values, nil
+}
+
+func readLocalCredential(ctx context.Context, deps dependencies, itemID string, fieldIDs []string, expectedVersion int64) (map[string]string, error) {
+	backend, config, err := openConfiguredLocalFallback(ctx, deps)
+	if err != nil {
+		return nil, err
+	}
+	return backend.ReadCredential(ctx, config.VaultID, itemID, fieldIDs, expectedVersion)
 }
 
 func openConfiguredLocalFallback(
@@ -354,8 +387,11 @@ func (backend *sdkLocalOnePasswordBackend) ReadCredential(
 	if err != nil {
 		return nil, errors.New("read local Agent Vault item failed")
 	}
-	if item.ID != itemID || item.VaultID != vaultID || int64(item.Version) != expectedVersion {
-		return nil, errors.New("local Agent Vault item version does not match the approved request")
+	if item.ID != itemID || item.VaultID != vaultID {
+		return nil, errors.New("local Agent Vault returned a different item or Vault")
+	}
+	if int64(item.Version) != expectedVersion {
+		return nil, errLocalFallbackItemStale
 	}
 	values := make(map[string]string, len(fieldIDs))
 	for _, fieldID := range fieldIDs {

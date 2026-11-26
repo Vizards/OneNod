@@ -1,12 +1,12 @@
-# Optional local quota fallback
+# Optional local fallback
 
 Read [Setup](setup.md) for scope and release provenance.
 
 OneNod normally sends every request through the Gateway. On each requester Mac,
-the human may additionally configure a local emergency path for the exact case
-where the Gateway reports that its 1Password Service Account quota is
-exhausted. This does not make local approval a substitute for an unreachable,
-denied, locked, revoked, timed-out, or otherwise unhealthy Gateway.
+the human may configure a local 1Password path. By default it activates
+automatically only when the Gateway reports that its 1Password Service Account
+quota is exhausted. A separate manual mode can be enabled for a Gateway or
+Executor outage, but no failure automatically enables that mode.
 
 This option requires the 1Password desktop app, signed in to the same account
 that owns `Agent`. It does not require 1Password CLI. In **1Password Settings >
@@ -39,12 +39,53 @@ the Vault has no SSH keys yet, `may` can verify only that the native Agent is
 reachable; rerun the apply flow after adding keys.
 
 The Desktop SDK authorization prompt covers the selected 1Password account;
-OneNod's own code restricts reads to the resolved `Agent` Vault ID. This is a
-separate, explicit trust choice. It helps only while a human can approve
-1Password on that same Mac, so it does not replace remote PWA approval while
-the human is away. Disable the OneNod path with `may configure local-fallback
-restore`; that command deliberately leaves the user-owned `agent.toml` and
-1Password settings unchanged.
+OneNod's own code restricts reads to the resolved `Agent` Vault ID. 1Password
+may remember SDK or SSH authorization, so a fresh prompt is not guaranteed for
+each operation. This path needs local 1Password access on that same Mac; it is
+not remote PWA approval. Local 1Password must itself be available and
+authorized; its app, cache, or network dependencies can still prevent a local
+operation during a 1Password outage.
+
+## Manual local mode
+
+Only enable this mode at the human's explicit request, after explaining its
+scope. The mode stays active until manually disabled, including across ordinary
+local restarts and updates:
+
+```sh
+may configure local-fallback status
+may configure local-fallback enable
+may configure local-fallback disable
+```
+
+The usual `may preflight` checks the Gateway and can fail during an outage;
+that failure does not establish that the local path is healthy. The local
+fallback status command does not require a working Gateway.
+
+The enable command displays the selected account, requester and Gateway Origin,
+and a default-no confirmation. The active mode is bound to that Origin and
+requester; a different Origin or selected requester fails rather than silently
+using the configured local Vault.
+While enabled, new catalog, field/credential read, and SSH/Git signature
+operations go straight to local 1Password without first trying the Gateway.
+Item creation, patching and archival are unavailable. If the SSH identity cache
+is missing, `may agent refresh` loads it through local 1Password on explicit
+request. Do not automatically retry a previous operation with an unknown remote
+outcome; reconcile it first.
+
+Manual mode bypasses Gateway Lock mode, requester revocation, PWA/Beholder
+approval and Gateway Activity. Its per-user state file is writable by other
+processes running as the same macOS user, so it is an operational choice, not a
+separate protection from those processes. Local 1Password authorization and
+its own remembered-approval settings still apply. A release that predates manual
+mode ignores the state file after rollback and uses its own Gateway behavior;
+the state becomes active again if a supporting release is restored.
+
+`disable` returns to the Gateway while preserving the configured quota fallback.
+`may configure local-fallback restore` removes the manual state and the OneNod
+binding, but deliberately leaves the user-owned `agent.toml` and 1Password
+settings unchanged. If the local account or Vault binding changes, disable and
+explicitly enable manual mode again for the new binding.
 
 ## Optional OpenSSH and Git signing
 

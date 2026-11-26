@@ -127,7 +127,7 @@ func signWithConfiguredLocalSSHAgent(
 		len(signature.Blob) > 16*1024 || publicKey.Verify(data, signature) != nil {
 		return sshSignConsumeResponse{}, errors.New("local 1Password SSH Agent returned an invalid signature")
 	}
-	fmt.Fprintln(deps.stderr, "Local 1Password SSH fallback succeeded. If the remote request had already entered execution, Gateway Activity may still show its Service Account quota failure.")
+	fmt.Fprintln(deps.stderr, "Local 1Password SSH signing succeeded. If a remote request had already entered execution, Gateway Activity may still show its failure.")
 	return sshSignConsumeResponse{
 		Algorithm: algorithm, Fingerprint: identity.catalog.Metadata.Fingerprint,
 		ItemID: identity.catalog.ItemID, OK: true,

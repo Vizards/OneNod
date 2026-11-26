@@ -35,8 +35,12 @@ type localFallbackConfig struct {
 }
 
 func runConfigureLocalFallback(args []string, deps dependencies) error {
+	return runConfigureLocalFallbackForOrigin(args, deps, cliConfig{})
+}
+
+func runConfigureLocalFallbackForOrigin(args []string, deps dependencies, config cliConfig) error {
 	if len(args) == 0 {
-		return errors.New("usage: may configure local-fallback <status|apply|restore> [--account name-or-uuid]")
+		return errors.New("usage: may configure local-fallback <status|apply|enable|disable|restore> [--account name-or-uuid]")
 	}
 	switch args[0] {
 	case "status":
@@ -46,13 +50,27 @@ func runConfigureLocalFallback(args []string, deps dependencies) error {
 		return writeLocalFallbackStatus(deps.stdout)
 	case "apply":
 		return applyLocalFallbackConfiguration(args[1:], deps)
+	case "enable":
+		if len(args) != 1 {
+			return errors.New("usage: may configure local-fallback enable")
+		}
+		return enableManualLocalFallback(deps, config)
+	case "disable":
+		if len(args) != 1 {
+			return errors.New("usage: may configure local-fallback disable")
+		}
+		if err := disableManualLocalFallback(); err != nil {
+			return err
+		}
+		fmt.Fprintln(deps.stdout, "Manual local fallback is disabled; supported operations use the Gateway again.")
+		return nil
 	case "restore":
 		if len(args) != 1 {
 			return errors.New("usage: may configure local-fallback restore")
 		}
 		return restoreLocalFallbackConfiguration(deps.stdout)
 	default:
-		return errors.New("usage: may configure local-fallback <status|apply|restore> [--account name-or-uuid]")
+		return errors.New("usage: may configure local-fallback <status|apply|enable|disable|restore> [--account name-or-uuid]")
 	}
 }
 
@@ -88,13 +106,13 @@ func applyLocalFallbackConfiguration(args []string, deps dependencies) error {
 		return err
 	}
 
-	fmt.Fprintln(deps.stdout, "Local 1Password quota-fallback plan:")
+	fmt.Fprintln(deps.stdout, "Local 1Password fallback configuration plan:")
 	fmt.Fprintf(deps.stdout, "  Account: %s\n", selectedAccount)
 	fmt.Fprintf(deps.stdout, "  Vault: %s (fixed OneNod Vault; resolved to an ID before saving)\n", localFallbackVaultTitle)
 	fmt.Fprintf(deps.stdout, "  1Password prerequisite: Settings > Developer > %s must be enabled\n", localFallbackSDKSetting)
-	fmt.Fprintln(deps.stdout, "  Secret reads: official 1Password Desktop SDK, only after the Gateway reports onepassword_rate_limited")
-	fmt.Fprintln(deps.stdout, "  SSH/Git signing: local 1Password SSH Agent, only after the same exact Gateway error")
-	fmt.Fprintln(deps.stdout, "  Item create, patch, archive, denial, Lock mode, revocation, timeout, network failure, and generic 5xx responses never fall back.")
+	fmt.Fprintln(deps.stdout, "  Automatic fallback uses the local Desktop SDK and SSH Agent only after onepassword_rate_limited.")
+	fmt.Fprintln(deps.stdout, "  A separate, explicit manual mode can use those local paths while the Gateway is unavailable.")
+	fmt.Fprintln(deps.stdout, "  Item create, patch, and archive are not supported locally. Errors never automatically enable manual mode.")
 	fmt.Fprintln(deps.stdout, "  1Password authorizes the SDK process to the selected account for up to ten minutes of inactivity; OneNod restricts its code path to the resolved Agent Vault.")
 	configPath, err := onePasswordSSHAgentConfigPath()
 	if err != nil {
@@ -179,12 +197,17 @@ func applyLocalFallbackConfiguration(args []string, deps dependencies) error {
 	if err := writeLocalFallbackConfig(config); err != nil {
 		return err
 	}
-	fmt.Fprintln(deps.stdout, "Configured local 1Password fallback for exact Service Account quota exhaustion.")
+	fmt.Fprintln(deps.stdout, "Configured local 1Password fallback. Automatic fallback remains limited to Service Account quota exhaustion.")
+	fmt.Fprintln(deps.stdout, "Manual mode is separate; use `may configure local-fallback enable` when needed.")
 	fmt.Fprintln(deps.stdout, "Agents must continue to call may; this does not authorize direct op usage.")
 	return nil
 }
 
 func writeLocalFallbackStatus(output io.Writer) error {
+	mode, manual, err := readManualLocalFallbackMode()
+	if err != nil {
+		return err
+	}
 	config, found, err := readLocalFallbackConfig()
 	if err != nil {
 		return err
@@ -207,6 +230,12 @@ func writeLocalFallbackStatus(output io.Writer) error {
 	}
 	_, socketErr := os.Lstat(socketPath)
 	fmt.Fprintln(output, "Local 1Password fallback: configured")
+	if manual {
+		fmt.Fprintln(output, "  manual mode: enabled (local operations bypass Gateway approvals and Activity)")
+		fmt.Fprintf(output, "  manual mode origin: %s\n", mode.Origin)
+	} else {
+		fmt.Fprintln(output, "  manual mode: disabled (automatic fallback only for Service Account quota exhaustion)")
+	}
 	fmt.Fprintf(output, "  account: %s\n", config.Account)
 	fmt.Fprintf(output, "  vault: %s (%s)\n", config.VaultTitle, config.VaultID)
 	fmt.Fprintf(output, "  Desktop SDK app: %s\n", localDesktopAppStatus())
@@ -216,6 +245,9 @@ func writeLocalFallbackStatus(output io.Writer) error {
 }
 
 func restoreLocalFallbackConfiguration(output io.Writer) error {
+	if err := disableManualLocalFallback(); err != nil {
+		return err
+	}
 	path, err := localFallbackConfigPath()
 	if err != nil {
 		return err

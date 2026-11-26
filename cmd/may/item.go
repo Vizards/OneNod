@@ -105,6 +105,13 @@ func runItem(args []string, config cliConfig, deps dependencies) error {
 	if len(args) == 0 {
 		return errors.New("usage: may [global flags] item <create|patch|archive> ...")
 	}
+	manual, err := manualLocalFallbackEnabled()
+	if err != nil {
+		return err
+	}
+	if manual {
+		return errors.New("item changes are unavailable while manual local fallback is enabled; disable it to use the Gateway")
+	}
 	switch args[0] {
 	case "create":
 		return runItemCreate(args[1:], config, deps)

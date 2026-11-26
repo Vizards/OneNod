@@ -217,7 +217,7 @@ func runCLI(args []string, deps dependencies) error {
 	case "update":
 		return runUpdate(remaining[1:], deps)
 	case "configure":
-		return runConfigure(remaining[1:], deps)
+		return runConfigure(remaining[1:], deps, config)
 	case "dev":
 		return runDev(remaining[1:], deps)
 	case "operator":
@@ -287,6 +287,8 @@ Usage:
   may configure git-signing restore
   may configure local-fallback status
   may configure local-fallback apply [--account <1Password-account-name-or-UUID>]
+  may configure local-fallback enable
+  may configure local-fallback disable
   may configure local-fallback restore
   may plugin enable <plugin-or-command> --scope <global|directory> [--item <id-or-title>] [--search <query>] [--field Name=<id-or-label>] [--target <path>]
   may plugin status [plugin-or-command]
@@ -387,13 +389,15 @@ var commandHelp = map[string]string{
 	"agent":                            "usage: may [global flags] agent <serve|status|refresh>",
 	"catalog":                          catalogSearchUsage,
 	"catalog search":                   catalogSearchUsage,
-	"configure":                        "usage: may configure <ssh|git-signing|local-fallback> <status|apply|restore>",
+	"configure":                        "usage: may configure <ssh|git-signing|local-fallback> <action>",
 	"configure git-signing":            "usage: may configure git-signing <status|apply|restore> [--signing-key key-or-path]",
 	"configure git-signing apply":      "usage: may configure git-signing apply --signing-key <key-or-path>",
 	"configure git-signing restore":    "usage: may configure git-signing restore",
 	"configure git-signing status":     "usage: may configure git-signing status",
-	"configure local-fallback":         "usage: may configure local-fallback <status|apply|restore> [--account name-or-uuid]",
+	"configure local-fallback":         "usage: may configure local-fallback <status|apply|enable|disable|restore> [--account name-or-uuid]",
 	"configure local-fallback apply":   "usage: may configure local-fallback apply [--account name-or-uuid]",
+	"configure local-fallback enable":  "usage: may configure local-fallback enable",
+	"configure local-fallback disable": "usage: may configure local-fallback disable",
 	"configure local-fallback restore": "usage: may configure local-fallback restore",
 	"configure local-fallback status":  "usage: may configure local-fallback status",
 	"configure ssh":                    "usage: may configure ssh <status|apply|restore>",

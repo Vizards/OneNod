@@ -26,6 +26,31 @@ secrets, Passkey approval, a dedicated Cloudflare account, reviewed artifacts,
 and production deployment authority unavailable to Agents. Anyone able to
 deploy the Gateway or Executor is part of the trusted computing base.
 
+### Optional manual local fallback
+
+After configuring the local 1Password integration, a person can explicitly
+enable manual local fallback on a requester Mac. New catalog, credential-read,
+and SSH/Git signature operations then use the configured local 1Password account
+and `Agent` Vault before contacting the Gateway. Manual mode is bound to the
+selected Gateway Origin and local requester identity. This is a different trust path:
+Gateway Lock mode, requester revocation, PWA/Beholder approval, and Gateway
+Activity do not cover those local operations. Item mutations are unavailable
+while this mode is active. Enabling it does not replay a previously submitted
+remote operation; reconcile unknown prior outcomes before manually retrying.
+
+1Password authorizes Desktop SDK access at account scope, and its SSH Agent
+can remember authorization according to the user's settings. The OneNod adapter
+constrains its reads to the configured Vault and requested item, fields, and
+version; local signing verifies the requested public key and signature. A new
+1Password prompt is not guaranteed for each operation.
+
+Manual mode persists until disabled. Its non-secret per-user state is stored in
+a private user-owned file. This is an operational switch, not an independent
+security boundary against another process running as the same macOS user; such
+a process can alter the file or invoke the CLI. Local 1Password authorization
+remains the protection on this path. Older releases do not understand the mode
+file and therefore use their normal Gateway behavior after a rollback.
+
 ### Optional Beholder authority
 
 When a deployment explicitly enables `BEHOLDER_AUTHORITY_MODE=dogfood-v1`, a
