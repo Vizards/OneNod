@@ -54,6 +54,7 @@ import { OnePasswordRateLimitCooldown } from "./onepassword-rate-limit-cooldown"
 
 interface Env {
   EXECUTOR_AUTH_TOKEN?: string;
+  EXECUTOR_LOCATION?: string;
   ONEPASSWORD_EXECUTOR: DurableObjectNamespace<OnePasswordExecutor>;
   OP_ACCOUNT: string;
   OP_SERVICE_ACCOUNT_TOKEN?: string;
@@ -96,9 +97,20 @@ export default {
       }
       const authorizationFailure = await authorizeExecutor(request, env);
       if (authorizationFailure) return authorizationFailure;
+      if (env.EXECUTOR_LOCATION !== undefined && env.EXECUTOR_LOCATION !== "us") {
+        return executorJson({ ok: false, error: "executor_location_invalid" }, 503);
+      }
       return fetchExecutorDurableObject(
         request,
-        () => env.ONEPASSWORD_EXECUTOR.getByName(ONEPASSWORD_EXECUTOR_INSTANCE),
+        () => {
+          if (env.EXECUTOR_LOCATION === "us") {
+            const namespace = env.ONEPASSWORD_EXECUTOR.jurisdiction("us");
+            return namespace.get(namespace.idFromName(ONEPASSWORD_EXECUTOR_INSTANCE), {
+              locationHint: "wnam",
+            });
+          }
+          return env.ONEPASSWORD_EXECUTOR.getByName(ONEPASSWORD_EXECUTOR_INSTANCE);
+        },
       );
     }
 

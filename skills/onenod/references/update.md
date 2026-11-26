@@ -111,6 +111,40 @@ result, and then offers default-yes revocation of this Mac's Cloudflare
 authority. If Wrangler returns an unknown result, let the CLI reconcile the
 recorded transaction before any retry.
 
+### Move the Executor to the US
+
+The Executor normally keeps one Durable Object and its write journal in the
+location where that object was first created. Cloudflare cannot move an existing
+object by changing a location hint. A US migration creates a separate object
+restricted to the US jurisdiction, with western North America preferred. The
+old object and its journal remain in place; their records are not copied.
+
+This is a one-way, human-selected state boundary, not an ordinary update or an
+automatic failover. Before opting in, stop remote item mutations from every
+requester, reconcile every pending, executing, or unknown mutation, and verify
+that none can resume during the change. Previously applied write identities in
+the old journal are not replay fences in the new object. If those conditions
+cannot be established, do not migrate without a separate journal migration.
+After new writes occur on the new object, do not return to the old object
+without reconciling both journals. Manual local fallback on each requester
+prevents its new item mutations, but it is not a global Gateway lock.
+If the migration fails, the updater does not automatically roll back across
+this boundary. Keep writes stopped and reconcile or resume the recorded plan.
+
+First install the verified Release containing this option on the operator Mac;
+older installed versions do not recognize the new flags. Then review the exact
+operator plan and use:
+
+```sh
+may operator update --version <verified-version> --executor-location us --acknowledge-executor-journal-boundary
+```
+
+The update records the selected location in the operator receipt and preserves
+it on later updates. It verifies the uploaded Executor binding before promotion.
+After deployment, confirm the actual object region using Cloudflare traces and
+perform an approved read-only check before restoring remote use. A location
+hint alone is best effort; the US jurisdiction is the placement boundary.
+
 ### Optional Beholder Worker
 
 After the Gateway, Executor, PWA and this Mac are on the same verified Release,

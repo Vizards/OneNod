@@ -31,7 +31,8 @@ const (
 	bootstrapPollInterval         = 2 * time.Second
 	initializerReexecIdentity     = "ONENOD_INIT_REEXEC_IDENTITY"
 	operatorUpdateReexecIdentity  = "ONENOD_UPDATE_REEXEC_IDENTITY"
-	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator beholder <enable|status|rollback> | may operator revoke-cloudflare"
+	operatorUpdateUsage           = "usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--executor-location us --acknowledge-executor-journal-boundary]"
+	operatorUsage                 = "usage: may operator init [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] | may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]] [--executor-location us --acknowledge-executor-journal-boundary] | may operator beholder <enable|status|rollback> | may operator revoke-cloudflare"
 )
 
 var workerVersionIDPattern = regexp.MustCompile(`(?i)Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
@@ -49,6 +50,7 @@ type operatorDeploymentReceipt struct {
 	DeploymentArtifactSHA    string                   `json:"deployment_artifact_sha256"`
 	ExecutorVersionID        string                   `json:"executor_version_id"`
 	ExecutorWorker           string                   `json:"executor_worker"`
+	ExecutorLocation         string                   `json:"executor_location,omitempty"`
 	GatewayVersionID         string                   `json:"gateway_version_id"`
 	GatewayWorker            string                   `json:"gateway_worker"`
 	OnePasswordAccount       string                   `json:"onepassword_account"`
@@ -71,23 +73,25 @@ type operatorBeholderReceipt struct {
 }
 
 type operatorUpdateTransaction struct {
-	AccountID             string `json:"account_id"`
-	DeploymentArtifact    string `json:"deployment_artifact"`
-	DeploymentArtifactSHA string `json:"deployment_artifact_sha256"`
-	ExecutorAfter         string `json:"executor_after,omitempty"`
-	ExecutorBefore        string `json:"executor_before"`
-	GatewayAfter          string `json:"gateway_after,omitempty"`
-	GatewayBefore         string `json:"gateway_before"`
-	ID                    string `json:"id"`
-	Outcome               string `json:"outcome"`
-	Phase                 string `json:"phase"`
-	ProfileRevoked        bool   `json:"profile_revoked"`
-	ReleaseFrom           string `json:"release_from"`
-	ReleaseTo             string `json:"release_to"`
-	SchemaVersion         int    `json:"schema_version"`
-	UpdatedAt             string `json:"updated_at"`
-	BeholderBefore        string `json:"beholder_before,omitempty"`
-	BeholderAfter         string `json:"beholder_after,omitempty"`
+	AccountID              string `json:"account_id"`
+	DeploymentArtifact     string `json:"deployment_artifact"`
+	DeploymentArtifactSHA  string `json:"deployment_artifact_sha256"`
+	ExecutorAfter          string `json:"executor_after,omitempty"`
+	ExecutorBefore         string `json:"executor_before"`
+	ExecutorLocationBefore string `json:"executor_location_before,omitempty"`
+	ExecutorLocationAfter  string `json:"executor_location_after,omitempty"`
+	GatewayAfter           string `json:"gateway_after,omitempty"`
+	GatewayBefore          string `json:"gateway_before"`
+	ID                     string `json:"id"`
+	Outcome                string `json:"outcome"`
+	Phase                  string `json:"phase"`
+	ProfileRevoked         bool   `json:"profile_revoked"`
+	ReleaseFrom            string `json:"release_from"`
+	ReleaseTo              string `json:"release_to"`
+	SchemaVersion          int    `json:"schema_version"`
+	UpdatedAt              string `json:"updated_at"`
+	BeholderBefore         string `json:"beholder_before,omitempty"`
+	BeholderAfter          string `json:"beholder_after,omitempty"`
 }
 
 type activeWranglerAccount struct {
@@ -437,6 +441,7 @@ func ensureCurrentOperatorUpdater(
 	ctx context.Context,
 	release *verifiedRelease,
 	deps dependencies,
+	options ...string,
 ) (bool, error) {
 	expectedIdentity := release.Manifest.ReleaseVersion + "@" + release.Manifest.Source.Commit
 	marker := os.Getenv(operatorUpdateReexecIdentity)
@@ -462,10 +467,8 @@ func ensureCurrentOperatorUpdater(
 	if err != nil {
 		return false, errors.New("resolve user home for operator updater failed")
 	}
-	command := exec.CommandContext(
-		ctx, path,
-		"operator", "update", "--version", release.Manifest.ReleaseVersion,
-	)
+	arguments := append([]string{"operator", "update", "--version", release.Manifest.ReleaseVersion}, options...)
+	command := exec.CommandContext(ctx, path, arguments...)
 	command.Dir = home
 	command.Env = releaseReexecEnvironment(operatorUpdateReexecIdentity, expectedIdentity)
 	command.Stdin = deps.stdin

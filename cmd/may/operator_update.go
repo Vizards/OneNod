@@ -18,6 +18,8 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	flags.SetOutput(deps.stderr)
 	channelValue := flags.String("channel", "", "release channel: stable, beta, or alpha")
 	versionValue := flags.String("version", "", "exact immutable release version")
+	executorLocation := flags.String("executor-location", "", "move the Executor to the us jurisdiction")
+	acknowledgeJournal := flags.Bool("acknowledge-executor-journal-boundary", false, "confirm remote writes are drained and the prior journal will not be copied")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -25,7 +27,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: may operator update [--channel stable|beta|alpha | --version X.Y.Z[-alpha.N|-beta.N]]")
+		return errors.New(operatorUpdateUsage)
 	}
 	if err := assertNoCloudflareCredentialEnvironment(); err != nil {
 		return err
@@ -33,6 +35,17 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	receipt, err := readOperatorDeploymentReceipt()
 	if err != nil {
 		return err
+	}
+	if *executorLocation != "" && *executorLocation != "us" {
+		return errors.New("unsupported Executor location; the available migration target is us")
+	}
+	targetLocation := receipt.ExecutorLocation
+	if *executorLocation != "" {
+		targetLocation = *executorLocation
+	}
+	locationChanged := targetLocation != receipt.ExecutorLocation
+	if locationChanged && !*acknowledgeJournal {
+		return errors.New("moving the Executor requires --acknowledge-executor-journal-boundary after draining and reconciling remote writes")
 	}
 	currentChannel := releaseChannel(receipt.Channel)
 	selection, err := releaseSelectionFromFlags(*channelValue, *versionValue, currentChannel)
@@ -69,7 +82,14 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			return err
 		}
 	}
-	reexecuted, err := ensureCurrentOperatorUpdater(ctx, release, deps)
+	var reexecOptions []string
+	if *executorLocation != "" {
+		reexecOptions = append(reexecOptions, "--executor-location", *executorLocation)
+	}
+	if *acknowledgeJournal {
+		reexecOptions = append(reexecOptions, "--acknowledge-executor-journal-boundary")
+	}
+	reexecuted, err := ensureCurrentOperatorUpdater(ctx, release, deps, reexecOptions...)
 	if err != nil {
 		return err
 	}
@@ -103,6 +123,8 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 			receipt.DeploymentArtifactSHA != artifactDigestByName(release.Manifest, receipt.DeploymentArtifact) {
 			return errors.New("same_version_identity_mismatch: deployed receipt differs from the signed release")
 		}
+	}
+	if release.Manifest.ReleaseVersion == receipt.ReleaseVersion && !locationChanged {
 		remote, complete := readRemoteRuntimeVersion(receipt.Origin, deps.httpClient)
 		if complete && remote.GatewayVersion == receipt.ReleaseVersion && remote.ExecutorVersion == receipt.ReleaseVersion && remote.PwaVersion == receipt.ReleaseVersion {
 			if !transportUpdateJournalExists() && localInstallExactlyMatchesRelease(release, receipt.Origin) {
@@ -175,7 +197,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	}
 	material := &productionInitializationMaterial{
 		AccountID: receipt.AccountID, AccountSubdomain: receipt.AccountSubdomain,
-		ExecutorName: receipt.ExecutorWorker, GatewayName: receipt.GatewayWorker,
+		ExecutorName: receipt.ExecutorWorker, ExecutorLocation: targetLocation, GatewayName: receipt.GatewayWorker,
 		OnePasswordAccount: receipt.OnePasswordAccount, AgentVaultID: receipt.OnePasswordVaultID,
 		Origin: receipt.Origin, RPID: receipt.RPID, VAPID: vapidCredential{PublicKey: receipt.VAPIDPublicKey},
 		Beholder: receipt.Beholder,
@@ -215,6 +237,21 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	)
 	if err != nil {
 		return err
+	}
+	if resuming {
+		if transaction.ExecutorLocationBefore != receipt.ExecutorLocation || transaction.ExecutorLocationAfter != targetLocation {
+			return errors.New("recoverable operator update has a different Executor location; resume the original plan")
+		}
+	} else {
+		transaction.ExecutorLocationBefore = receipt.ExecutorLocation
+		transaction.ExecutorLocationAfter = targetLocation
+	}
+	activeLocation := receipt.ExecutorLocation
+	if resuming && executorBefore == transaction.ExecutorAfter {
+		activeLocation = targetLocation
+	}
+	if err := inspectExecutorLocation(tools.Wrangler, profile, bundleExecutorConfig(bundle), receipt.ExecutorWorker, executorBefore, activeLocation); err != nil {
+		return fmt.Errorf("deployed Executor location differs from the recorded plan: %w", err)
 	}
 	if receipt.Beholder != nil {
 		if err := validateBeholderUpdateTraffic(transaction, resuming, beholderCurrent, executorBefore, gatewayBefore); err != nil {
@@ -264,14 +301,23 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	fmt.Fprintf(console.stdout, "  Channel: %s -> %s (artifact channel %s)\n",
 		currentChannel, channel, release.Manifest.Channel)
 	fmt.Fprintf(console.stdout, "  Executor baseline: %s\n  Gateway baseline: %s\n", executorBefore, gatewayBefore)
+	if locationChanged {
+		fmt.Fprintln(console.stdout, "  Executor location: existing object -> US jurisdiction (western North America preferred)")
+		fmt.Fprintln(console.stdout, "  The new object has a separate write journal; the old journal remains in place.")
+		fmt.Fprintln(console.stdout, "  Remote writes must remain stopped until the migration is verified; reconcile all pending or unknown writes first.")
+		fmt.Fprintln(console.stdout, "  Do not return to the old object after new remote writes without reconciling both journals.")
+	} else if targetLocation == "us" {
+		fmt.Fprintln(console.stdout, "  Executor location: US jurisdiction (unchanged)")
+	}
 	if receipt.Beholder != nil {
 		fmt.Fprintf(console.stdout, "  Beholder: %s, baseline %s (private; existing provider and trace key retained)\n", receipt.Beholder.Worker, receipt.Beholder.VersionID)
 	}
 	fmt.Fprintf(console.stdout, "  Bundle: %s (%s)\n", bundle.Artifact.Name, bundle.Artifact.SHA256)
+	rollbackSafe := release.Manifest.Upgrade.RemoteRollbackSafe && !locationChanged
 	if receipt.Beholder != nil {
-		fmt.Fprintf(console.stdout, "  Promotion order: Beholder -> %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+		fmt.Fprintf(console.stdout, "  Promotion order: Beholder -> %s; automatic rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), rollbackSafe)
 	} else {
-		fmt.Fprintf(console.stdout, "  Promotion order: %s; rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), release.Manifest.Upgrade.RemoteRollbackSafe)
+		fmt.Fprintf(console.stdout, "  Promotion order: %s; automatic rollback safe: %t\n", strings.Join(release.Manifest.Upgrade.Order, " -> "), rollbackSafe)
 	}
 	if resuming {
 		fmt.Fprintf(console.stdout, "  Resume transaction: %s (%s)\n", transaction.ID, transaction.Phase)
@@ -330,6 +376,7 @@ func runBinaryOperatorUpdate(args []string, deps dependencies) error {
 	receipt.DeploymentArtifact = bundle.Artifact.Name
 	receipt.DeploymentArtifactSHA = bundle.Artifact.SHA256
 	receipt.ExecutorVersionID = executorAfter
+	receipt.ExecutorLocation = targetLocation
 	receipt.GatewayVersionID = gatewayAfter
 	if receipt.Beholder != nil {
 		receipt.Beholder.VersionID = transaction.BeholderAfter
@@ -638,6 +685,10 @@ func deployVerifiedUpdate(
 		return "", "", err
 	}
 	transaction.ExecutorAfter = executorAfter
+	if err := inspectExecutorLocation(wrangler, profile, executorConfig, receipt.ExecutorWorker, executorAfter, transaction.ExecutorLocationAfter); err != nil {
+		markOperatorUpdateNeedsAttention(transaction, transactionPath, "executor_upload_unknown")
+		return "", "", fmt.Errorf("uploaded Executor location could not be verified: %w", err)
+	}
 	if knownExecutor == "" {
 		transaction.Phase = "executor_uploaded"
 	}
@@ -894,6 +945,10 @@ func rollbackOperatorUpdate(
 	transactionPath string,
 	cause error,
 ) error {
+	if transaction.ExecutorLocationBefore != transaction.ExecutorLocationAfter {
+		markOperatorUpdateNeedsAttention(transaction, transactionPath, transaction.Phase)
+		return fmt.Errorf("remote update failed; automatic rollback across an Executor journal boundary is prohibited; keep remote writes stopped and reconcile or resume the recorded update: %w", cause)
+	}
 	if !release.Manifest.Upgrade.RemoteRollbackSafe {
 		transaction.Outcome = "remote_needs_attention"
 		transaction.UpdatedAt = time.Now().UTC().Format(time.RFC3339)

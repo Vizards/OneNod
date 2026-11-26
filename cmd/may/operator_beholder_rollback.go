@@ -108,7 +108,7 @@ func rollbackOperatorBeholder(deps dependencies) error {
 	}
 	material := &productionInitializationMaterial{
 		AccountID: receipt.AccountID, AccountSubdomain: receipt.AccountSubdomain,
-		ExecutorName: receipt.ExecutorWorker, GatewayName: receipt.GatewayWorker,
+		ExecutorName: receipt.ExecutorWorker, ExecutorLocation: receipt.ExecutorLocation, GatewayName: receipt.GatewayWorker,
 		OnePasswordAccount: receipt.OnePasswordAccount, AgentVaultID: receipt.OnePasswordVaultID,
 		Origin: receipt.Origin, RPID: receipt.RPID, VAPID: vapidCredential{PublicKey: receipt.VAPIDPublicKey},
 	}
