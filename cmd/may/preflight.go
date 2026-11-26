@@ -33,6 +33,7 @@ type requesterPreflightReport struct {
 		AgentConfig string `json:"agent_config"`
 		Configured  bool   `json:"configured"`
 		DesktopApp  string `json:"desktop_app"`
+		ManualMode  bool   `json:"manual_mode"`
 		SSHAgent    string `json:"ssh_agent"`
 	} `json:"local_fallback"`
 	Origin    string `json:"origin"`
@@ -142,6 +143,10 @@ func runPreflight(args []string, config cliConfig, deps dependencies) error {
 		}
 	}
 	_, report.LocalFallback.Configured, err = readLocalFallbackConfig()
+	if err != nil {
+		return err
+	}
+	report.LocalFallback.ManualMode, err = manualLocalFallbackEnabled()
 	if err != nil {
 		return err
 	}

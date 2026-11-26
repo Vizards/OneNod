@@ -85,7 +85,7 @@ func runShellPluginEntrypoint(command string, arguments []string, deps dependenc
 	values, err := useApprovedCredential(
 		cli, deps, binding.ItemID, fieldIDs, binding.ItemVersion,
 	)
-	if isGatewayErrorCode(err, "item_stale") {
+	if isGatewayErrorCode(err, "item_stale") || errors.Is(err, errLocalFallbackItemStale) {
 		binding, err = refreshShellPluginBindingMetadata(
 			cli, deps, config, binding, home,
 		)

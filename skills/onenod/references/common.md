@@ -6,7 +6,7 @@
 | --- | --- |
 | Installed `may` | Origin-scoped requester in macOS Keychain; normal Agent secret and item operations |
 | OneNod SSH Agent | Public-key inventory locally; approval-backed private-key signatures remotely |
-| Optional local fallback | `may`-owned Desktop SDK reads and native 1Password SSH Agent signatures, only for an authenticated Service Account quota-exhaustion response |
+| Optional local fallback | `may`-owned Desktop SDK reads and native 1Password SSH Agent signatures after an authenticated quota error or in explicitly enabled manual local mode |
 | Keychain helper | Creates and uses the requester identity; has no network, Cloudflare, shell, or 1Password authority |
 | Human `op` session | Explicit 1Password administration or migration inventory |
 | Wrangler or Cloudflare Dashboard | Human-owned production deployment authority |
@@ -20,7 +20,7 @@ is not an Agent credential.
 
 OneNod does not depend on a second 1Password Skill. For normal Agent work,
 never substitute `op` when `may` is missing, denied, locked, or unhealthy.
-This remains true when local quota fallback is configured: `may` invokes the
+This remains true when local fallback is configured: `may` invokes the
 official Desktop SDK or native 1Password SSH Agent itself, and the Agent never
 changes commands or receives permission to call `op`.
 
@@ -47,10 +47,10 @@ Agent consumer
   -> Executor and scoped 1Password Service Account
   -> Agent Vault
 
-Exact Service Account quota exhaustion, if the human opted in on this Mac
+Exact Service Account quota exhaustion, or explicitly enabled manual local mode
   -> may keeps the same requested item, field, version, key, and payload
   -> local 1Password Desktop SDK read or native SSH Agent signature
-  -> human approval in the local 1Password app
+  -> local 1Password authorization under its own settings
 ```
 
 Both Workers, both Durable Objects, bundled WASM, the dedicated Cloudflare
@@ -58,12 +58,17 @@ account, the approver device, and the local OneNod runtime are in the trusted
 computing base. A Service Binding does not protect against a malicious deployer
 inside that Cloudflare account.
 
-The optional local branch is deliberately narrower than the normal path. It
-supports metadata and field reads plus SSH/Git signatures; it never performs
-item creation, patching, or archival. It does not activate for denial, Lock
-mode, requester revocation, timeout, network failure, or generic 5xx errors.
-The local 1Password app authorizes the SDK at account scope, while OneNod binds
-its code path to the exact `Agent` Vault ID saved during setup.
+The optional local branch supports metadata and field reads plus SSH/Git
+signatures; it never performs item creation, patching, or archival. Automatic
+fallback does not activate for denial, Lock mode, requester revocation, timeout,
+network failure, or generic 5xx errors. Separately enabled manual local mode
+routes new supported operations directly to local 1Password until disabled; it
+does not consult or enforce Gateway Lock mode, requester revocation, or PWA
+approval and does not write Gateway Activity. Manual mode is bound to the
+selected Origin and local requester. The local 1Password app authorizes
+the SDK at account scope and can remember authorization, while OneNod binds its
+code path to the exact `Agent` Vault ID saved during setup. The per-user mode
+file is not an independent boundary against another same-user process.
 
 ## Application-scoped approval semantics
 

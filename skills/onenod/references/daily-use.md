@@ -81,6 +81,8 @@ blindly repeat an operation whose outcome is unknown.
 
 If Lock mode is active, stop. It intentionally rejects requester operations
 without notifying an approver; a human must leave Lock mode with a Passkey.
+Do not enable manual local mode because of Lock mode or another failure without
+the human explicitly choosing that separate local authorization path.
 
 ## When the Service Account quota is exhausted
 
@@ -94,9 +96,20 @@ This fallback can serve catalog metadata, one approved field value, or an
 SSH/Git signature. Mutations remain unavailable until the remote Service
 Account quota recovers. If the local 1Password app is locked, absent, or not
 authorized, report both the remote quota condition and the local failure; do
-not weaken the trigger or bypass OneNod.
+not weaken the automatic trigger.
 
 If a PWA-approved request reached remote execution before the quota error was
 known, Gateway Activity keeps that truthful remote failure even when the local
 operation subsequently succeeds. Use `may`'s local-success diagnostic as the
 result of that invocation; do not retry merely to change the Activity entry.
+
+## When manual local mode is enabled
+
+For an explicitly authorized manual switch during an outage, follow
+[Local integrations](local-integrations.md). Check `may configure local-fallback
+status`; keep using the same `may`, SSH, or Git command. The local mode applies
+to new supported operations and bypasses Gateway approval, Lock mode, requester
+revocation, and Activity until manually disabled. 1Password may remember local
+authorization; do not promise a fresh confirmation for every operation. Do not
+retry an earlier signature or mutation whose remote outcome is unknown without
+reconciliation. Item mutations remain unavailable in manual mode.

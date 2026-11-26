@@ -160,23 +160,38 @@ func readApprovedSecret(
 	if err != nil {
 		return "", err
 	}
+	manual, err := manualLocalFallbackForRequester(config.origin, credential)
+	if err != nil {
+		return "", err
+	}
 	resolvedVersion := expectedVersion
 	if resolvedVersion < 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), gatewayRequestTimeout)
-		resolvedVersion, err = resolveExpectedVersionWithLocalFallback(
-			ctx,
-			client,
-			itemID,
-			deps,
-		)
+		if manual {
+			localCtx, localCancel := context.WithTimeout(ctx, localFallbackOperationLimit)
+			var catalog catalogSearchResponse
+			catalog, err = searchLocalCatalog(localCtx, deps, itemID)
+			localCancel()
+			if err == nil {
+				resolvedVersion, err = expectedVersionFromCatalog(catalog, itemID)
+			}
+		} else {
+			resolvedVersion, err = resolveExpectedVersionWithLocalFallback(ctx, client, itemID, deps)
+		}
 		cancel()
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(deps.stderr, "Resolved item version %d from the requester-authenticated catalog.\n", resolvedVersion)
+		fmt.Fprintf(deps.stderr, "Resolved item version %d from the Agent Vault catalog.\n", resolvedVersion)
 	}
 	if resolvedVersion <= 0 {
 		return "", errors.New("expected-version must be a positive integer")
+	}
+	if manual {
+		fmt.Fprintln(deps.stderr, "Manual local fallback is enabled; requesting this field from local 1Password.")
+		ctx, cancel := context.WithTimeout(context.Background(), localFallbackOperationLimit)
+		defer cancel()
+		return readLocalSecret(ctx, deps, itemID, fieldID, resolvedVersion)
 	}
 	idempotencyKey, err := newUUIDv7(time.Now())
 	if err != nil {
@@ -335,6 +350,16 @@ func useApprovedCredential(
 	credential, err := deps.keychain.Load()
 	if err != nil {
 		return nil, err
+	}
+	manual, err := manualLocalFallbackForRequester(config.origin, credential)
+	if err != nil {
+		return nil, err
+	}
+	if manual {
+		fmt.Fprintln(deps.stderr, "Manual local fallback is enabled; requesting this credential from local 1Password.")
+		ctx, cancel := context.WithTimeout(context.Background(), localFallbackOperationLimit)
+		defer cancel()
+		return readLocalCredential(ctx, deps, itemID, fieldIDs, expectedVersion)
 	}
 	client, err := newAPIClient(config.origin, credential, deps.httpClient)
 	if err != nil {

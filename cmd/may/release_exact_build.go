@@ -559,7 +559,7 @@ func activateVerifiedLocalReleaseCore(
 		fmt.Fprintln(deps.stdout, "Optional integrations (each requires a separate human confirmation):")
 		fmt.Fprintf(deps.stdout, "  %s configure ssh apply\n", plan.binaryPath)
 		fmt.Fprintf(deps.stdout, "  %s configure git-signing apply --signing-key <SSH-public-key-or-path>\n", plan.binaryPath)
-		fmt.Fprintln(deps.stdout, "Local quota fallback is not enabled automatically because it grants this Mac a separate 1Password approval path.")
+		fmt.Fprintln(deps.stdout, "Local 1Password fallback is not configured automatically because it grants this Mac a separate approval path.")
 		fmt.Fprintln(deps.stdout, "After signing in to the 1Password desktop app, configure it with:")
 		fmt.Fprintf(deps.stdout, "  %s configure local-fallback apply\n", plan.binaryPath)
 		fmt.Fprintln(deps.stdout, "That guided flow requires the Agent Vault to be included in ~/.config/1Password/ssh/agent.toml and verifies its SSH public fingerprints.")

@@ -88,8 +88,11 @@ revision. Review that difference and rerun the guided credential-binding flow
 when needed; do not hand-edit `~/.onenod/plugins.json` or replace the managed
 links.
 
-Local updates preserve the non-secret local quota-fallback binding and do not
-rewrite the human-owned 1Password `agent.toml`. After changing 1Password
+Local updates preserve the non-secret local fallback binding and manual mode,
+and do not rewrite the human-owned 1Password `agent.toml`. A rollback to an
+older release that does not implement manual mode ignores its state file; a
+later supporting release sees that state again. Check
+`may configure local-fallback status` after switching releases. After changing 1Password
 accounts, renaming or recreating `Agent`, or changing its SSH inventory, run
 `may configure local-fallback status` and then rerun the guided apply flow as
 needed.

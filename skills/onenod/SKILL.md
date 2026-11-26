@@ -1,6 +1,6 @@
 ---
 name: onenod
-description: Install, update, troubleshoot, or operate OneNod for Gateway deployment, Mac/PWA enrollment, approved 1Password reads and item changes, website login and form filling in Chrome, SSH/Git signing, shell plugins, quota fallback, and explicit credential migration. Excludes source-only development.
+description: Install, update, troubleshoot, or operate OneNod for Gateway deployment, Mac/PWA enrollment, approved 1Password reads and item changes, website login and form filling in Chrome, SSH/Git signing, shell plugins, local fallback, and explicit credential migration. Excludes source-only development.
 ---
 
 # OneNod
@@ -29,12 +29,16 @@ Load the applicable reference, then only the leaves it selects:
 
 - Normal Agent access uses `may` or the configured OneNod SSH Agent. Direct `op`
   is limited to human-explicit administration/migration under [Common](references/common.md).
-  A missing, denied, locked, revoked, or unhealthy requester never authorizes a bypass.
+  A missing, denied, locked, revoked, or unhealthy requester never automatically
+  authorizes a bypass.
 - Do not expose recovered fields, private keys, Service Account tokens, bootstrap
   capabilities, or secret-bearing payloads through Agent-visible output or storage.
-- Reconcile unknown mutation results before retrying. Local quota fallback is
-  `may`-owned, opt-in, and limited to an authenticated Service Account quota error;
-  it does not authorize switching tools or Origins.
+- Reconcile unknown remote results before retrying. Automatic local fallback is
+  `may`-owned, opt-in, and limited to an authenticated Service Account quota error.
+  Manual local mode is a separate, explicit human choice on each Mac; never enable
+  it merely because an operation failed. See [Local integrations](references/local-integrations.md)
+  for its scope and the Gateway controls it bypasses. Neither mode authorizes
+  switching to `op` or changing Origins.
 - Installation, deployment, changed-helper, Passkey, account, and optional-integration
   decisions follow the human boundaries in [Setup](references/setup.md) and
   [Update](references/update.md). Only Update's exact, explicitly declared dogfooding
